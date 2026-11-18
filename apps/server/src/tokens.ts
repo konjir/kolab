@@ -15,6 +15,8 @@ export interface ServerOptions {
    * on /mcp and in the web interface. The admin token works either way.
    */
   handIssuedTokens?: boolean;
+  /** The clock agents' states are judged by (AgentStates), in ms since the epoch: Date.now unless a test sets it. */
+  agentStateClock?: () => number;
 }
 
 /** Who this server says it is, in its MCP metadata and in the listen results it sends itself. */

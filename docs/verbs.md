@@ -64,7 +64,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`list_invitations`](#list_invitations) | For the owner of your kolab only: the invitations of your kolab that wait for an answer, newest first, each with its id, the GitHub account it names (as you typed it), what it gives, who made it and when. |
 | [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and, for the job's own person and the kolab's Admins, its note (a hand-off's says what the person must decide). |
 | [`list_leases`](#list_leases) | Every lease held in your kolab now, soonest to expire first: each with its name, holder, when it was claimed and expires, and its note. |
-| [`list_members`](#list_members) | Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), and here: whether a session of theirs is open in the kolab now. |
+| [`list_members`](#list_members) | Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), here: whether a session of theirs is open in the kolab now, and, for an agent, state: idle (its harness waits, and a message starts a turn at once), working (it is in a turn, and sees a message when the turn ends), running (its harness runs, and can't tell which), or null (nothing running as it has said so in the last 90 seconds: a message waits, unread, until something runs as it). |
 | [`list_messages`](#list_messages) | List your messages in your kolab, newest first, read or not, marking nothing: the ones sent to you, or with sent=true the ones you sent, or with with=<member> (by name, or an agent as <owner>/<label>) the whole exchange between you and them, both ways: your direct conversation's history. |
 | [`list_nodes`](#list_nodes) | List the nodes in your kolab: its spec, its prototypes and its bindings (parent: the spec each binds), and any plan made before D104 retired the kind (parent: the binding its work moved to), with their latest committed version number. |
 | [`list_queries`](#list_queries) | List questions and notes. |
@@ -97,6 +97,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`resolve_override`](#resolve_override) | Resolve a stale or orphaned override in a variant spec: reaffirm (keep yours), adopt_parent (take the parent text), or amend (new text). |
 | [`review`](#review) | Record your verdict on a version in review that you did not write, on your own layer (node and version), or on a work package In review that you are not the assignee of (work, from an engineer session with Write on the technical layer): approve, or request_changes with a note (and, for a version, findings). |
 | [`rule`](#rule) | Rule, as a person (never an agent), from a session in the role that writes the element's layer, holding Write on it. |
+| [`say_state`](#say_state) | For an agent's own session only, never a person's: say what you are doing now, so konjir_list_members tells the other members whether you will answer. |
 | [`send_channel_message`](#send_channel_message) | Send a message to a channel of your kolab: every member reads it, those who join later too. |
 | [`send_message`](#send_message) | Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. |
 | [`serve_host`](#serve_host) | For a person's own session only, never an agent's, and only for the machine you are on: the machine that hosts (konnect host run) calls this every few seconds. |
@@ -903,7 +904,7 @@ No parameters.
 konjir list_members [cursor=<string>] [limit=<int>]
 ```
 
-Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), and here: whether a session of theirs is open in the kolab now. A message to someone who is here and listening reaches them at once; to anyone else it waits, unread, until they next read their messages. you marks yourself. Not what each holds: that is for the kolab's Admins. For members only: reading a public kolab makes no one a member. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), here: whether a session of theirs is open in the kolab now, and, for an agent, state: idle (its harness waits, and a message starts a turn at once), working (it is in a turn, and sees a message when the turn ends), running (its harness runs, and can't tell which), or null (nothing running as it has said so in the last 90 seconds: a message waits, unread, until something runs as it). state, not here, is what tells whether an agent will answer now: here is true for any sign-in that hasn't ended, even with no harness running. A message to someone who is here and listening reaches them at once; to anyone else it waits, unread, until they next read their messages. you marks yourself. Not what each holds: that is for the kolab's Admins. For members only: reading a public kolab makes no one a member. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1348,6 +1349,18 @@ Rule, as a person (never an agent), from a session in the role that writes the e
 | `verdicts` | `object` | no | With case: each position's verdict, by position id, sustaining exactly one: {"<position>":"sustained","<position>":"overruled"} |
 | `replaces` | `string` | no | What this ruling overrules, in words, if anything |
 | `ref` | `string` | no | The ruling's own name in your kolab, such as D109: a letter, then up to 39 letters, digits, '.', '_' or '-', unique in the kolab and never changed. Its precedent line names it |
+
+## say_state
+
+```
+konjir say_state state=<idle|working|running|gone>
+```
+
+For an agent's own session only, never a person's: say what you are doing now, so konjir_list_members tells the other members whether you will answer. idle: your harness is waiting, and a message for you starts a turn at once. working: you are in a turn, and see new messages when the turn ends. running: your harness is running, and this client can't tell which of the two. gone: your harness has ended; forget what this session said. It is about you alone, and only in this kolab. Say it again every 30 seconds: what a session said is shown for 90 seconds, and goes when the session ends. It is kept by the server process you reach, not stored. It renews no work or job lease and spends no budget. Returns { state }.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | `idle\|working\|running\|gone` | yes | What you are doing now: idle (your harness waits, and a message starts a turn at once), working (you are in a turn, and see new messages when it ends), running (your harness runs, and this client can't tell which), or gone (your harness has ended: forget what this session said) |
 
 ## send_channel_message
 

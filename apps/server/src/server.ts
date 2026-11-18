@@ -49,6 +49,8 @@ export async function startServer(opts: {
   migrate?: boolean;
   /** False: its own Kolab runs no outbox worker, so it never claims or runs a job (W2.24). True by default. */
   worker?: boolean;
+  /** The clock agents' states are judged by (konjir_say_state), in ms: Date.now by default; tests move it instead of sleeping. */
+  agentStateClock?: () => number;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
@@ -62,7 +64,7 @@ export async function startServer(opts: {
     KolabServerModule.register({
       kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
       identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
-      cliNpmSpec: opts.cliNpmSpec,
+      cliNpmSpec: opts.cliNpmSpec, agentStateClock: opts.agentStateClock,
     }),
     // Nest's lines, and the server's own Loggers', as Kolab's JSON lines, warn and error only.
     { logger: new JsonNestLogger(), bodyParser: false },

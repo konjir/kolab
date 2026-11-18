@@ -5,7 +5,7 @@ import { args } from './args.js';
 import { DEFAULT_TAKE_KINDS, GateError, Kolab, LimitError, MAX_OWN_SESSIONS, SPLIT_STEP, cursorFor, keyOf } from '@konjir/engine';
 import { formatAddress, parseAddress, parseNodeRef } from '@konjir/address';
 import {
-  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, HOST_FRESH_SECONDS, HOST_REQUEST_SECONDS, HOST_REQUEST_KINDS, HOST_REQUESTS_AT_ONCE, HOST_FORGOTTEN_DAYS, MAX_HOSTS_PER_PERSON, MAX_HOST_REQUESTS_WAITING, HOST_TAKEN_SECONDS, MAX_HOST_ASKS_PER_HOUR, MAX_HOST_BODY, MAX_HOST_RESULT, MAX_HOST_AGENTS, MAX_HOST_FOLDER, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
+  ACCEPTANCE_RESULTS, CASE_FILE_STATES, DELTA_KINDS, JOB_ENDS, JOB_KINDS, JOB_LIMITS, EDGE_KINDS, EVIDENCE_KINDS, FINDING_KINDS, KINDS, MAX_EVIDENCE_CHECKS, MAX_EVIDENCE_FILES, MAX_EVIDENCE_PER_CALL, MAX_EVIDENCE_URL, MAX_ASKS_PER_HOUR, MAX_DRAFTS_PER_HOUR, MAX_ORG_ASKS_PER_HOUR, MAX_ORG_DRAFTS_PER_HOUR, MAX_MESSAGES_PER_HOUR, MAX_ORG_MESSAGES_PER_HOUR, MESSAGES_AT_ONCE, MAX_MENTIONS, MAX_AGENT_REPLY_CAP, DEFAULT_AGENT_REPLY_CAP, MAX_CHANNELS, UNREAD_COUNT_CEILING, MIN_LEASE_SECONDS, MAX_LEASE_SECONDS, DEFAULT_LEASE_SECONDS, MAX_LEASE_NOTE, MAX_LEASES_PER_MEMBER, MAX_LEASES, SAID_STATES, AGENT_STATE_FRESH_SECONDS, HOST_FRESH_SECONDS, HOST_REQUEST_SECONDS, HOST_REQUEST_KINDS, HOST_REQUESTS_AT_ONCE, HOST_FORGOTTEN_DAYS, MAX_HOSTS_PER_PERSON, MAX_HOST_REQUESTS_WAITING, HOST_TAKEN_SECONDS, MAX_HOST_ASKS_PER_HOUR, MAX_HOST_BODY, MAX_HOST_RESULT, MAX_HOST_AGENTS, MAX_HOST_FOLDER, MAX_ELEMENT_TEXT, MAX_ELEMENTS, MAX_MESSAGE_TEXT, MAX_TEXT, MAX_VERSION_BYTES, OVERRIDE_RESOLUTIONS,
   POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES, READ_NODE_PAGE, REVIEW_VERDICTS, RULING_EFFECTS, THREADS_PER_ELEMENT, WORK_LEASE_MINUTES, WORK_STATES, type EdgeKind, type GateResult,
   FUNCTIONAL_ANSWERERS, MAX_CITES, VERSION_APPROVERS, WORK_APPROVERS,
   nobodyCanReview, notAKind,
@@ -15,6 +15,7 @@ import { workInput } from './work-input.js';
 import { PAGED, paging } from './paging.js';
 import { asAgent, thread } from './results.js';
 import { KOLAB } from './tokens.js';
+import { AgentStates } from './agent-states.js';
 import { answersUri, inboxUri } from './uris.js';
 
 const address = z.string().describe('A Konjir address, e.g. kj:checkout@3#R1 or kj:checkout#R1~q({"exact":"30 seconds"}): the short form, a node in your kolab. kj:<kolab>/<node>… names the kolab too (kj:shop/checkout@3#R1). Omit @version to use the latest committed version.');
@@ -143,6 +144,9 @@ const claimLease = args({
 });
 const leaseNamed = args({ name: leaseName });
 const listLeases = args({});
+const sayState = args({
+  state: z.enum(SAID_STATES).describe('What you are doing now: idle (your harness waits, and a message starts a turn at once), working (you are in a turn, and see new messages when it ends), running (your harness runs, and this client can\'t tell which), or gone (your harness has ended: forget what this session said)'),
+});
 const hostName = z.string().describe('The host\'s name, unique among your own hosts in this kolab: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box)');
 const hostInstance = z.string().describe('The process serving the host: 16 to 64 lowercase hex digits, chosen at random each time it starts');
 const hostAgents = (what: string) => z.array(z.string()).optional().describe(`${what}: at most ${MAX_HOST_AGENTS} agent labels, each 1 to 24 lowercase letters, digits and hyphens. Left out, none`);
@@ -300,7 +304,10 @@ const endOwnSession = args({ session: z.string().describe('The session\'s id as 
 /** The verbs an agent session uses. Role and gate rules are enforced by Kolab, not here: this layer only translates. */
 @Injectable()
 export class AgentTools {
-  constructor(@Inject(KOLAB) private readonly kolab: Kolab) {}
+  constructor(
+    @Inject(KOLAB) private readonly kolab: Kolab,
+    @Inject(AgentStates) private readonly states: AgentStates,
+  ) {}
 
   // ---- read ----------------------------------------------------------------
 
@@ -725,14 +732,17 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_members',
-    description: `Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), and here: whether a session of theirs is open in the kolab now. A message to someone who is here and listening reaches them at once; to anyone else it waits, unread, until they next read their messages. you marks yourself. Not what each holds: that is for the kolab's Admins. For members only: reading a public kolab makes no one a member.${PAGED}`,
+    description: `Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), here: whether a session of theirs is open in the kolab now, and, for an agent, state: idle (its harness waits, and a message starts a turn at once), working (it is in a turn, and sees a message when the turn ends), running (its harness runs, and can't tell which), or null (nothing running as it has said so in the last ${AGENT_STATE_FRESH_SECONDS} seconds: a message waits, unread, until something runs as it). state, not here, is what tells whether an agent will answer now: here is true for any sign-in that hasn't ended, even with no harness running. A message to someone who is here and listening reaches them at once; to anyone else it waits, unread, until they next read their messages. you marks yourself. Not what each holds: that is for the kolab's Admins. For members only: reading a public kolab makes no one a member.${PAGED}`,
     schema: listMembers,
     annotations: { readOnlyHint: true },
   })
   listMembers({ cursor, limit }: z.infer<typeof listMembers>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
       const { kolab, items, next } = await this.kolab.membersPage(s, { cursor, limit });
-      return { kolab, members: items, next };
+      // An agent's state, from what its sessions told this process (AgentStates), by this kolab and
+      // that agent alone; only while a session of it is open here, so an expired one says nothing.
+      const members = items.map((m) => (m.kind === 'agent' ? { ...m, state: m.here ? this.states.stateOf(kolab, m.actor) : null } : m));
+      return { kolab, members, next };
     });
   }
 
@@ -890,6 +900,22 @@ export class AgentTools {
   })
   listLeases(_: z.infer<typeof listLeases>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.listLeases(s));
+  }
+
+  // ---- an agent's state ---------------------------------------------------------
+
+  @McpTool({
+    name: 'konjir_say_state',
+    description: `For an agent's own session only, never a person's: say what you are doing now, so konjir_list_members tells the other members whether you will answer. idle: your harness is waiting, and a message for you starts a turn at once. working: you are in a turn, and see new messages when the turn ends. running: your harness is running, and this client can't tell which of the two. gone: your harness has ended; forget what this session said. It is about you alone, and only in this kolab. Say it again every 30 seconds: what a session said is shown for ${AGENT_STATE_FRESH_SECONDS} seconds, and goes when the session ends. It is kept by the server process you reach, not stored. It renews no work or job lease and spends no budget. Returns { state }.`,
+    schema: sayState,
+    annotations: { idempotentHint: true },
+  })
+  sayState({ state }: z.infer<typeof sayState>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const me = await this.kolab.agentStateSession(s);
+      this.states.say(me.session, me.actor, me.kolab, state);
+      return { state };
+    });
   }
 
   // ---- hosts: a person's own machines (migration 0055) ----------------------------

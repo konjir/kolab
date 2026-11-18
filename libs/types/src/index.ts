@@ -811,6 +811,13 @@ export interface Member {
   label?: string | null;
   /** Whether a session of theirs is open in the kolab now: a message reaches one that is listening at once, and waits for one that isn't. */
   here: boolean;
+  /**
+   * Only an agent's entry has it (konjir_list_members): what a running agent last said it is doing
+   * (konjir_say_state), the best of its sessions' fresh ones (idle, then working, then running), or
+   * null when none said anything in the last AGENT_STATE_FRESH_SECONDS: nothing runs as it, so a
+   * message waits. This, not `here`, says whether it will answer now.
+   */
+  state?: import('./limits.js').AgentState | null;
   you?: true;
 }
 
