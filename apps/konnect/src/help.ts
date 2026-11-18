@@ -36,7 +36,8 @@ const AGENT = `  konnect agent list                your agents in the team, whic
                                     run the agent in claude, codex or opencode, adding it first if new;
                                     what follows the harness is passed to it untouched
   konnect agent attach <name>       look in on an agent running in the background here
-  konnect agent stop <name>         end an agent's background harness here; it stays in the team
+  konnect agent stop <name>         end an agent's background harness here, or with --on <machine>
+                                    there; it stays in the team
   konnect agent remove <name>       remove an agent of yours from the team
 
   For agent add and agent run, each sets a part of the agent's system prompt:
@@ -45,7 +46,9 @@ const AGENT = `  konnect agent list                your agents in the team, whic
   --system-prompt <text>            words of your own, added after konnect's
   For agent run alone:
   --background                      keep the harness running in tmux or screen, apart from this terminal
-  --count <n>                       with --background: start <n> agents, <name>-1 to <name>-<n>`;
+  --count <n>                       with --background or --on: start <n> agents, <name>-1 to <name>-<n>
+  --on <machine>                    start it in the background on another machine of yours that is
+                                    hosting (konnect host run); nothing after the harness is sent`;
 
 const LEASE = `  konnect lease list                who holds what, and until when
   konnect lease claim <name> [<note>]
@@ -59,6 +62,17 @@ const LEASE = `  konnect lease list                who holds what, and until whe
   For lease claim and lease run:
   --for <time>                      how long to hold it: 15m unless given, 1m to 4h
   --wait <time>                     if someone else holds it, wait up to this long for it`;
+
+const HOST = `  konnect host list                 your machines that host, and the agents running on each
+  konnect host run [<name>]         this machine hosts, in this folder, until interrupted: you can then
+                                    start your agents here from another machine, with konnect agent
+                                    run --on <name>. Named after the machine unless <name> is given.
+                                    --background keeps it running in tmux or screen
+  konnect host stop [<name>]        end hosting, here or on the machine named
+
+  A machine hosts for you alone: only your own login can ask it, never an agent's or a teammate's.
+  It starts claude, codex or opencode as an agent of yours, with konnect's own options and nothing
+  else; what that agent may do on the machine is set there, in its harness.`;
 
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
   --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,
@@ -79,6 +93,8 @@ ${TEAM}
 ${AGENT}
 
 ${LEASE}
+
+${HOST}
 
   konnect doctor                    check this machine: logins, harnesses, what would work and what wouldn't
   konnect completion <shell>        print completion for bash, zsh or fish, to load in your shell
@@ -101,6 +117,7 @@ export function helpFor(words: string[]): string {
   if (first === 'team') return section('konnect team: the team and who is in it.', TEAM);
   if (first === 'agent') return section('konnect agent: your agents in the team.', AGENT);
   if (first === 'lease') return section('konnect lease: named things one member holds at a time.', LEASE);
+  if (first === 'host') return section('konnect host: your machines that start your agents when you ask from another.', HOST);
   const line = MESSAGES.split('\n  konnect ').map((l, i) => (i ? `  konnect ${l}` : l)).find((l) => l.startsWith(`  konnect ${first} `) || l.startsWith(`  konnect ${first}\n`));
   return line ? `${line}\n\n${OPTIONS}` : USAGE;
 }

@@ -71,7 +71,7 @@ test('shell completion: konnect completion prints what to load, and konnect _com
   expect(await fails(ann.run(['completion', 'tcsh']))).toMatch(/^konnect completion <shell>: bash, zsh or fish\./);
 
   // Commands, verbs and options: what konnect itself knows.
-  expect(await next('')).toStrictEqual(['status', 'send', 'receive', 'history', 'watch', 'login', 'logout', 'channel', 'team', 'agent', 'lease', 'doctor', 'completion']);
+  expect(await next('')).toStrictEqual(['status', 'send', 'receive', 'history', 'watch', 'login', 'logout', 'channel', 'team', 'agent', 'lease', 'host', 'doctor', 'completion']);
   expect(await next('re')).toStrictEqual(['receive']);
   expect(await next('agent', '')).toStrictEqual(['list', 'add', 'run', 'attach', 'stop', 'remove']);
   expect(await next('lease', 'r')).toStrictEqual(['release', 'run']);

@@ -43,13 +43,19 @@ export function checkLabel(label: string): string {
   return label;
 }
 
+/** What a setup issued: the client the logins were issued to, what was discovered of the service, and each agent's login. */
+export interface Issued {
+  client: Parameters<typeof keepSignIn>[2]['client']; discovery?: Parameters<typeof keepSignIn>[2]['discovery'];
+  agents: { label: string; agent: string; made: boolean; tokens: Parameters<typeof keepSignIn>[2]['tokens'] }[];
+}
+
 /**
- * Makes each agent that is new, and logs each in: one page of Kolab's setup, in the browser, where
- * the person allows them all at once; each agent's own login is kept in its file. Returns each one's
- * stored name, in the order given.
+ * Makes each agent that is new, and has each issued a login: one page of Kolab's setup, in the
+ * browser, where the person allows them all at once. Nothing is kept: the logins are returned, in
+ * the order given, for whoever keeps them (setUpAgents here; a machine that hosts, for --on). When
+ * the service issued any of them none, those it did issue are revoked, and this throws.
  */
-export async function setUpAgents(team: string, url: string, labels: string[], io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }, again = `run konnect agent add ${labels.join(' ')} again`): Promise<{ label: string; agent: string; made: boolean; file: string }[]> {
-  const files = labels.map((label) => agentFileReady(team, label, io.env));
+export async function issueAgents(team: string, url: string, labels: string[], io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void }, again: string): Promise<Issued> {
   const named = labels.length === 1 ? `your agent ${labels[0]}` : `your agents ${labels.join(', ')}`;
   let done;
   try {
@@ -61,21 +67,30 @@ export async function setUpAgents(team: string, url: string, labels: string[], i
   } catch (e) {
     throw new Error(String((e as Error)?.message ?? e).replace(/run konjir connect again/g, again).replace(/konjir connect/g, 'konnect'));
   }
-  // A login issued and not kept is revoked, never left to lapse by itself: every one is checked to be
-  // there before any is kept, and when keeping one fails, those not yet kept are revoked.
   const issued = labels.map((label) => done.agents.find((x) => x.label === label));
   const lacking = labels.filter((_, i) => !issued[i]?.tokens);
   if (lacking.length) {
     await revokeIssued(url, done.client, issued.flatMap((a) => (a?.tokens ? [a.tokens] : [])));
     throw new Error(`the service added ${lacking.join(', ')} but issued ${lacking.length === 1 ? 'it' : 'them'} no login, so none was kept: run the command again`);
   }
+  return { client: done.client, ...(done.discovery ? { discovery: done.discovery } : {}), agents: issued.map((a) => ({ label: a!.label, agent: a!.agent, made: a!.made, tokens: a!.tokens! })) };
+}
+
+/**
+ * Makes each agent that is new, and logs each in on this machine: each agent's own login is kept
+ * in its file. Returns each one's stored name, in the order given. A login issued and not kept is
+ * revoked, never left to lapse by itself: when keeping one fails, those not yet kept are revoked.
+ */
+export async function setUpAgents(team: string, url: string, labels: string[], io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }, again = `run konnect agent add ${labels.join(' ')} again`): Promise<{ label: string; agent: string; made: boolean; file: string }[]> {
+  const files = labels.map((label) => agentFileReady(team, label, io.env));
+  const done = await issueAgents(team, url, labels, io, again);
   const out = [];
   for (const [i, label] of labels.entries()) {
-    const a = issued[i]!;
+    const a = done.agents[i];
     try {
-      await keepSignIn(url, files[i], { client: done.client, tokens: a.tokens!, ...(done.discovery ? { discovery: done.discovery } : {}) });
+      await keepSignIn(url, files[i], { client: done.client, tokens: a.tokens, ...(done.discovery ? { discovery: done.discovery } : {}) });
     } catch (e) {
-      await revokeIssued(url, done.client, issued.slice(i).map((x) => x!.tokens!));
+      await revokeIssued(url, done.client, done.agents.slice(i).map((x) => x.tokens));
       throw new Error(`konnect couldn't keep ${label}'s login (${(e as Error)?.message ?? e})${i ? `; ${labels.slice(0, i).join(', ')} ${i === 1 ? 'is' : 'are'} added and logged in` : ''}: run the command again`);
     }
     out.push({ label, agent: a.agent, made: a.made, file: files[i] });

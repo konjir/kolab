@@ -4,23 +4,28 @@
  *   konnect agent list
  *   konnect agent add [options] <name>                         add it, and print its entry
  *   konnect agent run [options] <name> <harness> [<argument>...]   run it in claude, codex or opencode
+ *   konnect agent attach <name> | stop <name>                  an agent running in the background here
  *   konnect agent remove <name>
  *
- * add and run take --act-for, --wake-on and --system-prompt, which set parts of the agent's system
+ * run and stop take --on <machine>: the same, on another machine of the person's that is hosting
+ * (host-ask.ts). add and run take --act-for, --wake-on and --system-prompt, which set parts of the agent's system
  * prompt (system-prompt.ts). They travel in the entry's environment, to `konnect mcp`.
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { logout } from '@konjir/login';
 import { HARNESSES, INSTALL, checkLabel, dropOldEntry, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgents, shellLine, startTool, toolCommand, type Tool } from './agents.js';
 import { NotYet, Refused, TeamClient } from './client.js';
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
+import { runOn, stopOn, type Said } from './host-ask.js';
 import { printable, shownName } from './names.js';
 import { freePort, wakeOpenCode, withPort } from './opencode.js';
 import { systemPrompt } from './system-prompt.js';
-import { HOSTED_URL, agentFile, agentFileReady, dropIfEmpty } from './teams.js';
+import { HOSTED_URL, agentFile, agentFileReady, configDir, dropIfEmpty } from './teams.js';
 
 /** The channels --wake-on names (each given once, or 0.1.0's --listen '#a,#b'), checked. */
 function wakeOn(ctx: Ctx): string[] {
@@ -28,6 +33,9 @@ function wakeOn(ctx: Ctx): string[] {
     throw new UsageError(String((e as Error)?.message ?? e).replace('--listen names channels: \'#a,#b\'', '--wake-on names a channel'));
   }
 }
+
+/** What sets the agent's system prompt, from this command line. */
+const saidHere = (ctx: Ctx): Said => ({ actFor: ctx.args.actFor, wakeOn: wakeOn(ctx), systemPrompt: ctx.args.systemPrompt });
 
 /** The agent's own name, from `name`, `@you/name` or `you/name`; an owner given is kept, to be checked against the person. */
 const label = (given: string | undefined, usage: string): { name: string; owner?: string } => {
@@ -73,7 +81,7 @@ async function ready(ctx: Ctx, team: string, givens: { name: string; owner?: str
 }
 
 /** The background session an agent's harness runs in on this machine: one for each agent in each team. */
-const sessionName = (team: string, name: string) => `konnect-${team}-${name}`;
+export const sessionName = (team: string, name: string) => `konnect-${team}-${name}`;
 
 /** Runs a program, giving its exit status and what it printed; -1 when it isn't installed. */
 export const exec = (ctx: Ctx) => ctx.io.exec ?? ((cmd: string, args: string[], cwd: string) => new Promise<{ code: number; out: string }>((resolve) => {
@@ -93,19 +101,109 @@ export async function multiplexer(ctx: Ctx): Promise<'tmux' | 'screen' | undefin
 }
 
 /** Whether the background session is there. */
-async function running(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<boolean> {
+export async function running(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<boolean> {
   if (kind === 'tmux') return (await exec(ctx)('tmux', ['has-session', '-t', `=${session}`], ctx.cwd)).code === 0;
   return new RegExp(`\\d+\\.${session}\\s`).test((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out);
 }
 
 /** The entry that runs `konnect mcp` for the agent: no token, only what names it and sets its system prompt. */
-function entryFor(ctx: Ctx, team: string, name: string) {
+function entryFor(ctx: Ctx, team: string, name: string, said: Said) {
   const self = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
   if (self.keep) keepKonnect(self.keep);
   return {
     command: self.command, args: [...self.args, 'mcp'],
-    env: entryEnv({ team, label: name, wakeOn: wakeOn(ctx), actFor: ctx.args.actFor, systemPrompt: ctx.args.systemPrompt, ...(ctx.url !== HOSTED_URL ? { url: ctx.url } : {}) }),
+    env: entryEnv({ team, label: name, wakeOn: said.wakeOn, actFor: said.actFor, systemPrompt: said.systemPrompt, ...(ctx.url !== HOSTED_URL ? { url: ctx.url } : {}) }),
   };
+}
+
+/** What a background session is to run: a program, its arguments, and environment to add. */
+interface Kept { cmd: string; args: string[]; env: Record<string, string> }
+
+/** The names every session of one multiplexer on this machine goes by. */
+export async function sessions(ctx: Ctx, kind: 'tmux' | 'screen'): Promise<string[]> {
+  if (kind === 'tmux') {
+    const r = await exec(ctx)('tmux', ['list-sessions', '-F', '#{session_name}'], ctx.cwd);
+    return r.code === 0 ? r.out.split('\n').map((l) => l.trim()).filter(Boolean) : [];
+  }
+  return [...(await exec(ctx)('screen', ['-ls'], ctx.cwd)).out.matchAll(/\d+\.(\S+)/g)].map((m) => m[1]);
+}
+
+/**
+ * Starts `kept` in a background session of its own, in this folder. The multiplexer is given only
+ * konnect's own plumbing and a file's name, never the words themselves: tmux reads an argument that
+ * ends in ';' as the end of its command and runs what follows as another of its own, so a system
+ * prompt, or anything else a person (or a request from another machine) wrote, never goes on its
+ * command line. What is to run waits in `file`, the person's alone, which `konnect _start` reads
+ * once and removes.
+ */
+export async function inSession(ctx: Ctx, kind: 'tmux' | 'screen', session: string, file: string, kept: Kept): Promise<{ code: number; out: string }> {
+  const self = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
+  if (self.keep) keepKonnect(self.keep);
+  const line = [self.command, ...self.args, '_start', file];
+  if (line.some((w) => w.endsWith(';'))) throw new Error(`konnect can't start a background session from a path that ends in ';' (${printable(line.find((w) => w.endsWith(';'))!)})`);
+  const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  writeFileSync(tmp, JSON.stringify(kept), { mode: 0o600, flag: 'wx' });
+  renameSync(tmp, file);
+  const went = kind === 'tmux' ? await exec(ctx)('tmux', ['new-session', '-d', '-s', session, '-c', ctx.cwd, ...line], ctx.cwd) : await exec(ctx)('screen', ['-dmS', session, ...line], ctx.cwd);
+  if (went.code !== 0) rmSync(file, { force: true });
+  return went;
+}
+
+/**
+ * `konnect _start <file>`: plumbing, run inside a background session. Runs what `inSession` kept in
+ * the file, in this terminal, and exits as it does. Only a file konnect itself wrote is run: one in
+ * konnect's own config folder, the person's own, that no one else can write.
+ */
+export async function startKept(ctx: Ctx, rest: string[]) {
+  const [given] = rest;
+  const plumbing = new Error('konnect _start is plumbing: konnect runs it inside a background session, with a file it wrote');
+  if (given === undefined || rest.length !== 1) throw plumbing;
+  const file = resolve(given);
+  if (!file.startsWith(resolve(configDir(ctx.env)) + sep) || !basename(file).endsWith('.start.json')) throw plumbing;
+  let kept: Kept;
+  try {
+    const st = lstatSync(file);
+    if (!st.isFile() || (process.getuid && st.uid !== process.getuid()) || (st.mode & 0o022)) throw plumbing;
+    kept = JSON.parse(readFileSync(file, 'utf8')) as Kept;
+  } catch { throw plumbing; } finally { rmSync(file, { force: true }); }
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+  if (!kept || typeof kept.cmd !== 'string' || !strings(kept.args) || !kept.env || typeof kept.env !== 'object' || !strings(Object.values(kept.env))) throw plumbing;
+  const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ cmd: kept.cmd, args: kept.args, env: kept.env }, ctx.cwd);
+  if (code === -1) throw new Error(`${printable(kept.cmd)} isn't installed here (it isn't on PATH), so nothing was started`);
+  process.exitCode = code;
+}
+
+/**
+ * Starts `tool` as the agent in a background session on this machine, in this folder: for
+ * `konnect agent run --background`, and for a machine that hosts, when it is asked. The agent's
+ * login is kept here already. Returns the session, and the file an old entry was taken out of.
+ */
+export async function startInBackground(ctx: Ctx, kind: 'tmux' | 'screen', a: { team: string; owner: string; name: string; tool: Tool; extra: string[]; said: Said }): Promise<{ session: string; dropped?: string }> {
+  const { team, name, tool, said } = a;
+  const entry = entryFor(ctx, team, name, said);
+  const server = serverName(name);
+  const prompt = systemPrompt({ team, name, owner: a.owner, actFor: said.actFor, wakeOn: said.wakeOn, own: said.systemPrompt });
+  let run;
+  try { run = toolCommand(tool, server, entry, a.extra, prompt); } catch (e) { throw new UsageError(String((e as Error)?.message ?? e)); }
+  const session = sessionName(team, name);
+  // Looked at now: allowing agents in the browser can take minutes, and another run may have started this one meanwhile.
+  if (await running(ctx, kind, session)) throw new Refused(`your agent ${name} is running in the background here already, so it wasn't started again.`);
+  const dropped = tool === 'claude' ? dropOldEntry(ctx.cwd, server, name) : undefined;
+  // Where this konnect keeps its logins and which service it talks to go with the session, whatever the multiplexer's own environment says.
+  const carried = Object.fromEntries(Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).filter((e): e is [string, string] => !!e[1]));
+  let kept: Kept;
+  if (tool === 'opencode') {
+    // OpenCode is woken by the konnect that started it, so in the background it is konnect that
+    // runs there, with OpenCode in front of it; the others run by themselves.
+    const self = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
+    kept = { cmd: self.command, args: [...self.args, '--team', team, 'agent', 'run', ...(said.actFor ? ['--act-for', said.actFor] : []), ...said.wakeOn.flatMap((c) => ['--wake-on', c]), ...(said.systemPrompt !== undefined ? ['--system-prompt', said.systemPrompt] : []), name, tool, ...a.extra], env: carried };
+  } else {
+    // konnect commands run inside the harness act as the agent, never as the person; the hook that wakes it reads the same.
+    kept = { cmd: run.cmd, args: run.args, env: { ...carried, ...run.env, ...entry.env } };
+  }
+  const went = await inSession(ctx, kind, session, join(dirname(agentFileReady(team, name, ctx.env)), `${name}.start.json`), kept);
+  if (went.code !== 0) throw new Error(`${kind} couldn't start ${tool} in the background as ${name}: ${went.out.trim() || `it exited with ${went.code}`}.`);
+  return { session, ...(dropped ? { dropped } : {}) };
 }
 
 export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) {
@@ -119,13 +217,16 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const client = await ctx.open(team);
     try {
       const mine = (await client.members()).filter((m) => m.kind === 'agent' && m.owner === client.me.actor)
-        .map((m) => { const full = shownName(m); const name = full.slice(full.indexOf('/') + 1); return { name, connected: m.here, set_up_here: existsSync(agentFile(team, name, ctx.env)), running_here: false }; });
+        .map((m) => { const full = shownName(m); const name = full.slice(full.indexOf('/') + 1); return { name, connected: m.here, set_up_here: existsSync(agentFile(team, name, ctx.env)), running_here: false, running_on: [] as string[] }; });
       const kind = mine.length ? await multiplexer(ctx) : undefined;
       if (kind) for (const a of mine) a.running_here = await running(ctx, kind, sessionName(team, a.name));
+      // And on the person's other machines that are hosting now, as each last said.
+      const hosting = mine.length ? (await client.hosts().catch(() => [])).filter((h) => h.serving) : [];
+      for (const a of mine) a.running_on = hosting.filter((h) => h.running.includes(a.name)).map((h) => h.name);
       ctx.print(mine, () => {
         if (!mine.length) return `You have no agents in team ${team}. Add one with: konnect agent run <name> claude`;
         const width = Math.max(...mine.map((a) => a.name.length)) + 3;
-        return mine.map((a) => `${printable(a.name).padEnd(width)}${(a.connected ? 'connected' : '').padEnd(12)}${(a.set_up_here ? 'set up here' : '').padEnd(14)}${a.running_here ? 'running here, in the background' : ''}`.trimEnd()).join('\n');
+        return mine.map((a) => `${printable(a.name).padEnd(width)}${(a.connected ? 'connected' : '').padEnd(12)}${(a.set_up_here ? 'set up here' : '').padEnd(14)}${[...(a.running_here ? ['running here, in the background'] : []), ...(a.running_on.length ? [`running on ${a.running_on.join(', ')}`] : [])].join('; ')}`.trimEnd()).join('\n');
       });
     } finally { await client.close(); }
     return;
@@ -139,7 +240,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const givens = rest.map((w) => label(w, 'konnect agent add <name>...'));
     wakeOn(ctx); // checked before an agent is added: a wrong command line does nothing
     const r = await ready(ctx, team, givens, `agent add ${givens.map((g) => g.name).join(' ')}`);
-    const entry = { mcpServers: Object.fromEntries(r.agents.map((a) => [serverName(a.name), { type: 'stdio', ...entryFor(ctx, team, a.name) }])) };
+    const entry = { mcpServers: Object.fromEntries(r.agents.map((a) => [serverName(a.name), { type: 'stdio', ...entryFor(ctx, team, a.name, saidHere(ctx)) }])) };
     const one = r.agents.length === 1;
     ctx.print({ team, ...(one ? { agent: `${r.owner}/${r.agents[0].name}`, added: r.agents[0].made } : { agents: r.agents.map((a) => ({ agent: `${r.owner}/${a.name}`, added: a.made })) }), entry }, () => [
       one
@@ -163,10 +264,15 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     wakeOn(ctx); // checked before the agent is added: a wrong command line does nothing
     // --count: several agents at once, <name>-1 to <name>-<count>, each in the background; one page allows them all.
     const count = ctx.args.count;
-    if (count !== undefined && !ctx.args.background) throw new UsageError('konnect agent run --count starts several harnesses, which one terminal can\'t hold: add --background');
+    if (count !== undefined && !ctx.args.background && ctx.args.on === undefined) throw new UsageError('konnect agent run --count starts several harnesses, which one terminal can\'t hold: add --background');
     let givens = [given];
     if (count !== undefined) {
       try { givens = Array.from({ length: count }, (_, i) => ({ ...given, name: checkLabel(`${given.name}-${i + 1}`) })); } catch (e) { throw new UsageError(String((e as Error)?.message ?? e)); }
+    }
+    // --on: on another machine of yours that is hosting, in the background there. Nothing after the harness is sent.
+    if (ctx.args.on !== undefined) {
+      if (extra.length) throw new UsageError(`konnect agent run --on sends no arguments for the harness (${printable(extra.join(' '))}): what an agent may do on another machine is set on that machine. Leave them out`);
+      return runOn(ctx, team, givens, tool, saidHere(ctx), mine, `agent run --on ${ctx.args.on}${count !== undefined ? ` --count ${count}` : ''} ${given.name} ${tool}`);
     }
     const kind = ctx.args.background ? await multiplexer(ctx) : undefined;
     if (ctx.args.background) {
@@ -180,7 +286,20 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const started: { agent: string; session: string }[] = [];
     for (const a of r.agents) {
       const name = a.name;
-      const entry = entryFor(ctx, team, name);
+      if (kind) {
+        // In the background: in a terminal of its own that outlives this one, to look in on and to stop.
+        try {
+          const s = await startInBackground(ctx, kind, { team, owner: r.owner, name, tool, extra, said: saidHere(ctx) });
+          if (s.dropped) said.push(`Took ${serverName(name)} out of ${printable(s.dropped)}, where an earlier konnect wrote it: Claude Code is given it on its command line now.`);
+          started.push({ agent: `${r.owner}/${name}`, session: s.session });
+        } catch (e) {
+          // Those started before one that fails keep running: said, so none is left running unknown.
+          if (started.length && e instanceof Error) e.message += ` ${started.map((s) => s.agent.slice(s.agent.indexOf('/') + 1)).join(', ')} ${started.length === 1 ? 'is' : 'are'} running in the background: konnect agent stop <name> ends one.`;
+          throw e;
+        }
+        continue;
+      }
+      const entry = entryFor(ctx, team, name, saidHere(ctx));
       const server = serverName(name);
       const prompt = systemPrompt({ team, name, owner: r.owner, actFor: ctx.args.actFor, wakeOn: wakeOn(ctx), own: ctx.args.systemPrompt });
       let run;
@@ -189,24 +308,6 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       const env = { ...run.env, ...entry.env };
       const dropped = tool === 'claude' ? dropOldEntry(ctx.cwd, server, name) : undefined;
       if (dropped) said.push(`Took ${server} out of ${printable(dropped)}, where an earlier konnect wrote it: Claude Code is given it on its command line now.`);
-      if (kind) {
-        // In the background: in a terminal of its own that outlives this one, to look in on and to stop.
-        const session = sessionName(team, name);
-        // OpenCode is woken by the konnect that started it, so in the background it is konnect that
-        // runs there, with OpenCode in front of it; the others run by themselves.
-        const self = (ctx.io.self ?? (() => konnectCommand(undefined, ctx.env)))();
-        const again = [self.command, ...self.args, '--team', team, 'agent', 'run', ...(ctx.args.actFor ? ['--act-for', ctx.args.actFor] : []), ...wakeOn(ctx).flatMap((c) => ['--wake-on', c]), ...(ctx.args.systemPrompt !== undefined ? ['--system-prompt', ctx.args.systemPrompt] : []), name, tool, ...extra];
-        const carried = Object.entries({ KONNECT_URL: ctx.env.KONNECT_URL, KONNECT_CONFIG_DIR: ctx.env.KONNECT_CONFIG_DIR, XDG_CONFIG_HOME: ctx.env.XDG_CONFIG_HOME }).flatMap(([k, v]) => (v ? [`${k}=${v}`] : []));
-        const line = tool === 'opencode' ? ['env', ...carried, ...again] : ['env', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), run.cmd, ...run.args];
-        // Those started before one that fails keep running: said, so none is left running unknown.
-        const already = started.length ? ` ${started.map((s) => s.agent.slice(s.agent.indexOf('/') + 1)).join(', ')} ${started.length === 1 ? 'is' : 'are'} running in the background: konnect agent stop <name> ends one.` : '';
-        // Looked at again, now: allowing agents in the browser can take minutes, and another run may have started this one meanwhile.
-        if (await running(ctx, kind, session)) throw new Refused(`your agent ${name} is running in the background here already, so it wasn't started again.${already}`);
-        const went = kind === 'tmux' ? await exec(ctx)('tmux', ['new-session', '-d', '-s', session, '-c', ctx.cwd, ...line], ctx.cwd) : await exec(ctx)('screen', ['-dmS', session, ...line], ctx.cwd);
-        if (went.code !== 0) throw new Error(`${kind} couldn't start ${tool} in the background as ${name}: ${went.out.trim() || `it exited with ${went.code}`}.${already}`);
-        started.push({ agent: `${r.owner}/${name}`, session });
-        continue;
-      }
       ctx.err([
         `Your agent @${printable(r.owner)}/${name} is ${a.made ? 'added to' : 'in'} team ${team}.`,
         ...said,
@@ -245,6 +346,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
   if (verb === 'attach' || verb === 'stop') {
     const given = label(rest[0], `konnect agent ${verb} <name>: name the agent running in the background`);
     if (rest.length > 1) throw new UsageError(`konnect agent ${verb} <name>: unknown ${printable(rest.slice(1).join(' '))}`);
+    if (ctx.args.on !== undefined) return stopOn(ctx, team, given, mine);
     const session = sessionName(team, given.name);
     const kind = await multiplexer(ctx);
     if (!kind || !await running(ctx, kind, session)) throw new Refused(`your agent ${given.name} isn't running in the background on this machine: konnect agent run --background ${given.name} <harness> starts it`);
