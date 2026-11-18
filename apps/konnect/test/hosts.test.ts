@@ -203,7 +203,7 @@ test('konnect host run makes a machine start your agents when you ask from one p
 
   // The lists say where it runs; a second start of the same agent there is refused (4).
   await until(async () => /^desk\s+hosting\s+\S+\s+running: helper$/.test(await laptop.run(['host', 'list'])), 'the desk says helper runs there');
-  expect(await laptop.run(['agent', 'list'], { exec: tmux().exec })).toMatch(/^helper\s+(connected\s+)?running on desk$/m);
+  expect(await laptop.run(['agent', 'list'], { exec: tmux().exec })).toMatch(/^helper\s+not answering\s+running on desk$/m);
   expect(JSON.parse(await laptop.run(['agent', 'list', '--json'], { exec: tmux().exec }))).toContainEqual(expect.objectContaining({ name: 'helper', set_up_here: false, running_here: false, running_on: ['desk'] }));
   expect(await fails(laptop.run(['agent', 'run', '--on', 'desk', 'helper', 'claude'], { open: noBrowser, pause: soon }))).toBe('your agent helper is running on desk already: konnect agent stop --on desk helper ends it');
   expect(await exitOf(laptop.run(['agent', 'run', '--on', 'desk', 'helper', 'claude'], { open: noBrowser, pause: soon }))).toBe(4);

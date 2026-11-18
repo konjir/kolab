@@ -33,7 +33,7 @@ import { printable } from './names.js';
 import { agentFileReady } from './teams.js';
 
 export { TeamClient, NotYet, Refused, SignInError, UNREAD_WAIT_MS } from './client.js';
-export { counted, formatChannels, formatTeam, formatMessage, memberJson, mentionsIn, shownName, storedName, unreadLine, type Channel, type ChannelMessage, type Member, type Message } from './names.js';
+export { counted, formatChannels, formatTeam, formatMessage, memberJson, mentionsIn, shownName, stateWord, storedName, unreadLine, type Channel, type ChannelMessage, type Member, type Message } from './names.js';
 export { framed, serveMcp, sessionGone, type McpOptions } from './mcp.js';
 export { describeWake, noticeFor, wakeDescriber, wakingIn, type Waking } from './wake.js';
 export { readAll, send, targetOf, type Block } from './chat.js';
