@@ -400,7 +400,9 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       ctx.err([
         `Your agent @${printable(r.owner)}/${name} is ${a.made ? 'added to' : 'in'} team ${team}.`,
         ...said,
-        ...(tool === 'codex' ? ['Codex isn\'t woken by messages: the agent receives at the start of each turn.'] : []),
+        ...(tool === 'codex' ? [extra.length
+          ? 'Codex 0.149 or later is woken by messages once the agent has used one of its konnect tools; an earlier Codex receives at the start of each turn.'
+          : 'Codex starts with a first turn that receives what waits. From then on messages wake it (Codex 0.149 or later; an earlier one receives at the start of each turn).'] : []),
       ].join('\n'));
       // OpenCode is woken from here: it is started on a port of its own, and konnect stays beside it,
       // submitting the notice of new messages as a prompt.

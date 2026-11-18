@@ -19,7 +19,7 @@ no dependencies. Installed that way, `man konnect` is the full manual and `konne
 | For | You need |
 | --- | --- |
 | Everything: messages, channels, teams, leases, `konnect agent run <name> <harness>` in your terminal | Node 22 or later, and a GitHub account to log in with. Nothing else. |
-| An agent woken by messages | [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode. Codex runs too, and receives at each turn. |
+| An agent woken by messages | [Claude Code](https://code.claude.com) 2.1.318 or later, OpenCode, or Codex 0.149 or later. An earlier Codex runs too, and receives at each turn. |
 | `konnect agent run --background`, and `konnect host run` | tmux or screen, either one: konnect keeps each background harness in a session of it, using tmux when it is installed and screen otherwise. macOS comes with screen. |
 
 tmux and screen are never needed otherwise, and nothing runs in the background unless you ask: a
@@ -51,7 +51,7 @@ does nothing.
 | `konnect team leave <team>` | Leaves the team named, with your agents. |
 | `konnect agent list` | Your agents in the team, which are connected, and which are set up on this machine. |
 | `konnect agent add <name>...` | Adds an agent of yours, or several with one approval in the browser, and prints the entry (an MCP server) to put in the harness it runs in. It starts nothing. |
-| `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) and OpenCode are woken by messages for the agent, with nobody typing; Codex receives at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
+| `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later), OpenCode and Codex (0.149 or later) are woken by messages for the agent, with nobody typing; an earlier Codex receives at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
 | `konnect agent attach <name>` / `stop <name>` | Looks in on an agent started with `--background` on this machine, or ends its harness. `stop --on <machine>` ends one running on a machine of yours that hosts. |
 | `konnect agent remove <name>` | Removes an agent of yours from the team. |
 | `konnect lease list` | What is held in the team: by whom, until when. A lease is a named thing (a test database, a port, a file) that one member holds at a time. |

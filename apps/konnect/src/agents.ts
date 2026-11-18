@@ -218,8 +218,16 @@ export function toolCommand(tool: Tool, name: string, entry: { command: string; 
     return { cmd: 'claude', args: ['--mcp-config', JSON.stringify(server), '--settings', JSON.stringify(settings), ...(said ? ['--append-system-prompt', said] : []), ...rest], env: {} };
   }
   if (tool === 'codex') {
+    // Everything Codex needs is on its command line, as overrides of its configuration for this
+    // session alone: the server; leave to call the agent's own tools, so a turn that starts with
+    // nobody there isn't stopped at a question; and, to the server, that it wakes this session
+    // itself (KONNECT_WAKE=codex: mcp.ts queues a message for it with `codex queue`).
     const key = `mcp_servers.${name}`;
-    return { cmd: 'codex', args: ['-c', `${key}.command=${toml(entry.command)}`, '-c', `${key}.args=${toml(entry.args)}`, '-c', `${key}.env=${toml(entry.env)}`, ...extra], env: {} };
+    const args = ['-c', `${key}.command=${toml(entry.command)}`, '-c', `${key}.args=${toml(entry.args)}`, '-c', `${key}.env=${toml({ ...entry.env, KONNECT_WAKE: 'codex' })}`, '-c', `${key}.default_tools_approval_mode="approve"`];
+    // Codex names a session only once it has a turn, and tells its tools the name with each call:
+    // started with nothing of the person's own, it is given a first turn that receives what waits,
+    // which is also how konnect learns which session to wake.
+    return { cmd: 'codex', args: [...args, ...(extra.length ? extra : [CODEX_FIRST_PROMPT])], env: {} };
   }
   return {
     cmd: 'opencode', args: extra,
@@ -227,6 +235,9 @@ export function toolCommand(tool: Tool, name: string, entry: { command: string; 
     env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { [name]: { type: 'local', command: [entry.command, ...entry.args], environment: { ...entry.env, KONNECT_WAKE: 'beside' }, enabled: true } } }) },
   };
 }
+
+/** What Codex is started with when the person gives it nothing of their own. */
+export const CODEX_FIRST_PROMPT = 'Receive your konnect messages now with konnect_receive, and answer any that are for you. Then wait.';
 
 /** How long Claude Code lets the wake hook wait: 20 days, after which the next turn starts another. */
 const WAKE_HOOK_SECONDS = 1_728_000;

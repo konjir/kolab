@@ -102,7 +102,11 @@ export async function doctor(ctx: Ctx, rest: string[]) {
   const opencode = await exec(ctx)('opencode', ['--version'], ctx.cwd);
   if (opencode.code !== -1) say(true, `OpenCode ${version(opencode.out)?.join('.') ?? ''}: messages wake an idle session`.replace('  ', ' '));
   const codex = await exec(ctx)('codex', ['--version'], ctx.cwd);
-  if (codex.code !== -1) say('note', `Codex ${version(codex.out)?.join('.') ?? ''} is installed: it isn't woken by messages, and receives at each turn`.replace('  ', ' '));
+  if (codex.code !== -1) {
+    // Codex is woken with its own `codex queue`, which 0.149 brought: asked for, never guessed from the version.
+    const queues = (await exec(ctx)('codex', ['queue', '--help'], ctx.cwd)).code === 0;
+    say(queues ? true : 'note', `Codex ${version(codex.out)?.join('.') ?? ''}${queues ? ': messages wake an idle session' : ' is installed: it is too old to be woken by messages (0.149 or later is), and receives at each turn'}`.replace('  ', ' '));
+  }
   const mux = await multiplexer(ctx);
   say(mux ? true : 'note', mux ? `${mux} is installed: konnect agent run --background works` : 'neither tmux nor screen is installed: konnect agent run --background needs one');
 

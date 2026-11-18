@@ -184,3 +184,84 @@ test('konnect wake, the hook a harness runs after each turn: it waits as the age
   const fresh = await ann.run(['wake'], { ...asHelper, hookInput: async () => '{"session_id":"two"}' }).then(() => undefined, (e: unknown) => e);
   expect((fresh as Error).message).toMatch(/^New for you in team hub: a direct message from @bo; a message in #general \(mentioning you\)\./);
 });
+
+test('Codex is woken with its own codex queue: its session is named by the agent\'s first konnect call, one wake waits at a time until the agent receives, and an older Codex is left to receive at each turn', async () => {
+  const { kolab, server, idp, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  await signIn(ann, annId, 'hub');
+  await ann.run(['agent', 'add', 'helper'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
+  const file = `${ann.env.KONNECT_CONFIG_DIR}/agents/hub/helper.json`;
+  const THREAD = '0190a6c2-7d1e-7f33-9a41-5b7c8d9e0f12';
+  // A stand-in for the codex on PATH: what it was run with, and whether it has a queue command at all.
+  const ran: string[][] = [];
+  const has = { queue: true };
+  const queue = async (args: string[]) => { ran.push(args); return { code: has.queue ? 0 : 2, out: has.queue ? 'Queued message 1 for thread.' : 'error: unrecognized subcommand \'queue\'' }; };
+
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const logged: string[] = [];
+  const s = await serveMcp({ team: 'hub', url: server.url, file, label: 'helper', codex: true, queue, log: (l) => logged.push(l), backoff: { initialMs: 50, maxMs: 200 } }, b);
+  const events: unknown[] = [];
+  const c = new Client({ name: 'codex-stand-in', version: '0' });
+  c.fallbackNotificationHandler = async (n) => { events.push(n); };
+  await c.connect(a);
+  const receive = (meta: Record<string, unknown>) => c.callTool({ name: 'konnect_receive', arguments: {}, _meta: meta });
+  const bo = await kolab.openSession('bo', 'product', { kolab: 'hub' });
+  try {
+    await until('the waking stream listening', () => !!(s.bridge as unknown as { live?: unknown } | undefined)?.live);
+    const mention = (words: string) => kolab.sendChannelMessage(bo, 'general', words, { mentions: ['ann/helper'] });
+
+    // Until the agent has called a konnect tool, konnect doesn't know which session is its own: nothing is run.
+    await mention('are you there? SECRET');
+    await quiet();
+    expect(ran).toStrictEqual([]);
+
+    // Codex names the session with every tool call. From then on a message for the agent is queued for that
+    // session: the notice, never the message's words, and nothing is sent to Codex as a notification.
+    await receive({ threadId: THREAD, sessionId: 's1' });
+    await mention('can you check the importer? SECRET');
+    await until('the wake to be queued', () => ran.length === 2);
+    expect(ran[0]).toStrictEqual(['queue', '--help']);
+    expect(ran[1]).toStrictEqual(['queue', `--thread=${THREAD}`, expect.stringMatching(/^--message=New for you in team hub: a message in #general \(mentioning you\)\.\n/)]);
+    expect(ran[1][2]).not.toContain('SECRET');
+    expect(events).toStrictEqual([]);
+
+    // One wake waits at a time: until the agent has received, another would only start another turn.
+    await mention('and the exporter? SECRET');
+    await quiet();
+    expect(ran).toHaveLength(2);
+    await receive({ threadId: THREAD });
+    await mention('one more SECRET');
+    await until('the next wake to be queued', () => ran.length === 3);
+    expect(ran[2].slice(0, 2)).toStrictEqual(['queue', `--thread=${THREAD}`]);
+
+    // What isn't a session's name is never put on a command line: the session known stays the one woken.
+    await receive({ threadId: '--remote=ws://elsewhere.example' });
+    await mention('again SECRET');
+    await until('a wake after a name that isn\'t one', () => ran.length === 4);
+    expect(ran[3][1]).toBe(`--thread=${THREAD}`);
+
+    // A queue that fails is said, and tried again at the next message.
+    has.queue = false;
+    await receive({ threadId: THREAD });
+    await mention('once more SECRET');
+    await until('the failed wake to be said', () => logged.some((l) => l.includes('couldn\'t wake Codex')));
+    expect(logged.join('\n')).not.toContain('SECRET');
+  } finally { await c.close(); await s.close(); }
+
+  // A Codex with no queue command (before 0.149) is asked once, said once, and left to receive at each turn.
+  ran.length = 0; logged.length = 0;
+  const [a2, b2] = InMemoryTransport.createLinkedPair();
+  const s2 = await serveMcp({ team: 'hub', url: server.url, file, label: 'helper', codex: true, queue, log: (l) => logged.push(l), backoff: { initialMs: 50, maxMs: 200 } }, b2);
+  const c2 = new Client({ name: 'old-codex-stand-in', version: '0' });
+  await c2.connect(a2);
+  try {
+    await until('the waking stream listening', () => !!(s2.bridge as unknown as { live?: unknown } | undefined)?.live);
+    await c2.callTool({ name: 'konnect_receive', arguments: {}, _meta: { threadId: THREAD } });
+    await kolab.sendChannelMessage(bo, 'general', 'hello', { mentions: ['ann/helper'] });
+    await until('the old Codex to be said', () => logged.some((l) => l.includes('can\'t be woken by messages')));
+    await kolab.sendChannelMessage(bo, 'general', 'hello again', { mentions: ['ann/helper'] });
+    await quiet();
+    expect(ran).toStrictEqual([['queue', '--help']]);
+    expect(logged.filter((l) => l.includes('can\'t be woken by messages'))).toHaveLength(1);
+  } finally { await c2.close(); await s2.close(); }
+});
