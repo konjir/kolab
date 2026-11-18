@@ -198,15 +198,14 @@ test('konnect agent add prints the entry and starts nothing; agent list says whi
   await signIn(bo, boId, 'hub');
   expect(await bo.run(['agent', 'list'])).toBe('You have no agents in team hub. Add one with: konnect agent run <name> claude');
 
-  // agent remove waits on the service: said plainly (1), and the login kept here stays.
-  expect(await fails(ann.run(['agent', 'remove', 'helper']))).toMatch(/^the service at http:\/\/127\.0\.0\.1:\d+\/mcp can't remove an agent yet$/);
-  expect(await exitOf(ann.run(['agent', 'remove', 'helper']))).toBe(1);
-  expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'helper.json'))).toBe(true);
+  // agent remove: someone else's agent is refused (4); your own is removed, and its login here dropped.
+  expect(await exitOf(bo.run(['agent', 'remove', 'helper']))).toBe(4);
   expect(await fails(ann.run(['agent', 'remove', 'helper', 'x']))).toBe('konnect agent remove <name>: unknown x');
+  expect(await ann.run(['agent', 'remove', 'helper'])).toMatch(/^Removed your agent helper from team hub: \d+ sessions? ended\.$/);
+  expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'helper.json'))).toBe(false);
+  expect(await ann.run(['agent', 'list'])).not.toMatch(/^helper\b/m);
+  expect(await exitOf(ann.run(['agent', 'remove', 'helper']))).toBe(4);
 });
-
-// Needs the service's konjir_remove_agent (client.removeAgent).
-test.todo('konnect agent remove <name> removes an agent of yours from the team, ends its sessions and drops its login here; another\'s agent is refused');
 
 test('--agent <name> (or KONNECT_AGENT): status, send, receive, history, channel list and team list act as that agent, with its own login', async () => {
   const { server, idp, signIn, ann: annId, bo: boId } = await teams();

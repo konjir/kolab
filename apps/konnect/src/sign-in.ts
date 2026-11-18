@@ -22,7 +22,7 @@ import { teamFileReady, teamsAt } from './teams.js';
 export interface SignInIO { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }
 
 /** Kolab's own words, made konnect's: a hint written for konjir (run konjir login) becomes konnect's. */
-const konnectWords = (text: string, again: string) => text.replace(/run konjir login( again)?/g, again).replace(/\bkonjir login\b/g, again);
+const konnectWords = (text: string, again: string) => text.replace(/run konjir login( again)?/g, again).replace(/\bkonjir login\b/g, again).replace(/\bkolab(s?)\b/g, 'team$1');
 
 /** Whether a login to a named team must find it (`konnect login <team>`) or must create it (`konnect team create <name>`). */
 export type Intent = 'join' | 'create';
@@ -46,7 +46,7 @@ export async function signInToTeam(team: string, url: string, io: SignInIO, inte
   const before = kept();
   try {
     const me = await loginToTeam(url, team, {
-      path: file, clientName: CLIENT_NAME, open: io.open, log: io.log, ...({ intent } as object),
+      path: file, clientName: CLIENT_NAME, open: io.open, log: io.log, intent,
       opening: intent === 'create'
         ? `Opening your browser to create team ${team} with GitHub, with you as its owner. Check what the page says, then Allow.`
         : `Opening your browser to log in to team ${team} with GitHub. Check what the page says, then Allow.`,
