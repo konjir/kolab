@@ -1,8 +1,9 @@
-// What the review of #154 asked of konnect: nothing marked read is lost unshown; a target says
-// whether it is a member or a channel; a mention never stops a message; a flood shows its newest
-// and says how to see the rest, and an agent reads a bounded amount at a time; an agent's errors
-// tell its owner what to do; konnect mcp opens a gone session again, and checks who it runs as;
-// the unread line never stalls a command; and an agent can't mistake a message's words for its frame.
+// What the review of #154 asked of konnect: nothing received is lost unshown; a target says
+// whether it is a member or a channel; a mention never stops a message; a person and an agent each
+// receive a bounded amount at a time, and are told what more waits; an agent's errors tell its
+// owner what to do; konnect mcp opens a gone session again, and checks who it runs as; a slow
+// answer about what is unread never stalls a command; and an agent can't mistake a message's words
+// for its frame.
 import { chmodSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test } from '@jest/globals';
@@ -49,7 +50,7 @@ async function agentSignIn(server: { url: string }, idp: { next: (w: { subject: 
   await login(server.url, { path: file, scope: `konjir kolab:${team}`, log: () => undefined, open: (u) => { void browse(u, { as: `agent:${agent}`, kolab: `kolab:${team}`, role: 'product' }); } });
 }
 
-test('1. a read that fails partway shows what it had already marked read, then says it stopped: konnect read and konnect_read', async () => {
+test('1. receiving that fails partway shows what it had already received, then says it stopped: konnect receive and konnect_receive', async () => {
   const { kolab, server, idp, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
   const bo = machine(server.url, 'bo');
@@ -58,48 +59,48 @@ test('1. a read that fails partway shows what it had already marked read, then s
   const annS = await kolab.openSession('ann', 'product', { kolab: 'hub' });
   for (let i = 1; i <= 25; i++) await kolab.sendChannelMessage(annS, 'general', `note ${i}`);
   await kolab.sendMessage(annS, 'bo', 'a direct word');
-  // The second round of #general fails: the direct messages and the first 20 of general were marked read, and are shown.
+  // The second round of #general fails: the direct message and the first 20 of general were received, and are shown.
   intercept(tool('konjir_read_channel'), (n) => (n === 2 ? networkDown() : undefined));
-  const err = await fails(bo.run(['read']));
-  expect(err).toMatch(/^reading stopped early: can't reach Kolab .*What is shown above was read and marked read$/);
+  const err = await fails(bo.run(['receive', '-n', '200']));
+  expect(err).toMatch(/^receiving stopped early: can't reach the service at .*\. What is shown above was received$/);
   const shown = bo.out.join('\n');
   expect(shown).toMatch(/@ann\n {2}a direct word\n\n#general\n/);
   expect(shown).toContain('note 1\n');
-  expect(shown).toMatch(/note 20\n\(5 more still unread in #general: run konnect read '#general' again\)$/);
+  expect(shown).toMatch(/note 20$/);
   globalThis.fetch = realFetch;
-  expect(await bo.run(['read', '#general'])).toMatch(/note 21[\s\S]*note 25$/);
+  expect(await bo.run(['receive', '#general'])).toMatch(/note 21[\s\S]*note 25$/);
 
   // An agent: what it read before the failure comes back, with a note, not an error.
   const file = agentFile('hub', 'reviewer', ann.env);
   await agentSignIn(server, idp, annId, 'ann-reviewer', 'hub', file);
   // Its session, opened as it starts, places its position in each channel (at the newest, for an agent).
   const first = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
-  await call(first.c, 'konnect_read', { limit: 100 });
+  await call(first.c, 'konnect_receive', { limit: 100 });
   await first.close();
   for (let i = 1; i <= 25; i++) await kolab.sendChannelMessage(annS, 'general', `later ${i}`);
   // A session opened with the network as it is now: its second round of #general fails.
   intercept(tool('konjir_read_channel'), (n) => (n === 2 ? networkDown() : undefined));
   const { c, close } = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
   try {
-    const r = await call(c, 'konnect_read', { limit: 100 });
+    const r = await call(c, 'konnect_receive', { limit: 100 });
     expect(r.isError).toBe(false);
     expect(r.text).toContain('later 20\n');
     expect(r.text).not.toContain('later 21');
-    expect(r.text).toMatch(/Reading stopped early: can't reach Kolab.*What is above was read and marked read\.$/);
+    expect(r.text).toMatch(/Receiving stopped early: can't reach the service at .*\. What is above was received\.$/);
     expect((r.data.channels as { messages: unknown[] }[])[0].messages).toHaveLength(20);
   } finally {
     await close();
   }
 });
 
-test('2. a bare word is no target: send, read and konnect_send say how to name a member or a channel', async () => {
+test('2. a bare word is no target: send, receive and konnect_send say how to name a member or a channel', async () => {
   const { server, idp, signIn, ann: annId } = await teams();
   const ann = machine(server.url, 'ann');
   await signIn(ann, annId, 'hub');
-  expect(await fails(ann.run(['send', 'bo', 'secret']))).toBe('say whether bo is a member or a channel: konnect send @bo … for a member, or konnect send \'#bo\' … for a channel');
-  expect(await fails(ann.run(['read', 'general']))).toBe('say whether general is a member or a channel: konnect read @general for a member\'s messages, or konnect read \'#general\' for a channel');
+  expect(await fails(ann.run(['send', 'bo', 'secret']))).toBe('say whether bo is a member or a channel: konnect send @bo for a member, or konnect send \'#bo\' for a channel');
+  expect(await fails(ann.run(['receive', 'general']))).toBe('say whether general is a member or a channel: konnect receive @general for a member, or konnect receive \'#general\' for a channel');
   // konnect channel still takes a bare name.
-  expect(await ann.run(['channel', 'join', 'general'])).toMatch(/^Following #general/);
+  expect(await ann.run(['channel', 'follow', 'general'])).toBe('Following #general: konnect receive includes it from now on.');
   const file = agentFile('hub', 'reviewer', ann.env);
   await agentSignIn(server, idp, annId, 'ann-reviewer', 'hub', file);
   const { c, close } = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
@@ -150,7 +151,7 @@ test('3. a mention never stops a message: without the member list it goes unment
   expect(ann.err.join('\n')).toMatch(/so this message mentions no one/);
 });
 
-test('4. a person\'s flood shows the newest 20 and says how to see the rest; an agent reads at most limit a call, and is told what more waits', async () => {
+test('4. a person\'s flood is received 20 at a time, oldest first, every message shown; an agent receives at most limit a call, and is told what more waits', async () => {
   const { kolab, server, idp, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
   const bo = machine(server.url, 'bo');
@@ -158,44 +159,44 @@ test('4. a person\'s flood shows the newest 20 and says how to see the rest; an 
   await signIn(bo, boId, 'hub');
   const annS = await kolab.openSession('ann', 'product', { kolab: 'hub' });
   for (let i = 1; i <= 45; i++) await kolab.sendChannelMessage(annS, 'general', `flood ${i}`);
-  const read = await bo.run(['read', '#general']);
-  expect(read.split('\n')[0]).toBe('(25 earlier unread messages not shown, now marked read: konnect read \'#general\' --history --limit 45 shows them)');
-  expect(read).not.toMatch(/flood 25\n/);
-  expect(read).toMatch(/ {2}flood 26\n[\s\S]* {2}flood 45$/);
-  expect(await bo.run(['read', '#general'])).toBe('No unread messages in #general.');
-  expect(await bo.run(['read', '#general', '--history', '--limit', '45'])).toContain('flood 1\n');
+  const got = await bo.run(['receive', '#general']);
+  expect(got).toMatch(/^\S+ \S+ {2}@ann\n {2}flood 1\n/);
+  expect(got).toMatch(/ {2}flood 20\n\(25 more unread: run konnect receive '#general' again\)$/);
+  expect(await bo.run(['receive', '#general', '-n', '200'])).toMatch(/^\S+ \S+ {2}@ann\n {2}flood 21\n[\s\S]* {2}flood 45$/);
+  expect(await bo.run(['receive', '#general'])).toBe('No unread messages in #general.');
+  expect(await bo.run(['history', '#general', '-n', '45'])).toContain('flood 1\n');
 
   // An agent: limit a call, and how many more wait, for direct messages and per channel.
   const file = agentFile('hub', 'reviewer', ann.env);
   await agentSignIn(server, idp, annId, 'ann-reviewer', 'hub', file);
   const { c, close } = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
   try {
-    await call(c, 'konnect_read', { limit: 100 });
+    await call(c, 'konnect_receive', { limit: 100 });
     const boS = await kolab.openSession('bo', 'product', { kolab: 'hub' });
     for (let i = 1; i <= 7; i++) await kolab.sendMessage(boS, 'ann-reviewer', `dm ${i}`);
     for (let i = 1; i <= 4; i++) await kolab.sendChannelMessage(boS, 'general', `chan ${i}`);
-    const r1 = await call(c, 'konnect_read', { limit: 5 });
+    const r1 = await call(c, 'konnect_receive', { limit: 5 });
     expect(r1.data).toMatchObject({ direct: { more: 2 }, channels: [{ channel: 'general', messages: [], more: 4 }] });
     expect((r1.data.direct as { messages: unknown[] }).messages).toHaveLength(5);
-    expect(r1.text).toContain('(2 more unread direct messages: call konnect_read again)');
-    expect(r1.text).toContain('(4 more unread in #general: call konnect_read again)');
-    const r2 = await call(c, 'konnect_read', { limit: 5 });
+    expect(r1.text).toContain('(2 more unread direct messages: call konnect_receive again)');
+    expect(r1.text).toContain('(4 more unread in #general: call konnect_receive again)');
+    const r2 = await call(c, 'konnect_receive', { limit: 5 });
     expect(r2.data).toMatchObject({ direct: { more: 0 }, channels: [{ channel: 'general', more: 1 }] });
     expect((r2.data.channels as { messages: unknown[] }[])[0].messages).toHaveLength(3);
-    expect((await call(c, 'konnect_read', { limit: 500 })).isError).toBe(true);
+    expect((await call(c, 'konnect_receive', { limit: 500 })).isError).toBe(true);
   } finally {
     await close();
   }
 });
 
-test('5. an agent\'s missing or ended connection tells its owner what to do, naming no file; a person\'s names no file either', async () => {
+test('5. an agent\'s missing or ended login tells its owner what to do, naming no file; a person\'s names no file either', async () => {
   const { server, idp, signIn, ann: annId, kolab } = await teams();
   const ann = machine(server.url, 'ann');
   const file = agentFile('hub', 'reviewer', ann.env);
   const none = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
   try {
-    const r = await call(none.c, 'konnect_who');
-    expect(r).toMatchObject({ isError: true, text: 'agent reviewer has no connection to team hub on this machine: its owner should run konnect claude reviewer again (or the tool they connected it with) to renew it' });
+    const r = await call(none.c, 'konnect_team_list');
+    expect(r).toMatchObject({ isError: true, text: 'agent reviewer has no login to team hub on this machine: its owner should run konnect agent add reviewer again to renew it' });
     expect(r.text).not.toContain(ann.root);
   } finally {
     await none.close();
@@ -206,15 +207,15 @@ test('5. an agent\'s missing or ended connection tells its owner what to do, nam
   await kolab.endSessions({ actor: 'ann-reviewer' });
   const ended = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
   try {
-    const r = await call(ended.c, 'konnect_who');
+    const r = await call(ended.c, 'konnect_team_list');
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/its owner should run konnect claude reviewer again/);
-    expect(r.text).not.toMatch(/konnect team|\/.*\.json/);
+    expect(r.text).toMatch(/its owner should run konnect agent add reviewer again to renew it$/);
+    expect(r.text).not.toMatch(/konnect login|\/.*\.json/);
   } finally {
     await ended.close();
   }
   await signIn(ann, annId, 'hub');
-  expect(await fails(ann.run(['who', '--team', 'side']))).toBe('you aren\'t signed in to team side: run konnect team side');
+  expect(await fails(ann.run(['team', 'list', '--team', 'side']))).toBe('you aren\'t logged in to team side: run konnect login side');
 });
 
 test('6. konnect mcp opens a session Kolab says is gone again, once; checks who it runs as as it starts; refuses another agent\'s or another team\'s sign-in; and its config folder is checked', async () => {
@@ -237,9 +238,9 @@ test('6. konnect mcp opens a session Kolab says is gone again, once; checks who 
   }) as typeof fetch;
   const { c, close } = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer' });
   try {
-    const r = await call(c, 'konnect_who');
+    const r = await call(c, 'konnect_team_list');
     expect(r.isError).toBe(false);
-    expect(r.text).toMatch(/^ann\/reviewer \(you\)/m);
+    expect(r.text).toMatch(/^@ann\/reviewer \(you\)/m);
     // The member list twice (the retry), and konjir_whoami again for the new session (and the waking stream's own).
     expect(lists).toBe(2);
     expect(whoamis).toBeGreaterThanOrEqual(2);
@@ -256,7 +257,7 @@ test('6. konnect mcp opens a session Kolab says is gone again, once; checks who 
   const wrong = await connectTo({ team: 'hub', url: server.url, file: join(bo.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), label: 'reviewer', log: (l) => logged.push(l) });
   try {
     for (let i = 0; i < 50 && !logged.length; i++) await new Promise((r) => setTimeout(r, 20));
-    expect(logged[0]).toMatch(/^konnect mcp: the connection kept for agent reviewer isn't that agent's in team hub/);
+    expect(logged[0]).toMatch(/^konnect mcp: the login kept for agent reviewer isn't that agent's in team hub/);
   } finally {
     await wrong.close();
   }
@@ -266,9 +267,9 @@ test('6. konnect mcp opens a session Kolab says is gone again, once; checks who 
   const refused = async (f: string, label: string, owner?: string) => {
     const x = await connectTo({ team: 'hub', url: server.url, file: f, label, ...(owner ? { owner } : {}) });
     try {
-      const r = await call(x.c, 'konnect_who');
+      const r = await call(x.c, 'konnect_team_list');
       expect(r).toMatchObject({ isError: true });
-      expect(r.text).toMatch(new RegExp(`^the connection kept for agent ${label} isn't that agent's in team hub`));
+      expect(r.text).toMatch(new RegExp(`^the login kept for agent ${label} isn't that agent's in team hub`));
     } finally {
       await x.close();
     }
@@ -293,14 +294,20 @@ test('6. konnect mcp opens a session Kolab says is gone again, once; checks who 
   rmSync(open, { recursive: true });
 });
 
-test('7. the unread line waits at most about 2 seconds: a slow Kolab never stalls a command that has done its work', async () => {
-  const { server, signIn, ann: annId } = await teams();
+test('7. what is unread is waited for at most about 2 seconds: with a slow service, status says so instead of stalling, and receive never asks', async () => {
+  const { server, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
   await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  await bo.run(['send', '@ann', 'hello']);
   intercept((b) => b.includes('"resources/read"'), () => new Promise<Response>(() => undefined));
-  const started = Date.now();
-  expect(await ann.run(['who'])).toMatch(/^ann \(you\)/);
+  let started = Date.now();
+  expect(await fails(ann.run(['status']))).toBe('the service took too long to say what is unread');
   expect(Date.now() - started).toBeLessThan(4_000);
+  started = Date.now();
+  expect(await ann.run(['receive'])).toMatch(/@bo\n {2}hello$/);
+  expect(Date.now() - started).toBeLessThan(2_000);
 }, 15_000);
 
 test('8. an agent reads each message between frame lines that carry its id: its words can\'t fake a frame', () => {

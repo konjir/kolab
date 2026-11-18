@@ -77,7 +77,9 @@ export async function sendMessage(ctx: Ctx, rest: string[]) {
       if (r.kind === 'direct') {
         const given = printable(to.kind === 'direct' ? to.given : '');
         if (!agent) return `Sent to ${given}.`;
-        return agent.here ? `Sent to ${given}, which is connected.` : `Sent to ${given}. It isn't connected, so the message waits for it.`;
+        // The service calls an agent connected while its login is open, whether or not its harness is running:
+        // only the lack of one is certain, so only that is said.
+        return agent.here ? `Sent to ${given}.` : `Sent to ${given}. It isn't connected, so the message waits for it.`;
       }
       const named = r.sent.mentions.map((m) => `@${printable(shownActor(m, r.members))}`);
       return `Sent to #${r.sent.channel}${named.length ? `, mentioning ${named.join(', ')}` : ''}.`;
@@ -181,6 +183,10 @@ export async function history(ctx: Ctx, rest: string[]) {
       if (e instanceof NotYet) throw e;
       if (e instanceof Refused && /is not a member of kolab/.test(e.message)) throw new Refused(`${printable(of.given)} isn't in team ${team}: konnect team list shows who is`);
       throw e;
+    }
+    // No messages may mean nobody by that name: said, so a mistyped name isn't taken for silence.
+    if (!ms.length && !(members.length ? members : await client.members().catch(() => [] as Member[])).some((m) => m.actor === of.to)) {
+      throw new Refused(`${printable(of.given)} isn't in team ${team}: konnect team list shows who is`);
     }
     ctx.print(ms, () => (ms.length ? show(ms) : `No messages between you and ${printable(of.given)} yet.`));
   } finally { await client.close(); }

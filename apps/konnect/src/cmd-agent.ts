@@ -87,6 +87,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
   if (verb === 'add') {
     const name = label(rest[0], 'konnect agent add <name>: name the agent, such as konnect agent add reviewer');
     if (rest.length > 1) throw new UsageError(`konnect agent add <name>: unknown ${printable(rest.slice(1).join(' '))}. To start a harness with it: konnect agent run ${name} ${printable(rest[1])}`);
+    wakeOn(ctx); // checked before the agent is added: a wrong command line does nothing
     const r = await ready(ctx, team, name, `agent add ${name}`);
     const entry = { mcpServers: { [serverName(name)]: { type: 'stdio', ...entryFor(ctx, team, name) } } };
     ctx.print({ team, agent: `${r.owner}/${name}`, added: r.made, entry }, () => [
@@ -106,6 +107,7 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       throw new UsageError(`konnect agent run starts claude, codex or opencode, and ${printable(harness)} is none of them. For another harness: konnect agent add ${name}, and put the entry it prints there. For a script: konnect --agent ${name} send ...`);
     }
     const tool = harness as Tool;
+    wakeOn(ctx); // checked before the agent is added: a wrong command line does nothing
     const r = await ready(ctx, team, name, `agent run ${name} ${tool}`);
     const entry = entryFor(ctx, team, name);
     const server = serverName(name);

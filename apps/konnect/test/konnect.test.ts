@@ -1,187 +1,253 @@
-// konnect end to end against a Kolab started here, with a stub in GitHub's place: two people sign
-// in to one team with `konnect team`, each with a config folder of their own, and exchange direct
-// messages through `konnect send` and `konnect read`; `konnect who` names the team's members, an
-// agent as owner/label; several teams are kept apart, one sign-in each; a folder's .konnect.json
-// remembers a team and is followed only to a Kolab konnect trusts; and the commands the server
-// can't serve yet say so. The "browser" follows Kolab's redirects with its cookies and submits the
-// consent page.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+// konnect end to end against a Kolab started here, with a stub in GitHub's place: two people log in
+// to one team with `konnect login`, each with a config folder of their own, and exchange direct
+// messages through `konnect send` and `konnect receive`; `konnect team list` names the members, an
+// agent as @owner/name under its owner; `konnect status` says what waits and changes nothing;
+// several teams are kept apart, one login each, and the team a command works in is --team, then
+// KONNECT_TEAM, then the one logged in to; `konnect team create` makes a team; konnect keeps no
+// file in the folder it runs in; and the names 0.1.0 used still work, saying the new name once.
+// The "browser" follows Kolab's redirects with its cookies and submits the consent page.
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test } from '@jest/globals';
-import { fails, machine, pressing, teams } from './team.js';
-import { HOSTED_URL, normalUrl, parseArgs, readProject, rememberTeam, type IO } from '../src/konnect.js';
+import { browse, exitOf, fails, machine, pressing, teams } from './team.js';
+import { normalUrl } from '../src/konnect.js';
+import { wellFormedUrl } from '../src/teams.js';
 import { printable } from '../src/names.js';
 
-test('two people in one team exchange direct messages through konnect send and konnect read; konnect who names the members, an agent as owner/label', async () => {
+test('two people in one team exchange direct messages through konnect send and konnect receive; konnect team list names the members, an agent as @owner/name under its owner', async () => {
   const { kolab, server, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
   const bo = machine(server.url, 'bo');
 
-  expect(await signIn(ann, annId, 'hub')).toBe('Signed in to team hub as ann. This folder remembers it (.konnect.json).');
-  expect(ann.err.join('\n')).toContain('Opening your browser to sign in to team hub with GitHub.');
-  expect(await signIn(bo, boId, 'hub')).toBe('Signed in to team hub as bo. This folder remembers it (.konnect.json).');
+  expect(await signIn(ann, annId, 'hub')).toBe('Logged in to team hub as @ann.');
+  expect(ann.err.join('\n')).toContain('Opening your browser to log in to team hub with GitHub. Check what the page says, then Allow.');
+  expect(await signIn(bo, boId, 'hub')).toBe('Logged in to team hub as @bo.');
 
-  // Each sign-in is kept in the person's own konnect folder, one file per team, closed to others; the folder's file holds no token.
+  // Each login is kept in the person's own konnect folder, one file per team, closed to others;
+  // nothing is written in the folder konnect runs in.
   const file = join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json');
   expect(statSync(file).mode & 0o777).toBe(0o600);
   expect(statSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams')).mode & 0o777).toBe(0o700);
   expect(JSON.parse(readFileSync(file, 'utf8'))[server.url].tokens.refresh_token).toMatch(/^kjr_/);
-  const remembered = readFileSync(join(ann.cwd, '.konnect.json'), 'utf8');
-  expect(JSON.parse(remembered)).toStrictEqual({ team: 'hub', url: server.url });
-  expect(remembered).not.toMatch(/kj[rsa]_/);
+  expect(readdirSync(ann.cwd)).toStrictEqual([]);
 
-  // Signing in to the same team again uses the sign-in kept: no browser.
-  expect(await ann.run(['team', 'hub'], { open: () => { throw new Error('no browser'); } })).toBe('Using team hub as ann. This folder remembers it (.konnect.json).');
+  // Logging in to the same team again uses the login kept: no browser.
+  expect(await ann.run(['login', 'hub'], { open: () => { throw new Error('no browser'); } })).toBe('Already logged in to team hub as @ann.');
+  expect(JSON.parse(await ann.run(['login', 'hub', '--json'], { open: () => { throw new Error('no browser'); } }))).toStrictEqual({ team: 'hub', name: 'ann', logged_in: 'already' });
 
-  // Bo writes to Ann; Ann reads it, oldest first, and it is marked read.
+  // Bo writes to Ann; Ann receives it, oldest first, and it is no longer unread.
   expect(await bo.run(['send', '@ann', 'the', 'deploy', 'is', 'green'])).toBe('Sent to @ann.');
   expect(await bo.run(['send', '@ann', 'and the docs are up'])).toBe('Sent to @ann.');
-  const read = await ann.run(['read']);
-  expect(read).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d {2}@bo\n {2}the deploy is green\n\n\d{4}-\d\d-\d\d \d\d:\d\d {2}@bo\n {2}and the docs are up$/);
-  expect(await ann.run(['read'])).toBe('No unread messages.');
+  expect(await ann.run(['receive'])).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d {2}@bo\n {2}the deploy is green\n\n\d{4}-\d\d-\d\d \d\d:\d\d {2}@bo\n {2}and the docs are up$/);
+  expect(await ann.run(['receive'])).toBe('No unread messages.');
 
-  // Ann answers from stdin, several lines; Bo reads it as JSON.
+  // Ann answers from stdin, several lines; Bo receives it as JSON.
   expect(await ann.run(['send', '@bo'], { stdin: async () => 'thanks!\nshipping now\n' })).toBe('Sent to @bo.');
-  const got = JSON.parse(await bo.run(['read', '--json'])).direct;
-  expect(got).toMatchObject([{ from: 'ann', to: 'bo', message: 'thanks!\nshipping now' }]);
-  expect(got[0].read_at).not.toBeNull();
-  expect(JSON.parse(await bo.run(['read', '--json']))).toStrictEqual({ direct: [], channels: [] });
+  const got = JSON.parse(await bo.run(['receive', '--json']));
+  expect(got).toMatchObject({ direct: [{ from: 'ann', to: 'bo', message: 'thanks!\nshipping now' }], channels: [], more: 0 });
+  expect(got.direct[0].read_at).not.toBeNull();
+  expect(JSON.parse(await bo.run(['receive', '--json']))).toStrictEqual({ direct: [], channels: [], more: 0 });
 
-  // An agent is @owner/label, stored as owner-label.
-  expect(await bo.run(['send', '@ann/reviewer', 'please review the importer'])).toBe('Sent to @ann/reviewer.');
+  // An agent is @owner/name, stored as owner-name. Sending to one says when it isn't connected.
+  expect(await bo.run(['send', '@ann/reviewer', 'please review the importer'])).toBe('Sent to @ann/reviewer. It isn\'t connected, so the message waits for it.');
   const reviewer = await kolab.openSession('ann-reviewer', 'product', { kolab: 'hub' });
-  expect((await kolab.readMessages(reviewer)).messages).toMatchObject([{ from: 'bo', to: 'ann-reviewer', message: 'please review the importer' }]);
-  // Its answer reads as from ann/reviewer.
+  expect(await bo.run(['send', '@ann/reviewer', 'and the exporter'])).toBe('Sent to @ann/reviewer.');
+  expect((await kolab.readMessages(reviewer)).messages).toMatchObject([{ from: 'bo', to: 'ann-reviewer', message: 'please review the importer' }, { message: 'and the exporter' }]);
+  // Its answer reads as from @ann/reviewer.
   await kolab.sendMessage(reviewer, 'bo', 'on it');
-  expect(await bo.run(['read'])).toMatch(/ {2}@ann\/reviewer\n {2}on it$/);
+  expect(await bo.run(['receive'])).toMatch(/ {2}@ann\/reviewer\n {2}on it$/);
 
-  // konnect who: everyone, you marked, an agent as owner/label, who has a session open.
-  const who = (await bo.run(['who'])).split('\n');
-  expect(who).toHaveLength(3);
-  expect(who[0]).toMatch(/^ann {2,}person {2}connected$/);
-  expect(who[1]).toMatch(/^ann\/reviewer {2,}agent {3}connected$/);
-  expect(who[2]).toMatch(/^bo \(you\) {2,}person {2}connected$/);
-  const whoJson = JSON.parse(await bo.run(['who', '--json']));
-  expect(whoJson).toContainEqual({ actor: 'ann-reviewer', kind: 'agent', owner: 'ann', label: 'reviewer', here: true, name: 'ann/reviewer' });
+  // konnect team list: each person, their agents under them, you marked; connected is said of agents alone.
+  expect((await bo.run(['team', 'list'])).split('\n')).toStrictEqual([
+    '@ann           person',
+    '@ann/reviewer  agent   connected',
+    '@bo (you)      person',
+  ]);
+  const listed = JSON.parse(await bo.run(['team', 'list', '--json']));
+  expect(listed.members).toContainEqual({ name: 'ann/reviewer', kind: 'agent', owner: 'ann', connected: true });
+  expect(listed.members).toContainEqual(expect.objectContaining({ name: 'bo', kind: 'person', owner: null, you: true }));
+  // Who is invited is the owner's to see: Bo's list has none, Ann's says none wait.
+  expect(listed.invited).toBeUndefined();
+  expect(JSON.parse(await ann.run(['team', 'list', '--json'])).invited).toStrictEqual([]);
 
-  // konnect read @name: only theirs, oldest first, marked read; the rest stay unread, and the last line says so.
+  // konnect receive @name: only theirs, oldest first; the rest stay unread for konnect receive.
   await bo.run(['send', '@ann', 'one more thing']);
   await kolab.sendMessage(reviewer, 'ann', 'from the reviewer');
-  expect(await ann.run(['read', '@bo'])).toMatch(/@bo\n {2}one more thing\n\(1 direct message\)$/);
-  expect(await ann.run(['read', '@ann/reviewer'])).toMatch(/@ann\/reviewer\n {2}from the reviewer$/);
-  expect(await ann.run(['read'])).toBe('No unread messages.');
+  expect(await ann.run(['receive', '@bo'])).toMatch(/^\S+ \S+ {2}@bo\n {2}one more thing$/);
+  expect(await ann.run(['receive', '@bo'])).toBe('No unread messages from @bo.');
+  expect(await ann.run(['receive'])).toMatch(/^\S+ \S+ {2}@ann\/reviewer\n {2}from the reviewer$/);
 
-  // Someone who isn't in the team, or a name that isn't one, is refused, saying what to do.
-  expect(await fails(bo.run(['send', '@sam', 'hi']))).toBe('@sam isn\'t in team hub: konnect who lists who is');
-  expect(await fails(bo.run(['send', '@ann/Not A Label', 'hi']))).toMatch(/isn't a member's name: an agent is @<owner>\/<label>/);
+  // Someone who isn't in the team is refused (4); a name that isn't one, or no message, is a wrong command line (2).
+  expect(await fails(bo.run(['send', '@sam', 'hi']))).toBe('@sam isn\'t in team hub: konnect team list shows who is');
+  expect(await exitOf(bo.run(['send', '@sam', 'hi']))).toBe(4);
+  expect(await fails(bo.run(['send', '@ann/Not A Label', 'hi']))).toBe('@ann/Not A Label isn\'t a member\'s name: an agent is @<owner>/<name>, such as @ann/reviewer. konnect team list shows your team');
+  expect(await exitOf(bo.run(['send', '@ann/Not A Label', 'hi']))).toBe(2);
   expect(await fails(bo.run(['send', '@ann'], { stdin: async () => '\n' }))).toBe('konnect send: the message is empty');
 
-  // konnect logout revokes the sign-in and forgets it; the folder's file stays, and says what to do.
-  expect(await bo.run(['logout'])).toBe('Signed out of team hub.');
-  expect(await fails(bo.run(['who']))).toBe('you aren\'t signed in to team hub: run konnect team hub');
+  // konnect logout revokes the login and forgets it; then a command says what to do (3).
+  expect(await bo.run(['logout'])).toBe('Logged out of team hub.');
+  expect(await fails(bo.run(['team', 'list']))).toBe('you aren\'t logged in to a team: run konnect login, or konnect team create <name>');
+  expect(await fails(bo.run(['--team', 'hub', 'team', 'list']))).toBe('you aren\'t logged in to team hub: run konnect login hub');
+  expect(await exitOf(bo.run(['--team', 'hub', 'team', 'list']))).toBe(3);
+  expect(await bo.run(['logout', 'hub'])).toBe('You weren\'t logged in to team hub.');
   expect((await kolab.db.query(`select 1 from session s join oauth_grant g on g.id = s.grant_id where s.actor_id = 'bo' and s.ended_at is null`)).rows).toStrictEqual([]);
 });
 
-test('several teams, one sign-in each: --team chooses, the folder remembers one, and with neither konnect asks which', async () => {
+test('konnect status: the team, who you are, then direct-message and channel unread counts, or Nothing unread; it changes nothing', async () => {
+  const { server, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  expect(await bo.run(['status'])).toBe('hub, as @bo\n\n  Nothing unread.');
+  expect(JSON.parse(await bo.run(['status', '--json']))).toStrictEqual({ team: 'hub', name: 'bo', direct: 0, direct_more: false, channels: [] });
+
+  await ann.run(['channel', 'create', 'deploys']);
+  await ann.run(['send', '@bo', 'one']);
+  await ann.run(['send', '@bo', 'two']);
+  await ann.run(['send', '#general', 'standup in 5']);
+  // A channel Bo doesn't follow counts only what mentions him.
+  await ann.run(['send', '#deploys', 'not for bo']);
+  await ann.run(['send', '#deploys', '@bo a question']);
+  const before = await bo.run(['status']);
+  expect(before).toBe([
+    'hub, as @bo',
+    '',
+    '  direct messages   2 unread',
+    '  #deploys          1 mentioning you',
+    '  #general          1 unread',
+  ].join('\n'));
+  // Nothing was marked: the same again, and receive still gets them.
+  expect(await bo.run(['status'])).toBe(before);
+  const kept = JSON.parse(await bo.run(['status', '--json']));
+  expect(kept).toMatchObject({ team: 'hub', name: 'bo', direct: 2, direct_more: false });
+  expect(kept.channels).toContainEqual(expect.objectContaining({ channel: 'general', following: true, unread: 1 }));
+  expect(await bo.run(['receive'])).toMatch(/ {2}one\n\n\S+ \S+ {2}@ann\n {2}two\n\n#general\n\S+ \S+ {2}@ann\n {2}standup in 5\n\(1 mentioning you in #deploys\)$/);
+  expect(await bo.run(['status'])).toBe('hub, as @bo\n\n  #deploys   1 mentioning you');
+});
+
+test('several teams, one login each: --team chooses, then KONNECT_TEAM, then the one logged in to; with several and none named, konnect names them', async () => {
   const { server, signIn, ann: annId } = await teams();
   const ann = machine(server.url, 'ann');
   await signIn(ann, annId, 'hub');
-  const sideDir = join(ann.root, 'side');
-  mkdirSync(sideDir);
-  const annSide = { ...ann, run: async (argv: string[], more: Partial<IO> = {}) => ann.run(argv, { cwd: sideDir, ...more }) };
-  await signIn(annSide as typeof ann, annId, 'side');
-  expect(JSON.parse(readFileSync(join(sideDir, '.konnect.json'), 'utf8')).team).toBe('side');
+  // One team: it is the one used, wherever konnect runs.
+  expect(await ann.run(['status'])).toMatch(/^hub, as @ann\n/);
+  await signIn(ann, annId, 'side');
 
   // Each team its own file.
   expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'))).toBe(true);
   expect(existsSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'))).toBe(true);
 
-  // Each folder works in its own team.
-  expect(await ann.run(['who', '--json'])).toContain('"ann-reviewer"');
-  expect(await ann.run(['who', '--json'], { cwd: sideDir })).not.toContain('"ann-reviewer"');
-  // --team overrides the folder.
-  expect(await ann.run(['who', '--team', 'side', '--json'])).not.toContain('"ann-reviewer"');
+  // Two, and none named: a wrong command line, naming them.
+  expect(await fails(ann.run(['team', 'list']))).toBe('you\'re logged in to 2 teams (hub, side): say which with --team <name>, or set KONNECT_TEAM');
+  expect(await exitOf(ann.run(['team', 'list']))).toBe(2);
+  // --team, else KONNECT_TEAM.
+  expect(await ann.run(['--team', 'hub', 'team', 'list', '--json'])).toContain('"ann/reviewer"');
+  expect(await ann.run(['team', 'list', '--json'], { env: { ...ann.env, KONNECT_TEAM: 'side' } })).not.toContain('"ann/reviewer"');
+  expect(await ann.run(['status', '--team', 'hub'], { env: { ...ann.env, KONNECT_TEAM: 'side' } })).toMatch(/^hub, as @ann\n/);
+  expect(await ann.run(['status'], { env: { ...ann.env, KONNECT_TEAM: 'side' } })).toMatch(/^side, as @ann\n/);
+  // A name that can't be a team's: a wrong command line, from either.
+  expect(await fails(ann.run(['status'], { env: { ...ann.env, KONNECT_TEAM: 'Bad_Name' } }))).toBe('Bad_Name isn\'t a team\'s name: lowercase letters, digits and -, at most 40 characters');
+  expect(await exitOf(ann.run(['status'], { env: { ...ann.env, KONNECT_TEAM: 'Bad_Name' } }))).toBe(2);
 
-  // konnect team lists them, marking the folder's.
-  expect(await ann.run(['team'])).toBe('hub  (this folder)\nside');
-  // A folder that names no team: with two, konnect asks which.
-  const elsewhere = join(ann.root, 'elsewhere');
-  mkdirSync(elsewhere);
-  expect(await fails(ann.run(['who'], { cwd: elsewhere }))).toBe('you\'re in 2 teams (hub, side): pass --team <name>, or run konnect team <name> here to remember one in this folder');
-  expect(await ann.run(['team'], { cwd: elsewhere })).toBe('hub\nside');
   // With one left, it is the one used.
-  await ann.run(['logout', '--team', 'side']);
-  expect(await ann.run(['who', '--json'], { cwd: elsewhere })).toContain('"ann-reviewer"');
-  // A team you aren't signed in to says so.
-  expect(await fails(ann.run(['who', '--team', 'side'], { cwd: elsewhere }))).toBe('you aren\'t signed in to team side: run konnect team side');
-  expect(await fails(ann.run(['who', '--team', 'Bad_Name']))).toBe('Bad_Name isn\'t a team\'s name: lowercase letters, digits and -, at most 40 characters');
+  expect(await ann.run(['logout', 'side'])).toBe('Logged out of team side.');
+  expect(await ann.run(['team', 'list', '--json'])).toContain('"ann/reviewer"');
+  // A team you aren't logged in to says so.
+  expect(await fails(ann.run(['team', 'list', '--team', 'side']))).toBe('you aren\'t logged in to team side: run konnect login side');
+  // konnect neither reads nor writes a folder's file.
+  expect(readdirSync(ann.cwd)).toStrictEqual([]);
 });
 
-test('konnect team makes a team whose name is free; one that is someone else\'s is refused, nothing kept, with a free name suggested', async () => {
-  const { kolab, server, signIn, bo: boId } = await teams();
+test('konnect team create makes a team whose name is free, with you as its owner; one that is someone else\'s is refused (4), nothing kept', async () => {
+  const { kolab, server, create, bo: boId } = await teams();
   const bo = machine(server.url, 'bo');
   let page = '';
-  expect(await signIn(bo, boId, 'bos-team', (b, h) => { page = h; return pressing('decision=allow')(b); })).toBe('Signed in to team bos-team as bo. This folder remembers it (.konnect.json).');
+  expect(await create(bo, boId, 'bos-team', (b, h) => { page = h; return pressing('decision=allow')(b); }))
+    .toBe('Created team bos-team, with you (@bo) as its owner, and logged in to it.\nInvite people with: konnect team invite <github-user>');
+  expect(bo.err.join('\n')).toContain('Opening your browser to create team bos-team with GitHub, with you as its owner. Check what the page says, then Allow.');
   expect(page).toContain('<code>bos-team</code>');
   expect(await kolab.kolabRow('bos-team')).toMatchObject({ owner: 'bo', visibility: 'private' });
-  // Ann's: refused on the page, which offers Deny alone.
-  const err = await fails(signIn(bo, boId, 'side', (b) => pressing('decision=')(b)));
-  expect(err).toMatch(/^Kolab didn't sign you in to team side: .*Make your own instead: konnect team \S+$/);
+  // Already logged in to a team of that name: refused before any browser.
+  expect(await fails(bo.run(['team', 'create', 'bos-team'], { open: () => { throw new Error('no browser'); } }))).toBe('you\'re already logged in to a team named bos-team: pick another name');
+
+  // Ann's: refused on the page, which offers Deny alone; nothing is kept.
+  expect(await fails(create(bo, boId, 'side', (b) => pressing('decision=')(b)))).toMatch(/^the service didn't create team side: /);
+  expect(await exitOf(create(bo, boId, 'side', (b) => pressing('decision=')(b)))).toBe(4);
   expect(Object.values(JSON.parse(readFileSync(join(bo.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'), 'utf8')) as { tokens?: unknown }[]).filter((v) => v.tokens)).toStrictEqual([]);
-  expect(JSON.parse(readFileSync(join(bo.cwd, '.konnect.json'), 'utf8')).team).toBe('bos-team');
+
+  // With a second team logged in to, the next step names the new one.
+  expect(await create(bo, boId, 'bos-other')).toBe('Created team bos-other, with you (@bo) as its owner, and logged in to it.\nInvite people with: konnect --team bos-other team invite <github-user>');
 });
 
-test('.konnect.json: found from a folder below it in a repository, never above outside one, and its URL followed only to a Kolab konnect trusts', async () => {
-  const { server, signIn, ann: annId } = await teams();
+test('konnect login <team> to someone else\'s team is refused (4), and nothing kept', async () => {
+  const { server, signIn, bo: boId } = await teams();
+  const bo = machine(server.url, 'bo');
+  expect(await fails(signIn(bo, boId, 'side', (b) => pressing('decision=')(b)))).toMatch(/^the service didn't log you in to team side: /);
+  expect(await exitOf(signIn(bo, boId, 'side', (b) => pressing('decision=')(b)))).toBe(4);
+  expect(Object.values(JSON.parse(readFileSync(join(bo.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'), 'utf8')) as { tokens?: unknown }[]).filter((v) => v.tokens)).toStrictEqual([]);
+});
+
+// @konjir/login is passed the intent ('join' for login <team>, 'create' for team create <name>),
+// but the service doesn't honour it yet (a server change is in flight): today both still log in to
+// the team when the person is in it, and make it when the name is free.
+test.todo('konnect login <team> refuses a team that isn\'t there, instead of creating it, and keeps nothing');
+test.todo('konnect team create <name> refuses a name already taken, even a team you are in, and logs in to nothing');
+
+test('the names 0.1.0 used still work for one release, each saying its new name once on stderr; konnect team <name> is not kept', async () => {
+  const { kolab, server, idp, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
   await signIn(ann, annId, 'hub');
-  const noUrl = { KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR };
-  const repo = join(ann.root, 'repo');
-  mkdirSync(join(repo, '.git'), { recursive: true });
-  mkdirSync(join(repo, 'src', 'deep'), { recursive: true });
-  const file = join(repo, '.konnect.json');
+  await signIn(bo, boId, 'hub');
+  const old = async (m: typeof ann, argv: string[], more: Parameters<typeof ann.run>[1] = {}) => {
+    const out = await m.run(argv, more);
+    return { out, err: [...m.err] };
+  };
 
-  // Its URL is a Kolab on this machine: followed, from a folder below it too, with no KONNECT_URL.
-  writeFileSync(file, JSON.stringify({ team: 'hub', url: server.url }));
-  expect(await ann.run(['who', '--json'], { cwd: join(repo, 'src', 'deep'), env: noUrl })).toContain('"ann-reviewer"');
-
-  // Outside a repository, a folder above is never read.
-  const plain = join(ann.root, 'plain');
-  mkdirSync(join(plain, 'below'), { recursive: true });
-  writeFileSync(join(plain, '.konnect.json'), JSON.stringify({ team: 'nope' }));
-  expect(await ann.run(['team', '--json'], { cwd: join(plain, 'below'), env: noUrl })).toContain('"folder": null');
-
-  // A URL konnect hasn't been given is refused before anything is sent.
-  writeFileSync(file, JSON.stringify({ team: 'hub', url: 'https://kolab.example.com/mcp' }));
-  expect(await fails(ann.run(['who'], { cwd: repo, env: noUrl }))).toMatch(/names Kolab at https:\/\/kolab\.example\.com\/mcp, which you haven't given konnect yourself, so konnect won't use it/);
-  // The hosted Kolab is followed (and here, holds no sign-in of this test's).
-  writeFileSync(file, JSON.stringify({ team: 'hub', url: HOSTED_URL }));
-  expect(await fails(ann.run(['who'], { cwd: repo, env: noUrl }))).toBe('you aren\'t signed in to team hub: run konnect team hub');
-  // KONNECT_URL wins over the file.
-  writeFileSync(file, JSON.stringify({ team: 'hub', url: 'https://kolab.example.com/mcp' }));
-  expect(await ann.run(['who', '--json'], { cwd: repo })).toContain('"ann-reviewer"');
-
-  // A file that isn't konnect's is refused, never passed over.
-  writeFileSync(file, JSON.stringify({ team: 'Not A Team' }));
-  expect(await fails(ann.run(['who'], { cwd: repo }))).toMatch(/\.konnect\.json names a team badly: it names a team, \{"team": "<name>"\}/);
-  writeFileSync(file, '{"team": "hub", "token": "kjr_x", "url": "http://user:pw@127.0.0.1/mcp"}');
-  expect(await fails(ann.run(['who'], { cwd: repo }))).toMatch(/names Kolab's URL badly/);
-  // A team the file names that you aren't signed in to says so.
-  writeFileSync(file, JSON.stringify({ team: 'side' }));
-  expect(await fails(ann.run(['who'], { cwd: repo }))).toBe('you aren\'t signed in to team side: run konnect team side');
-  expect(await ann.run(['team'], { cwd: repo })).toBe('hub\nThis folder\'s .konnect.json names team side, which you aren\'t signed in to: run konnect team side.');
-});
-
-test('the commands the server can\'t serve yet say so, before anything is read or sent; help names them', async () => {
-  const m = machine('http://127.0.0.1:9/mcp', 'later');
-  const said = async (argv: string[]) => fails(m.run(argv));
-  expect(await said(['frobnicate'])).toBe('konnect has no command frobnicate: run konnect help');
-  const help = await m.run(['help']);
-  for (const line of ['konnect team <name>', 'konnect who', 'konnect send @name [message]', 'konnect send \'#channel\' [message]', 'konnect read @name', 'konnect read \'#channel\'', 'konnect logout', 'konnect channel new <name>', 'konnect channel join|leave <name>', 'konnect mcp --agent <label>', 'konnect recruit', 'konnect claude <label>', 'konnect codex|opencode <label>', 'konnect join', 'konnect leave', 'konnect remove @name', 'live chat']) expect(help).toContain(line);
-  expect(await m.run(['--version'])).toBe('development (run from source)');
-  // A Kolab that isn't there is said plainly.
-  expect(await fails(m.run(['team', 'hub'], { open: () => undefined }))).toMatch(/^can't reach Kolab at http:\/\/127\.0\.0\.1:9\/mcp: check your connection and try again, or start the local Kolab$/);
+  // who: team list.
+  const list = await bo.run(['team', 'list']);
+  expect(await old(bo, ['who'])).toStrictEqual({ out: list, err: ['(konnect who is now konnect team list)'] });
+  // read: receive; read --history: history.
+  await ann.run(['send', '@bo', 'hello']);
+  const read = await old(bo, ['read']);
+  expect(read.out).toMatch(/@ann\n {2}hello$/);
+  expect(read.err).toStrictEqual(['(konnect read is now konnect receive)']);
+  await ann.run(['send', '#general', 'in general']);
+  expect(await old(bo, ['read', '--history', '#general'])).toMatchObject({ out: expect.stringMatching(/^#general\n[\s\S]* {2}in general$/), err: ['(konnect read is now konnect history)'] });
+  // history marked nothing.
+  expect(await bo.run(['receive', '#general'])).toMatch(/ {2}in general$/);
+  // join: login.
+  expect(await old(bo, ['join', 'hub'], { open: () => { throw new Error('no browser'); } })).toStrictEqual({ out: 'Already logged in to team hub as @bo.', err: ['(konnect join is now konnect login)'] });
+  // channel new | join | leave: create | follow | unfollow.
+  expect(await old(ann, ['channel', 'new', 'deploys'])).toStrictEqual({ out: 'Created #deploys. You follow it, and everyone in the team can read it and send to it.', err: ['(konnect channel new is now konnect channel create)'] });
+  expect(await old(bo, ['channel', 'join', 'deploys'])).toStrictEqual({ out: 'Following #deploys: konnect receive includes it from now on.', err: ['(konnect channel join is now konnect channel follow)'] });
+  expect(await old(bo, ['channel', 'leave', 'deploys'])).toStrictEqual({ out: 'No longer following #deploys. A message there that mentions you still reaches you.', err: ['(konnect channel leave is now konnect channel unfollow)'] });
+  // recruit: team invite; --list: team list; --withdraw: team remove.
+  expect(await old(ann, ['recruit', 'cy'])).toMatchObject({ out: expect.stringMatching(/^Invited: cy\./), err: ['(konnect recruit is now konnect team invite)'] });
+  expect(await old(ann, ['recruit', '--list'])).toMatchObject({ out: expect.stringMatching(/^@cy {12}person {2}invited \d{4}-\d\d-\d\d$/m), err: ['(konnect recruit is now konnect team list)'] });
+  expect(await old(ann, ['recruit', '--withdraw', 'cy'])).toStrictEqual({ out: 'Withdrew cy\'s invitation to team hub.', err: ['(konnect recruit is now konnect team remove)'] });
+  // claude|codex|opencode <name>: agent run <name> <harness>; --no-start: agent add; --listen: --wake-on.
+  const allow = (u: URL) => { idp.next(annId); void browse(u, pressing('decision=allow')); };
+  const self = () => ({ command: 'node', args: ['k.mjs'] });
+  const started: { cmd: string; env: Record<string, string> }[] = [];
+  const ran = await old(ann, ['claude', 'helper', '--listen', '#general', '--', '--model', 'opus'], { open: allow, self, start: async (c) => { started.push(c); return 0; } });
+  expect(ran.err[0]).toBe('(konnect claude is now konnect agent run helper claude)');
+  expect(started).toMatchObject([{ cmd: 'claude' }]);
+  expect(JSON.parse(readFileSync(join(ann.cwd, '.mcp.json'), 'utf8')).mcpServers['konnect-helper'].env.KONNECT_WAKE_ON).toBe('general');
+  const added = await old(ann, ['codex', 'coder', '--no-start'], { open: allow, self, start: async () => { throw new Error('started'); } });
+  expect(added.err[0]).toBe('(konnect codex is now konnect agent add coder)');
+  expect(added.err.filter((l) => l.startsWith('('))).toHaveLength(1);
+  expect(added.out).toMatch(/^Your agent @ann\/coder is added to team hub, and logged in on this machine\./);
+  // remove: team remove. leave: team leave <the team konnect works in>.
+  idp.account({ subject: '44', login: 'dee' });
+  await kolab.signInWith({ provider: 'stub', subject: '44', login: 'dee' });
+  await kolab.grant('hub', 'dee', 'write');
+  expect(await old(ann, ['remove', '@dee'])).toMatchObject({ out: expect.stringMatching(/^Removed @dee from team hub: \d+ sessions? ended\.$/), err: ['(konnect remove is now konnect team remove)'] });
+  expect(await old(bo, ['leave'])).toStrictEqual({ out: 'You left team hub. konnect dropped its logins to it here.', err: ['(konnect leave is now konnect team leave <team>)'] });
+  // konnect team <name> isn't kept: it says the two commands it could have meant (2).
+  expect(await fails(ann.run(['team', 'hub']))).toBe('konnect team has no hub: it is list, create, invite, remove or leave. To log in to a team: konnect login hub. To create one: konnect team create hub');
+  expect(ann.err).toStrictEqual([]);
 });
 
 // ---- the review of #151 ---------------------------------------------------------------------------
@@ -196,24 +262,24 @@ function failCalls(tool: string) {
   }) as typeof fetch;
 }
 
-test('a sign-in whose identity check fails is revoked and forgotten, never kept unchecked; a kept sign-in that isn\'t the person\'s in the team is refused before any call', async () => {
+test('a login whose identity check fails is revoked and forgotten, never kept unchecked; a kept login that isn\'t the person\'s in the team is refused before any call', async () => {
   const { kolab, server, signIn, ann: annId } = await teams();
   const ann = machine(server.url, 'ann');
   // konjir_whoami fails right after the tokens are saved: nothing stays kept, and the grant is revoked.
   failCalls('konjir_whoami');
-  expect(await fails(signIn(ann, annId, 'hub'))).toMatch(/^can't reach Kolab/);
+  expect(await fails(signIn(ann, annId, 'hub'))).toMatch(/^can't reach the service at /);
   globalThis.fetch = realFetch;
   expect(JSON.parse(readFileSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), 'utf8'))).toStrictEqual({});
   expect((await kolab.db.query(`select 1 from session where actor_id = 'ann' and grant_id is not null and ended_at is null`)).rows).toStrictEqual([]);
-  expect(existsSync(join(ann.cwd, '.konnect.json'))).toBe(false);
+  expect(readdirSync(ann.cwd)).toStrictEqual([]);
 
-  // A file for team side that holds a sign-in to hub: refused when it opens, before anything is sent.
+  // A file for team side that holds a login to hub: refused when it opens (3), before anything is sent.
   await signIn(ann, annId, 'hub');
   copyFileSync(join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), join(ann.env.KONNECT_CONFIG_DIR, 'teams', 'side.json'));
-  expect(await fails(ann.run(['send', '@bo', '--team', 'side', 'hi'])))
-    .toBe('the sign-in kept for team side isn\'t yours in team side, so konnect won\'t use it: run konnect team side to sign in again');
-  expect(await fails(ann.run(['who', '--team', 'side'])))
-    .toBe('the sign-in kept for team side isn\'t yours in team side, so konnect won\'t use it: run konnect team side to sign in again');
+  const wrong = 'the login kept for team side isn\'t yours in team side, so konnect won\'t use it: run konnect login side';
+  expect(await fails(ann.run(['--team', 'side', 'send', '@bo', 'hi']))).toBe(wrong);
+  expect(await fails(ann.run(['team', 'list', '--team', 'side']))).toBe(wrong);
+  expect(await exitOf(ann.run(['team', 'list', '--team', 'side']))).toBe(3);
 });
 
 test('KONNECT_URL is kept as it reads back: a path of /mcp when it has none, its host lowercased, never with credentials, a query or a fragment', () => {
@@ -224,16 +290,14 @@ test('KONNECT_URL is kept as it reads back: a path of /mcp when it has none, its
   expect(() => normalUrl('https://kolab.example.com/mcp?x=1')).toThrow(/query or a fragment/);
   expect(() => normalUrl('https://kolab.example.com/mcp#x')).toThrow(/query or a fragment/);
   expect(() => normalUrl('ftp://kolab.example.com/mcp')).toThrow(/is ftp/);
-  // Whatever konnect writes, it reads back.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'konnect-url-')));
+  // Whatever konnect keeps, it reads back as it is.
   for (const u of ['https://kolab.example.com', 'https://Kolab.example.com/mcp', 'http://LOCALHOST:7420']) {
-    const path = rememberTeam(dir, 'hub', normalUrl(u));
-    expect(readProject(path)).toStrictEqual({ path, team: 'hub', url: normalUrl(u) });
+    expect(wellFormedUrl(normalUrl(u))).toBe(true);
+    expect(normalUrl(normalUrl(u))).toBe(normalUrl(u));
   }
-  expect(() => rememberTeam(dir, 'hub', 'https://u:p@kolab.example.com/mcp')).toThrow(/couldn't read it back/);
 });
 
-test('konnect read looks names up before it marks anything read: if that fails the messages still show, by stored name; --json needs no names', async () => {
+test('konnect receive looks names up before it receives anything: if that fails the messages still show, by stored name; --json needs no names', async () => {
   const { server, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
   const bo = machine(server.url, 'bo');
@@ -241,34 +305,27 @@ test('konnect read looks names up before it marks anything read: if that fails t
   await signIn(bo, boId, 'hub');
   await bo.run(['send', '@ann', 'first']);
   failCalls('konjir_list_members');
-  expect(await ann.run(['read'])).toMatch(/@bo\n {2}first$/);
+  expect(await ann.run(['receive'])).toMatch(/@bo\n {2}first$/);
   await bo.run(['send', '@ann', 'second']);
-  expect(JSON.parse(await ann.run(['read', '--json'])).direct).toMatchObject([{ from: 'bo', message: 'second' }]);
+  expect(JSON.parse(await ann.run(['receive', '--json'])).direct).toMatchObject([{ from: 'bo', message: 'second' }]);
 });
 
-test('a message is never read for flags: after the recipient, its words are the message as written; -- ends the flags', async () => {
-  expect(parseArgs(['send', '@ann', 'use', '--json', 'here'])).toStrictEqual({ json: false, forget: false, words: ['send', '@ann', 'use', '--json', 'here'] });
-  expect(parseArgs(['send', '@ann', 'try', '--team', 'x'])).toStrictEqual({ json: false, forget: false, words: ['send', '@ann', 'try', '--team', 'x'] });
-  expect(parseArgs(['--json', 'send', '--team', 'hub', '@ann', 'hi'])).toStrictEqual({ json: true, team: 'hub', forget: false, words: ['send', '@ann', 'hi'] });
-  expect(parseArgs(['send', '@ann', '--json', 'hi'])).toStrictEqual({ json: true, forget: false, words: ['send', '@ann', 'hi'] });
-  expect(parseArgs(['send', '@ann', '--', '--json'])).toStrictEqual({ json: false, forget: false, words: ['send', '@ann', '--json'] });
-  expect(parseArgs(['read', '--', '--json'])).toStrictEqual({ json: false, forget: false, words: ['read', '--json'] });
-
+test('a message is never read for options: after the recipient, its words are the message as written', async () => {
   const { server, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
   const bo = machine(server.url, 'bo');
   await signIn(ann, annId, 'hub');
   await signIn(bo, boId, 'hub');
   expect(await bo.run(['send', '@ann', 'use', '--json', 'here', '--team', 'side'])).toBe('Sent to @ann.');
-  expect(JSON.parse(await ann.run(['read', '--json'])).direct).toMatchObject([{ message: 'use --json here --team side' }]);
+  expect(JSON.parse(await ann.run(['receive', '--json'])).direct).toMatchObject([{ message: 'use --json here --team side' }]);
 });
 
 test('text from Kolab or a file reaches the terminal as text: bidirectional and zero-width characters are shown as ?', () => {
-  expect(printable('ann‮gnp.exe')).toBe('ann?gnp.exe');
-  expect(printable('a​b\u001b[2Jc\nd')).toBe('a?b?[2Jc\nd');
+  expect(printable('ann\u202egnp.exe')).toBe('ann?gnp.exe');
+  expect(printable('a\u200bb\u001b[2Jc\nd')).toBe('a?b?[2Jc\nd');
 });
 
-test('konnect leaves a config folder it didn\'t make as it is, refusing one others may write in; it updates the .konnect.json it found, never shadows it; send reads its message before opening a session', async () => {
+test('konnect leaves a config folder it didn\'t make as it is, refusing one others may write in; send reads its message before opening a session', async () => {
   const { server, signIn, ann: annId } = await teams();
   const ann = machine(server.url, 'ann');
   // A config folder that was there already, 0755: used, and left 0755.
@@ -283,20 +340,11 @@ test('konnect leaves a config folder it didn\'t make as it is, refusing one othe
   const open = join(ann.root, 'open');
   mkdirSync(open);
   chmodSync(open, 0o777);
-  expect(await fails(ann.run(['team', 'hub'], { env: { ...ann.env, KONNECT_CONFIG_DIR: open } }))).toMatch(/^others may write in .*open, so konnect won't keep a sign-in there/);
+  expect(await fails(ann.run(['login', 'hub'], { env: { ...ann.env, KONNECT_CONFIG_DIR: open }, open: () => undefined }))).toMatch(/^others may write in .*open, so konnect won't keep a sign-in there/);
   expect(statSync(open).mode & 0o777).toBe(0o777);
 
-  // In a repository, konnect team below the root updates the root's .konnect.json.
-  const repo = join(ann.root, 'repo');
-  mkdirSync(join(repo, '.git'), { recursive: true });
-  mkdirSync(join(repo, 'src'));
-  writeFileSync(join(repo, '.konnect.json'), JSON.stringify({ team: 'side', other: 1 }));
-  expect(await ann.run(['team', 'hub'], { cwd: join(repo, 'src') })).toBe(`Using team hub as ann. ${join(repo, '.konnect.json')} remembers it.`);
-  expect(existsSync(join(repo, 'src', '.konnect.json'))).toBe(false);
-  expect(JSON.parse(readFileSync(join(repo, '.konnect.json'), 'utf8'))).toStrictEqual({ team: 'hub', other: 1, url: server.url });
-
-  // The message is read first: with no sign-in for the team, stdin was still read, before konnect found none.
+  // The message is read first: with no login for the team, stdin was still read, before konnect found none.
   let asked = 0;
-  expect(await fails(ann.run(['send', '@bo', '--team', 'side'], { stdin: async () => { asked++; return 'hi'; } }))).toBe('you aren\'t signed in to team side: run konnect team side');
+  expect(await fails(ann.run(['--team', 'side', 'send', '@bo'], { stdin: async () => { asked++; return 'hi'; } }))).toBe('you aren\'t logged in to team side: run konnect login side');
   expect(asked).toBe(1);
 });

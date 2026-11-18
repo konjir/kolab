@@ -45,7 +45,7 @@ export interface Unread {
 export type As = { kind: 'person' } | { kind: 'agent'; label: string; owner?: string };
 
 /** The service's tools for direct-message history and for removing one's own agent. */
-export const DIRECT_HISTORY_TOOL = 'konjir_list_direct_messages';
+export const DIRECT_HISTORY_TOOL = 'konjir_list_messages';
 export const REMOVE_AGENT_TOOL = 'konjir_remove_agent';
 
 /** The client's name on Kolab's sign-in page. */
@@ -281,7 +281,7 @@ export class TeamClient {
 
   /** REMOVE_AGENT_TOOL: a person removes an agent of their own, by its name. */
   removeAgent(label: string) {
-    return this.newer<{ removed: string; ended: number }>(REMOVE_AGENT_TOOL, { agent: label }, 'remove an agent');
+    return this.newer<{ kolab: string; removed: string; label: string; revoked: number; ended: number }>(REMOVE_AGENT_TOOL, { agent: label }, 'remove an agent');
   }
 
   /** konjir_leave_kolab: the person leaves the team, and their agents with them. */
