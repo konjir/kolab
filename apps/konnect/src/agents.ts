@@ -32,7 +32,7 @@ export const HARNESSES: readonly Tool[] = ['claude', 'codex', 'opencode'];
 export const AGENT_ROLE = 'engineer';
 
 /** The scope of Kolab's setup page for one agent in a team: the same as `konjir connect`'s. */
-export const agentSetupScope = (team: string, label: string) => `konjir kolab:${team} setup:${label}:${AGENT_ROLE}`;
+export const agentSetupScope = (team: string, ...labels: string[]) => `konjir kolab:${team} ${labels.map((label) => `setup:${label}:${AGENT_ROLE}`).join(' ')}`;
 
 /** The name the agent's MCP server goes by in its tool. */
 export const serverName = (label: string) => `konnect-${label}`;
@@ -44,25 +44,31 @@ export function checkLabel(label: string): string {
 }
 
 /**
- * Makes the agent if it is new, and signs it in: Kolab's setup page, in the browser, where the
- * person allows it; the agent's own sign-in is kept in its file. Returns its stored name.
+ * Makes each agent that is new, and logs each in: one page of Kolab's setup, in the browser, where
+ * the person allows them all at once; each agent's own login is kept in its file. Returns each one's
+ * stored name, in the order given.
  */
-export async function setUpAgent(team: string, url: string, label: string, io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }, again = `run konnect agent add ${label} again`): Promise<{ agent: string; made: boolean; file: string }> {
-  const file = agentFileReady(team, label, io.env);
+export async function setUpAgents(team: string, url: string, labels: string[], io: { open?: (u: URL) => void | Promise<void>; log: (l: string) => void; env: Record<string, string | undefined> }, again = `run konnect agent add ${labels.join(' ')} again`): Promise<{ label: string; agent: string; made: boolean; file: string }[]> {
+  const files = labels.map((label) => agentFileReady(team, label, io.env));
+  const named = labels.length === 1 ? `your agent ${labels[0]}` : `your agents ${labels.join(', ')}`;
   let done;
   try {
     done = await setup(url, {
-      scope: agentSetupScope(team, label), mint: true, clientName: 'konnect agent', open: io.open, log: io.log,
-      opening: `Opening your browser to add your agent ${label} to team ${team}. Check what the page names, then Allow.`,
+      scope: agentSetupScope(team, ...labels), mint: true, clientName: 'konnect agent', open: io.open, log: io.log,
+      opening: `Opening your browser to add ${named} to team ${team}. Check what the page names, then Allow.`,
       again,
     });
   } catch (e) {
-    throw new Error(String((e as Error)?.message ?? e).replace(/run konjir connect again/g, `run the konnect command for ${label} again`).replace(/konjir connect/g, 'konnect'));
+    throw new Error(String((e as Error)?.message ?? e).replace(/run konjir connect again/g, again).replace(/konjir connect/g, 'konnect'));
   }
-  const a = done.agents.find((x) => x.label === label) ?? done.agents[0];
-  if (!a?.tokens) throw new Error(`the service added ${label} but issued it no login: run the command again`);
-  await keepSignIn(url, file, { client: done.client, tokens: a.tokens, ...(done.discovery ? { discovery: done.discovery } : {}) });
-  return { agent: a.agent, made: a.made, file };
+  const out = [];
+  for (const [i, label] of labels.entries()) {
+    const a = done.agents.find((x) => x.label === label);
+    if (!a?.tokens) throw new Error(`the service added ${label} but issued it no login: run the command again`);
+    await keepSignIn(url, files[i], { client: done.client, tokens: a.tokens, ...(done.discovery ? { discovery: done.discovery } : {}) });
+    out.push({ label, agent: a.agent, made: a.made, file: files[i] });
+  }
+  return out;
 }
 
 /** How this konnect runs, for an entry that starts `konnect mcp`. Tests give others. */

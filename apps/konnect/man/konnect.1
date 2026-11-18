@@ -1,4 +1,4 @@
-.TH KONNECT 1 "November 2026" "konnect 0.4.0" "konnect manual"
+.TH KONNECT 1 "November 2026" "konnect 0.5.0" "konnect manual"
 .SH NAME
 konnect \- chat for a team's people and their AI agents
 .SH SYNOPSIS
@@ -26,9 +26,9 @@ konnect \- chat for a team's people and their AI agents
 
 \fBkonnect agent list\fR
 \fBkonnect agent add\fR [\fB\-\-wake\-on\fR \fIchannel\fR]... [\fB\-\-act\-for\fR \fIwhom\fR]
-                  [\fB\-\-system\-prompt\fR \fItext\fR] \fIname\fR
+                  [\fB\-\-system\-prompt\fR \fItext\fR] \fIname\fR...
 \fBkonnect agent run\fR [\fB\-\-wake\-on\fR \fIchannel\fR]... [\fB\-\-act\-for\fR \fIwhom\fR]
-                  [\fB\-\-system\-prompt\fR \fItext\fR] [\fB\-\-background\fR]
+                  [\fB\-\-system\-prompt\fR \fItext\fR] [\fB\-\-background\fR [\fB\-\-count\fR \fIn\fR]]
                   \fIname\fR \fIharness\fR [\fIargument\fR...]
 \fBkonnect agent attach\fR \fIname\fR
 \fBkonnect agent stop\fR \fIname\fR
@@ -170,10 +170,10 @@ An agent of yours is a member of the team, named \fB@\fR\fIyou\fR\fB/\fR\fIname\
 List your agents in the team, which are connected now, which are set up on this machine, and which are running here in the background.
 \fBkonnect team list\fR shows everyone's.
 .TP
-\fBkonnect agent add\fR [\fIoptions\fR] \fIname\fR
-Add an agent, and print the entry to put in the harness it will run in (an MCP server).
+\fBkonnect agent add\fR [\fIoptions\fR] \fIname\fR...
+Add an agent, or several, and print each one's entry to put in the harness it will run in (an MCP server).
 It starts nothing.
-The browser opens for you to allow the agent.
+The browser opens once for you to allow them, however many are named.
 For an agent whose login is already kept on this machine, it prints the entry again and no browser opens.
 .IP
 The entry gives the harness the agent's tools and its system prompt (see \fBAGENTS\fR).
@@ -266,6 +266,10 @@ Words of your own, added after konnect's.
 \fB\-\-background\fR
 Keep the harness running apart from this terminal, in tmux, or in screen where tmux isn't installed: one session for each agent, named \fBkonnect\-\fR\fIteam\fR\fB\-\fR\fIname\fR.
 \fBkonnect agent attach\fR looks in on it and \fBkonnect agent stop\fR ends it.
+.TP
+\fB\-\-count\fR \fIn\fR
+With \fB\-\-background\fR: start \fIn\fR agents at once, named \fIname\fR\fB\-1\fR to \fIname\fR\fB\-\fR\fIn\fR (10 at most).
+New ones are all allowed on one page of the browser.
 The first time in a folder, Claude Code asks whether to trust it: attach once and answer.
 .PP
 Options may go anywhere, except in \fBkonnect send\fR and \fBkonnect agent run\fR, where everything after \fIto\fR or \fIname\fR belongs to the message or to the harness.
@@ -446,6 +450,12 @@ Run an agent that wakes on every message in #deploys, in the background, and loo
     konnect agent run \-\-background \-\-wake\-on deploys deployer claude
     konnect agent attach deployer
     konnect agent stop deployer
+.fi
+.PP
+Start three workers at once, with one approval in the browser:
+.PP
+.nf
+    konnect agent run \-\-background \-\-count 3 worker claude
 .fi
 .PP
 Watch what the team and its agents are saying, live:

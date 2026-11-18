@@ -89,6 +89,7 @@ function checkOptions(a: Args, words: string[]) {
   only(a.actFor !== undefined, '--act-for', starts, 'konnect agent add and konnect agent run do');
   only(a.systemPrompt !== undefined, '--system-prompt', starts, 'konnect agent add and konnect agent run do');
   only(a.background, '--background', cmd === 'agent' && verb === 'run', 'only konnect agent run does');
+  only(a.count !== undefined, '--count', cmd === 'agent' && verb === 'run', 'only konnect agent run does');
   only(a.forget, '--forget', cmd === 'logout', 'only konnect logout does');
   only(a.reply !== undefined, '--reply', cmd === 'send', 'only konnect send does');
 }
