@@ -65,12 +65,12 @@ test('two agents of different owners, each behind its own bridge, exchange messa
   // Nothing waits for either: a session with an empty inbox and no messages starts no turn.
   expect([toA, toB]).toStrictEqual([[], []]);
 
-  // Who is there to talk to: the kolab's members, with who is here now; neither bridge says a state (konjir_say_state), so each agent's is null.
+  // Who is there to talk to: the kolab's members, with who is here now; neither bridge says a state (konjir_say_state), but each listens for messages, so each agent's is running.
   expect((await call<{ members: unknown[] }>(a, 'list_members')).members).toStrictEqual([
     { actor: 'ann', kind: 'person', owner: null, here: false },
-    { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', here: true, state: null, you: true },
+    { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', here: true, state: 'running', you: true },
     { actor: 'bo', kind: 'person', owner: null, here: false },
-    { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', here: true, state: null },
+    { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', here: true, state: 'running' },
   ]);
 
   // A sends: B's bridge starts a turn with it, and A's says nothing.
