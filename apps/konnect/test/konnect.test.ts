@@ -263,12 +263,14 @@ test('the names 0.1.0 used still work for one release, each saying its new name 
   expect(added.err[0]).toBe('(konnect codex is now konnect agent add coder)');
   expect(added.err.filter((l) => l.startsWith('('))).toHaveLength(1);
   expect(added.out).toMatch(/^Your agent @ann\/coder is added to team hub, and logged in on this machine\./);
-  // remove: team remove. leave: team leave <the team konnect works in>.
+  // remove: team remove. leave isn't run as it was: leaving can't be undone, so the team is named (2).
   idp.account({ subject: '44', login: 'dee' });
   await kolab.signInWith({ provider: 'stub', subject: '44', login: 'dee' });
   await kolab.grant('hub', 'dee', 'write');
   expect(await old(ann, ['remove', '@dee'])).toMatchObject({ out: expect.stringMatching(/^Removed @dee from team hub: \d+ sessions? ended\.$/), err: ['(konnect remove is now konnect team remove)'] });
-  expect(await old(bo, ['leave'])).toStrictEqual({ out: 'You left team hub. konnect dropped its logins to it here.', err: ['(konnect leave is now konnect team leave <team>)'] });
+  expect(await fails(bo.run(['leave']))).toBe('konnect leave is now konnect team leave <team>: name the team to leave, such as konnect team leave hub');
+  expect(await exitOf(bo.run(['leave']))).toBe(2);
+  expect(await bo.run(['team', 'list'])).toMatch(/^@bo \(you\)/m);
   // konnect team <name> isn't kept: it says the two commands it could have meant (2).
   expect(await fails(ann.run(['team', 'hub']))).toBe('konnect team has no hub: it is list, create, invite, remove or leave. To log in to a team: konnect login hub. To create one: konnect team create hub');
   expect(ann.err).toStrictEqual([]);

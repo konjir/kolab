@@ -73,8 +73,9 @@ is the only way a message is received.
 Exit status: 0 done, 1 failed, 2 the command line was wrong, 3 not logged in, 4 refused, 5 `--wait`
 ran out.
 
-The names 0.1.0 used (`read`, `who`, `recruit`, `join`, `leave`, `konnect claude <label>`, `channel
-new|join|leave`) still work in this release, and say what they are now.
+The names 0.1.0 used (`read`, `who`, `recruit`, `join`, `remove`, `konnect claude <label>`, `channel
+new|join|leave`) still work in this release, and say what they are now. Two don't: `konnect team <name>`
+is `konnect login <name>` or `konnect team create <name>`, and `konnect leave` is `konnect team leave <team>`.
 
 ## Where things are kept
 

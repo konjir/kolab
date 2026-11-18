@@ -6,7 +6,7 @@
  *   konnect receive [<from>]        your unread, oldest first; then no longer unread
  *   konnect history <of>            recent messages; changes nothing
  */
-import { NotYet, Refused, type TeamClient } from './client.js';
+import { NotYet, Refused, SignInError, type TeamClient } from './client.js';
 import { leftAfter, readAll, readOne, send, targetOf, type Block, type Sent, type Target } from './chat.js';
 import type { Ctx } from './context.js';
 import { UsageError, WaitRanOut } from './errors.js';
@@ -147,7 +147,9 @@ export async function receive(ctx: Ctx, rest: string[]) {
           const step = Math.min(LOOK_EVERY_MS, ctx.args.wait - waited);
           await ctx.pause(step);
           waited += step;
-          if (await waits(client, from).catch(() => false)) { blocks.length = 0; await once(); }
+          // A look that fails for a moment is tried again; a login that has lapsed, or a refusal, never mends by waiting.
+          const waiting = await waits(client, from).catch((e: unknown) => { if (e instanceof SignInError || e instanceof Refused) throw e; return false; });
+          if (waiting) { blocks.length = 0; await once(); }
         }
         if (!got()) throw new WaitRanOut(`nothing arrived${from ? ` ${from.kind === 'channel' ? `in #${from.channel}` : `from ${printable(from.given)}`}` : ''} in the time given`);
       }

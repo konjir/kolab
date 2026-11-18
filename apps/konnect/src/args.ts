@@ -35,6 +35,9 @@ export function duration(given: string): number {
   return Math.round(Number(m[1]) * { s: 1_000, m: 60_000, h: 3_600_000 }[m[2] as 's' | 'm' | 'h']);
 }
 
+/** konnect's own options, as written. */
+const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--wake-on', '--act-for', '--system-prompt', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
+
 export function parseArgs(argv: string[]): Args {
   const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], forget: false };
   const value = (i: number, what: string) => {
@@ -47,7 +50,18 @@ export function parseArgs(argv: string[]): Args {
     if (w === '--') { a.words.push(...argv.slice(i + 1)); break; }
     // The message, or the harness's own command line: taken as written from its first word.
     const theirs = (a.words[0] === 'send' && a.words.length >= 2) || (a.words[0] === 'agent' && a.words[1] === 'run' && a.words.length >= 3);
-    if (theirs) { a.words.push(...argv.slice(i)); break; }
+    if (theirs) {
+      // An option of konnect's right after <to> or <name> is a slip, not a message or a harness: it would
+      // be sent as words, or as the wrong person. `--` before it says it is meant.
+      const first = a.words.length === (a.words[0] === 'send' ? 2 : 3);
+      if (first && OPTIONS.has(w)) {
+        throw new UsageError(a.words[0] === 'send'
+          ? `konnect send: ${w} is an option of konnect's, and options go before <to>. To send it as words: konnect send ${a.words[1]} -- ${w} ...`
+          : `konnect agent run: ${w} is an option of konnect's, and options go before <name>: konnect agent run ${w} ... ${a.words[2]} <harness>`);
+      }
+      a.words.push(...argv.slice(i));
+      break;
+    }
     if (w === '--json') { a.json = true; continue; }
     if (w === '--help' || w === '-h') { a.help = true; continue; }
     if (w === '--version' || w === '-V') { a.version = true; continue; }

@@ -6,8 +6,8 @@
  *   konnect login [<team>]
  *   konnect logout [<team>]
  */
-import { rmSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { logout } from '@konjir/login';
 import { Refused, said, type Invitation } from './client.js';
 import type { Ctx } from './context.js';
@@ -15,7 +15,7 @@ import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
 import { channelName, formatChannels, formatTeam, memberJson, printable, shownName, storedName, type Member } from './names.js';
 import { joinTeam, signInToTeam } from './sign-in.js';
-import { agentFile, checkTeam, teamFile, teamsAt } from './teams.js';
+import { agentFile, checkTeam, dropIfEmpty, teamFile, teamsAt } from './teams.js';
 
 const one = (rest: string[], usage: string): string => {
   if (rest.length !== 1) throw new UsageError(usage);
@@ -102,8 +102,11 @@ export async function team(ctx: Ctx, verb: string | undefined, rest: string[]) {
     let r;
     try { r = await client.leave().catch((e) => { throw ownerOnly(name)(e); }); } finally { await client.close(); }
     await logout(ctx.url, { path: teamFile(name, ctx.env), forget: true }).catch(() => undefined);
-    // Its agents' logins are revoked with it: what konnect kept of them here goes too.
-    try { rmSync(dirname(agentFile(name, 'x', ctx.env)), { recursive: true, force: true }); } catch { /* none kept */ }
+    // Its agents' logins are revoked with it: what konnect kept of them here, for this service, goes too.
+    const kept = dirname(agentFile(name, 'x', ctx.env));
+    let files: string[] = [];
+    try { files = readdirSync(kept).filter((f) => f.endsWith('.json')); } catch { /* none kept */ }
+    for (const f of files) { await logout(ctx.url, { path: join(kept, f), forget: true }).catch(() => undefined); dropIfEmpty(join(kept, f)); }
     ctx.print(r, () => `You left team ${name}${r.agents.length ? `, and your agents ${r.agents.map(printable).join(', ')} with you` : ''}. konnect dropped its logins to it here.`);
     return;
   }
