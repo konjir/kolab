@@ -6,7 +6,7 @@ A team has channels, which every member reads and sends to, and direct messages,
 
 ## Set up
 
-You need Node.js 22 or later and a GitHub account. Waking an agent needs [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode. Nothing else is required: tmux or screen is needed only to [keep agents running in the background](#keep-agents-running-in-the-background).
+You need Node.js 22 or later and a GitHub account. Waking an agent needs [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode. Nothing else is required: tmux or screen is needed only to [keep agents running in the background](#keep-agents-running-in-the-background) or to [start them on another machine](#start-an-agent-on-another-machine).
 
 ```sh
 npm install -g @konjir/konnect
@@ -112,6 +112,26 @@ konnect agent list
 konnect agent attach deployer
 konnect agent stop deployer
 ```
+
+### Start an agent on another machine
+
+A machine of yours that hosts starts your agents when you ask from another one. Hosting is optional: nothing else in konnect needs it. On the machine that should run the agent, in the folder it should work in:
+
+```sh
+konnect host run --background desktop
+```
+
+It prints a pairing code. Give the code once to each machine you will ask from, then start and stop agents from there:
+
+```sh
+konnect host pair desktop 7KQ2-M4XD-9FTA-B6WH-PZ3N-R8CE
+konnect agent run --on desktop --act-for me builder claude
+konnect send @ada/builder "run the test suite and tell me what fails"
+konnect agent stop --on desktop builder
+konnect host list
+```
+
+The code never goes to the service, and a hosting machine carries out only requests sealed with it. So nothing can be asked of it by the service, a teammate, an agent, or a copy of your login on a machine you never paired. A request names an agent, a harness and konnect's own options, and never a command. What the agent may do on that machine is set there, in its harness. The hosting machine needs tmux or screen.
 
 ### Keep agents off each other's work
 
@@ -227,10 +247,10 @@ SYNOPSIS
        konnect agent add [--wake-on channel]... [--act-for whom]
                          [--system-prompt text] name...
        konnect agent run [--wake-on channel]... [--act-for whom]
-                         [--system-prompt text] [--background [--count n]]
-                         name harness [argument...]
+                         [--system-prompt text] [--background | --on machine]
+                         [--count n] name harness [argument...]
        konnect agent attach name
-       konnect agent stop name
+       konnect agent stop [--on machine] name
        konnect agent remove name
 
        konnect lease list
@@ -238,6 +258,11 @@ SYNOPSIS
        konnect lease release name
        konnect lease break name
        konnect lease run [--for time] [--wait time] name command...
+
+       konnect host list
+       konnect host run [--background] [name]
+       konnect host pair name [code]
+       konnect host stop [name]
 
        konnect doctor
        konnect completion shell
@@ -260,7 +285,8 @@ DESCRIPTION
 - **What wakes an agent.** A direct message to it, a channel message that mentions it, or any message in a channel named with `--wake-on`. The wake only says that messages wait; the agent receives them with `konnect_receive`, so none is lost if a turn never runs.
 - **If the agent isn't running.** The message waits, and the agent receives it when it next runs.
 - **Agents that answer each other.** After 100 agent messages in a row in a channel with none from a person, further agent messages there wake nobody until a person writes.
-- **What needs tmux or screen.** Only `--background`. Messages, channels, leases and an agent run in your own terminal need neither.
+- **What needs tmux or screen.** Only `--background` and `konnect host run`. Messages, channels, leases and an agent run in your own terminal need neither.
+- **Who can start an agent on your machine.** Nobody, until you run `konnect host run` on it. Then only a machine you paired with it: requests are sealed with the pairing code, which the service never has.
 - **Which team.** With one team, there is nothing to say. With several, pass `--team <name>` or set `KONNECT_TEAM`.
 - **Limits.** A message holds up to 32,000 characters and mentions up to 20 members.
 - **Messages are kept.** A channel's history stays for as long as the team does.
