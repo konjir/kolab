@@ -22,6 +22,8 @@ export interface Args {
   wait?: number;
   /** --wake-on, --act-for, --system-prompt: agent add, agent run. */
   wakeOn: string[]; actFor?: ActFor; systemPrompt?: string;
+  /** --background: agent run. */
+  background: boolean;
   /** Plumbing: konnect logout --forget. */
   forget: boolean;
   /** Names from 0.1.0, still read for one release (aliases in konnect.ts). */
@@ -36,10 +38,10 @@ export function duration(given: string): number {
 }
 
 /** konnect's own options, as written. */
-const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--wake-on', '--act-for', '--system-prompt', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
+const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--wake-on', '--act-for', '--system-prompt', '--background', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
 
 export function parseArgs(argv: string[]): Args {
-  const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], forget: false };
+  const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], background: false, forget: false };
   const value = (i: number, what: string) => {
     const v = argv[i + 1];
     if (v === undefined || v.startsWith('--')) throw new UsageError(`${argv[i]} needs ${what}`);
@@ -84,6 +86,7 @@ export function parseArgs(argv: string[]): Args {
       if (argv[i + 1] === undefined) throw new UsageError('--system-prompt needs the words to add');
       a.systemPrompt = argv[i + 1]; i++; continue;
     }
+    if (w === '--background') { a.background = true; continue; }
     if (w === '--forget') { a.forget = true; continue; }
     // 0.1.0's options.
     if (w === '--history') { a.history = true; continue; }

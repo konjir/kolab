@@ -279,6 +279,11 @@ export class TeamClient {
     return (await this.newer<{ messages: Message[] }>(DIRECT_HISTORY_TOOL, { with: member, limit }, 'show the history of direct messages')).messages;
   }
 
+  /** konjir_list_messages with no member: the newest `limit` direct messages the session received or sent, newest first, marking nothing. */
+  async directRecent(limit: number): Promise<Message[]> {
+    return (await this.call<{ messages: Message[] }>(DIRECT_HISTORY_TOOL, { limit })).messages;
+  }
+
   /** REMOVE_AGENT_TOOL: a person removes an agent of their own, by its name. */
   removeAgent(label: string) {
     return this.newer<{ kolab: string; removed: string; label: string; revoked: number; ended: number }>(REMOVE_AGENT_TOOL, { agent: label }, 'remove an agent');
