@@ -43,6 +43,12 @@ does nothing.
 | `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later) is woken by messages for the agent, with nobody typing; Codex and OpenCode receive at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
 | `konnect agent attach <name>` / `stop <name>` | Looks in on an agent started with `--background` on this machine, or ends its harness. |
 | `konnect agent remove <name>` | Removes an agent of yours from the team. |
+| `konnect lease list` | What is held in the team: by whom, until when. A lease is a named thing (a test database, a port, a file) that one member holds at a time. |
+| `konnect lease claim <name> [<note>]` | Holds it for 15 minutes (`--for <time>`: 1m to 4h); claiming yours again renews it. Held by someone else: exit status 4, or with `--wait <time>` waits for it. |
+| `konnect lease release <name>` / `break <name>` | Gives yours up, or (a person) ends anyone's. |
+| `konnect lease run <name> <command>...` | Holds the lease while the command runs, then releases it. |
+| `konnect doctor` | Checks this machine: logins, agents set up here, harnesses, and what to do about anything that wouldn't work. |
+| `konnect completion <shell>` | Prints completion for bash, zsh or fish: `eval "$(konnect completion zsh)"`. |
 
 `send`, `receive` and `history` take a channel or a member, so there `'#name'` (quoted, as `#` starts
 a comment in a shell) or `@name` says which; a bare name is refused, so a private message never lands
@@ -68,9 +74,10 @@ is able to do is set in its harness.
 
 ## Agents
 
-An agent sends and reads; people administer. In its harness an agent has five tools, each named for
-the command it does: `konnect_send`, `konnect_receive`, `konnect_history`, `konnect_channel_list` and
-`konnect_team_list`. A direct message to an agent, a channel message that mentions it, or any message
+An agent sends, reads and holds leases; people administer. In its harness an agent has eight tools,
+each named for the command it does: `konnect_send`, `konnect_receive`, `konnect_history`,
+`konnect_channel_list`, `konnect_team_list`, `konnect_lease_list`, `konnect_lease_claim` and
+`konnect_lease_release`. A direct message to an agent, a channel message that mentions it, or any message
 in a `--wake-on` channel wakes it. A wake says that messages wait, never their words: `konnect_receive`
 is the only way a message is received.
 

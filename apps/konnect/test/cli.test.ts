@@ -117,7 +117,7 @@ test('an unknown command, verb or option, or one an option doesn\'t belong to, i
   expect(await usage(['status', 'now'])).toBe('konnect status: unknown now');
   expect(await usage(['mcp', 'serve'])).toBe('konnect mcp: unknown serve');
   expect(await usage(['status', '-n', '5'])).toBe('konnect status takes no -n: konnect receive and konnect history do');
-  expect(await usage(['--wait', '5s', 'history', '#general'])).toBe('konnect history takes no --wait: konnect receive does');
+  expect(await usage(['--wait', '5s', 'history', '#general'])).toBe('konnect history takes no --wait: konnect receive, konnect lease claim and konnect lease run do');
   expect(await usage(['team', 'list', '--act-for', 'me'])).toBe('konnect team list takes no --act-for: konnect agent add and konnect agent run do');
   expect(await usage(['channel', 'list', '--wake-on', '#general'])).toBe('konnect channel list takes no --wake-on: konnect agent add and konnect agent run do');
   expect(await usage(['agent', 'list', '--system-prompt', 'x'])).toBe('konnect agent list takes no --system-prompt: konnect agent add and konnect agent run do');
@@ -175,7 +175,7 @@ test('acting as an agent (--agent, or KONNECT_AGENT), every command but status, 
     expect(await exitOf(run())).toBe(4);
     return fails(run());
   };
-  const said = (cmd: string, how = '--agent') => `konnect ${cmd} is a person's to run, and this command line is acting as agent helper (${how}): an agent can send, receive, watch, read history and list channels and the team`;
+  const said = (cmd: string, how = '--agent') => `konnect ${cmd} is a person's to run, and this command line is acting as agent helper (${how}): an agent can send, receive, watch, read history, list channels and the team, and hold leases`;
   expect(await refused(['--agent', 'helper', 'team', 'invite', 'cy'])).toBe(said('team invite'));
   expect(await refused(['team', 'remove', 'bo'], { KONNECT_AGENT: 'helper' })).toBe(said('team remove', 'KONNECT_AGENT'));
   expect(await refused(['--agent', 'helper', 'team', 'create', 'x'])).toBe(said('team create'));

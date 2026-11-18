@@ -75,7 +75,7 @@ async function ready(ctx: Ctx, team: string, givens: { name: string; owner?: str
 const sessionName = (team: string, name: string) => `konnect-${team}-${name}`;
 
 /** Runs a program, giving its exit status and what it printed; -1 when it isn't installed. */
-const exec = (ctx: Ctx) => ctx.io.exec ?? ((cmd: string, args: string[], cwd: string) => new Promise<{ code: number; out: string }>((resolve) => {
+export const exec = (ctx: Ctx) => ctx.io.exec ?? ((cmd: string, args: string[], cwd: string) => new Promise<{ code: number; out: string }>((resolve) => {
   let out = '';
   const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: ctx.env as NodeJS.ProcessEnv });
   child.stdout.on('data', (d) => { out += d; });
@@ -85,7 +85,7 @@ const exec = (ctx: Ctx) => ctx.io.exec ?? ((cmd: string, args: string[], cwd: st
 }));
 
 /** What keeps a background harness on this machine: tmux when it is installed, else screen, else nothing. */
-async function multiplexer(ctx: Ctx): Promise<'tmux' | 'screen' | undefined> {
+export async function multiplexer(ctx: Ctx): Promise<'tmux' | 'screen' | undefined> {
   if ((await exec(ctx)('tmux', ['-V'], ctx.cwd)).code !== -1) return 'tmux';
   if ((await exec(ctx)('screen', ['-v'], ctx.cwd)).code !== -1) return 'screen';
   return undefined;

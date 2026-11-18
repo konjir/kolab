@@ -1,12 +1,16 @@
 /**
- * `konnect mcp`: konnect for an agent, as a stdio MCP server. An agent sends and reads; people
- * administer. So it has exactly five tools, each named for the command it does, as the agent:
+ * `konnect mcp`: konnect for an agent, as a stdio MCP server. An agent sends, reads and holds
+ * leases; people administer. So it has exactly eight tools, each named for the command it does, as
+ * the agent:
  *
  *   konnect_send {to, message, reply_to?}   konnect send
  *   konnect_receive {from?, limit?}         konnect receive
  *   konnect_history {of, limit?}            konnect history
  *   konnect_channel_list {}                 konnect channel list
  *   konnect_team_list {}                    konnect team list
+ *   konnect_lease_list {}                   konnect lease list
+ *   konnect_lease_claim {name, minutes?, note?}   konnect lease claim
+ *   konnect_lease_release {name}            konnect lease release
  *
  * It runs as the agent named (--agent <name>, or KONNECT_AGENT) in the team named (--team, or
  * KONNECT_TEAM), with the agent's login from its own file (agentFile in teams.ts, or
@@ -30,6 +34,7 @@ import * as z from 'zod';
 import type { ActFor } from './args.js';
 import { CLIENT_NAME, Refused, SignInError, TeamClient } from './client.js';
 import { readAll, readOne, send, targetOf, type Block } from './chat.js';
+import { formatLeases, until } from './cmd-lease.js';
 import { formatChannels, formatTeam, memberJson, shownActor, type Member } from './names.js';
 import { systemPrompt } from './system-prompt.js';
 
@@ -251,6 +256,38 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
   }, tool(async (c) => {
     const members = await c.members();
     return { text: formatTeam(members, []), data: { members: members.map(memberJson) } };
+  }));
+
+  server.registerTool('konnect_lease_list', {
+    description: 'Who holds what in your team, and until when. A lease is a named thing (a test database, a port, a file) that one member holds at a time, so that agents working side by side keep off each other\'s.',
+    inputSchema: z.object({}),
+  }, tool(async (c) => {
+    const leases = await c.leases();
+    return { text: leases.length ? formatLeases(leases, await names(c)) : 'Nothing is held.', data: { leases } };
+  }));
+
+  server.registerTool('konnect_lease_claim', {
+    description: 'Hold a named thing before you use it, or renew one you hold. It lasts 15 minutes unless minutes says (1 to 240). If someone else holds it, you are told who and until when: wait, or work on something else. Release it when you are done.',
+    inputSchema: z.object({
+      name: z.string().describe('What to hold: letters, digits and . _ / @ : -, such as testdb or apps/server/src/x.ts'),
+      minutes: z.number().int().min(1).max(240).optional().describe('How long: 15 by default'),
+      note: z.string().max(200).optional().describe('What you are doing with it, for the others'),
+    }),
+  }, tool(async (c, a: { name: string; minutes?: number; note?: string }) => {
+    const r = await c.claimLease(a.name, a.minutes !== undefined ? a.minutes * 60 : undefined, a.note);
+    const members = r.claimed ? [] : await names(c);
+    return {
+      text: r.claimed ? `${r.renewed ? 'Renewed' : 'You hold'} ${a.name} ${until(r.lease)}.` : `${a.name} is held by @${shownActor(r.lease.holder, members)} ${until(r.lease)}${r.lease.note ? `: ${r.lease.note}` : ''}. You don't hold it.`,
+      data: { claimed: r.claimed, lease: r.lease },
+    };
+  }));
+
+  server.registerTool('konnect_lease_release', {
+    description: 'Give up a lease you hold, as soon as you are done with the thing.',
+    inputSchema: z.object({ name: z.string().describe('The lease') }),
+  }, tool(async (c, a: { name: string }) => {
+    const r = await c.releaseLease(a.name);
+    return { text: r.released ? `Released ${a.name}.` : `You weren't holding ${a.name}.`, data: r };
   }));
 
   await server.connect(transport);

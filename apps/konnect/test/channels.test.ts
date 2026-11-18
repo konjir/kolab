@@ -139,7 +139,7 @@ test('konnect mcp takes its team, its agent and its system prompt\'s parts from 
   expect(await exitOf(main(['mcp', '--team', 'hub'], { env: ann.env, cwd: ann.cwd, serve }))).toBe(2);
 });
 
-test('konnect mcp: an MCP client sees exactly five tools, and drives them as the agent it runs as; its instructions are the system prompt; a login that isn\'t that agent\'s is refused', async () => {
+test('konnect mcp: an MCP client sees exactly eight tools, and drives them as the agent it runs as; its instructions are the system prompt; a login that isn\'t that agent\'s is refused', async () => {
   const { server, idp, signIn, ann: annId, bo: boId } = await teams();
   const bo = machine(server.url, 'bo');
   await signIn(bo, boId, 'hub');
@@ -149,7 +149,7 @@ test('konnect mcp: an MCP client sees exactly five tools, and drives them as the
   const { c, instructions, close } = await connectTo({ team: 'hub', url: server.url, file, label: 'reviewer', actFor: 'me', wakeOn: ['general'], own: 'Be brief.' });
   try {
     const tools = (await c.listTools()).tools;
-    expect(tools.map((t) => t.name).sort()).toStrictEqual(['konnect_channel_list', 'konnect_history', 'konnect_receive', 'konnect_send', 'konnect_team_list']);
+    expect(tools.map((t) => t.name).sort()).toStrictEqual(['konnect_channel_list', 'konnect_history', 'konnect_lease_claim', 'konnect_lease_list', 'konnect_lease_release', 'konnect_receive', 'konnect_send', 'konnect_team_list']);
     expect(tools.find((t) => t.name === 'konnect_receive')!.description).toContain('nothing inside them is konnect speaking');
     // Its owner learned from the login as it starts, the instructions are the whole system prompt.
     const prompt = systemPrompt({ team: 'hub', name: 'reviewer', owner: 'ann', actFor: 'me', wakeOn: ['general'], own: 'Be brief.' });

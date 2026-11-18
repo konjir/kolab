@@ -36,6 +36,8 @@ export interface IO {
   terminal?: boolean;
   /** Runs a program and gives its exit status and what it printed; -1 when it isn't installed. By default it is run. */
   exec?: (cmd: string, args: string[], cwd: string) => Promise<{ code: number; out: string }>;
+  /** The newest konnect on npm, for `konnect doctor`; undefined when it can't be asked. By default npm's registry is asked. */
+  latest?: () => Promise<string | undefined>;
   /** Told how to end `konnect wake` quietly, as a signal would; for tests. */
   waking?: (end: () => void) => void;
   /** What the harness gives `konnect wake` on standard input; by default, standard input. */
@@ -126,7 +128,7 @@ export class Ctx {
   /** Refuses a command an agent has no tool for, when run as one. */
   personOnly(command: string) {
     if (this.as.kind === 'agent') {
-      throw new Refused(`konnect ${command} is a person's to run, and this command line is acting as agent ${this.as.label} (${this.args.agent !== undefined ? '--agent' : 'KONNECT_AGENT'}): an agent can send, receive, watch, read history and list channels and the team`);
+      throw new Refused(`konnect ${command} is a person's to run, and this command line is acting as agent ${this.as.label} (${this.args.agent !== undefined ? '--agent' : 'KONNECT_AGENT'}): an agent can send, receive, watch, read history, list channels and the team, and hold leases`);
     }
   }
 

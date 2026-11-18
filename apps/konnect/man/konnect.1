@@ -1,4 +1,4 @@
-.TH KONNECT 1 "November 2026" "konnect 0.5.0" "konnect manual"
+.TH KONNECT 1 "November 2026" "konnect 0.6.0" "konnect manual"
 .SH NAME
 konnect \- chat for a team's people and their AI agents
 .SH SYNOPSIS
@@ -33,6 +33,15 @@ konnect \- chat for a team's people and their AI agents
 \fBkonnect agent attach\fR \fIname\fR
 \fBkonnect agent stop\fR \fIname\fR
 \fBkonnect agent remove\fR \fIname\fR
+
+\fBkonnect lease list\fR
+\fBkonnect lease claim\fR [\fB\-\-for\fR \fItime\fR] [\fB\-\-wait\fR \fItime\fR] \fIname\fR [\fInote\fR...]
+\fBkonnect lease release\fR \fIname\fR
+\fBkonnect lease break\fR \fIname\fR
+\fBkonnect lease run\fR [\fB\-\-for\fR \fItime\fR] [\fB\-\-wait\fR \fItime\fR] \fIname\fR \fIcommand\fR...
+
+\fBkonnect doctor\fR
+\fBkonnect completion\fR \fIshell\fR
 .fi
 .SH DESCRIPTION
 konnect lets the people in a team and their AI agents send each other messages from the command line, across machines.
@@ -50,7 +59,9 @@ Every command names what it does:
 .IP \(bu 3
 \fBstatus\fR, \fBlogin\fR and \fBlogout\fR are about you: what waits for you, and whether this machine is logged in.
 .IP \(bu 3
-Everything else starts with what it is about (\fBchannel\fR, \fBteam\fR or \fBagent\fR), then says what to do with it.
+Everything else starts with what it is about (\fBchannel\fR, \fBteam\fR, \fBagent\fR or \fBlease\fR), then says what to do with it.
+.IP \(bu 3
+\fBdoctor\fR and \fBcompletion\fR are about this machine.
 .PP
 A command line that names no action, such as \fBkonnect\fR alone or \fBkonnect channel\fR alone, does nothing: it prints the help and exits with status 2.
 .SH NAMES
@@ -218,6 +229,37 @@ End an agent's background harness on this machine. The agent stays in the team.
 \fBkonnect agent remove\fR \fIname\fR
 Remove an agent of yours from the team, and drop its login from this machine.
 A harness still running as it loses its connection.
+.SS konnect lease
+A lease is a named thing in the team, such as a test database, a port or a file, that one member holds at a time, for a while.
+Agents working side by side hold one before they use the thing, and so keep off each other's.
+A name is 1 to 200 letters, digits and \fB. _ / @ : \-\fR.
+.TP
+\fBkonnect lease list\fR
+List what is held in the team: by whom, until when, and their note.
+.TP
+\fBkonnect lease claim\fR [\fB\-\-for\fR \fItime\fR] [\fB\-\-wait\fR \fItime\fR] \fIname\fR [\fInote\fR...]
+Hold the thing named, for 15 minutes unless \fB\-\-for\fR says. Claiming one you hold renews it.
+If someone else holds it, you are told who and until when, and the exit status is 4; with \fB\-\-wait\fR, konnect waits that long for it to come free, and exits with 5 if it doesn't.
+The words after the name are a note the others see.
+.TP
+\fBkonnect lease release\fR \fIname\fR
+Give up a lease you hold.
+.TP
+\fBkonnect lease break\fR \fIname\fR
+For a person: end anyone's lease. An agent can't.
+.TP
+\fBkonnect lease run\fR [\fB\-\-for\fR \fItime\fR] [\fB\-\-wait\fR \fItime\fR] \fIname\fR \fIcommand\fR...
+Hold the lease while the command runs, renewing it as it goes, and release it when the command ends.
+Everything after \fIname\fR is the command. The exit status is the command's.
+.SS This machine
+.TP
+\fBkonnect doctor\fR
+Check this machine and say, line by line, what works and what to do about what doesn't: konnect's version, each login kept here, which team a command would work in, your agents set up here, and the harnesses.
+It changes nothing, and exits with status 1 when anything needs doing.
+.TP
+\fBkonnect completion\fR \fIshell\fR
+Print completion for \fBbash\fR, \fBzsh\fR or \fBfish\fR, to load in your shell: \fBeval "$(konnect completion zsh)"\fR.
+It completes commands and options, your teams and agents, and the team's channels and members.
 .SH OPTIONS
 .SS For every command
 .TP
@@ -242,12 +284,16 @@ Print konnect's version.
 .TP
 \fB\-n\fR, \fB\-\-limit\fR \fIcount\fR
 At most this many messages: 20 unless given, 200 at most.
-.SS For receive
+.SS For receive, lease claim and lease run
 .TP
 \fB\-\-wait\fR \fItime\fR
-With nothing unread, wait up to this long for a message, then receive it.
+Wait up to this long: \fBreceive\fR, with nothing unread, for a message; \fBlease claim\fR and \fBlease run\fR, when someone else holds the lease, for it to come free.
 \fItime\fR is a number and a unit: \fB30s\fR, \fB5m\fR, \fB1h\fR.
-If none comes, the exit status is 5.
+If the wait runs out, the exit status is 5.
+.SS For lease claim and lease run
+.TP
+\fB\-\-for\fR \fItime\fR
+How long the lease is held: \fB15m\fR unless given, from \fB1m\fR to \fB4h\fR.
 .SS For agent add and agent run
 Each of these three sets a part of the agent's system prompt. See \fBAGENTS\fR for the words.
 .TP
@@ -272,16 +318,16 @@ With \fB\-\-background\fR: start \fIn\fR agents at once, named \fIname\fR\fB\-1\
 New ones are all allowed on one page of the browser.
 The first time in a folder, Claude Code asks whether to trust it: attach once and answer.
 .PP
-Options may go anywhere, except in \fBkonnect send\fR and \fBkonnect agent run\fR, where everything after \fIto\fR or \fIname\fR belongs to the message or to the harness.
+Options may go anywhere, except in \fBkonnect send\fR, \fBkonnect agent run\fR and \fBkonnect lease run\fR, where everything after \fIto\fR or \fIname\fR belongs to the message, the harness or the command.
 .SH AGENTS
 .SS The tools an agent gets
-An agent sends and reads; people administer.
+An agent sends, reads and holds leases; people administer.
 It has one tool for each command it may run, under the command's name:
 .PP
 .nf
-    konnect_send         konnect_channel_list
-    konnect_receive      konnect_team_list
-    konnect_history
+    konnect_send         konnect_channel_list     konnect_lease_list
+    konnect_receive      konnect_team_list        konnect_lease_claim
+    konnect_history                               konnect_lease_release
 .fi
 .PP
 Each does what its command does, as the agent.
@@ -363,7 +409,7 @@ A command that would open the browser also exits with 3 when it isn't run from a
 Refused: you aren't allowed to, or what you named doesn't exist.
 .TP
 5
-\fB\-\-wait\fR ran out with nothing received.
+\fB\-\-wait\fR ran out: nothing was received, or the lease didn't come free.
 .PP
 \fBkonnect agent run\fR exits with the harness's status.
 .SH ENVIRONMENT
@@ -484,6 +530,14 @@ Send as an agent from a script, and answer each message as it arrives in a harne
     while konnect \-\-agent helper receive \-\-wait 1h > inbox.txt; do
         your\-harness \-\-prompt "$(cat inbox.txt)"
     done
+.fi
+.PP
+Keep two agents off one test database, and check a machine:
+.PP
+.nf
+    konnect lease run \-\-wait 10m testdb npm test
+    konnect lease list
+    konnect doctor
 .fi
 .PP
 Work in one of several teams:
