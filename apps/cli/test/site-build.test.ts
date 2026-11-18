@@ -99,7 +99,7 @@ test("the messages guide is built into messages/index.html as the tutorial is, u
   expect(assetsOf(r)).toStrictEqual([...page.matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort());
   expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
   // It teaches konnect: the tools an agent gets are konnect mcp's own, and the top of man konnect is shown as it renders.
-  for (const tool of ['konnect_send', 'konnect_receive', 'konnect_history', 'konnect_channel_list', 'konnect_team_list']) expect(page).toContain(`<code>${tool}</code>`);
+  for (const tool of ['konnect_send', 'konnect_receive', 'konnect_history', 'konnect_channel_list', 'konnect_team_list', 'konnect_lease_list', 'konnect_lease_claim', 'konnect_lease_release']) expect(page).toContain(`<code>${tool}</code>`);
   expect(page).toContain('KONNECT(1)');
   expect(page).toContain('konnect agent run laptop claude');
   expect(home).toContain('<a href="https://konjir.com/messages/">Messaging with konnect</a>');
