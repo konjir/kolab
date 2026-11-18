@@ -139,11 +139,45 @@ async function screenId(ctx: Ctx, session: string): Promise<string | undefined> 
   return new RegExp(`(\\d+\\.${session})\\s`).exec((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out)?.[1];
 }
 
-/** Ends a background session: that one, and no other whose name begins with its name. */
+/** How long what a session runs is given to end after each signal, and how often konnect looks. */
+const END_WAIT_MS = 1_500, END_LOOK_MS = 100;
+
+/**
+ * The processes a background session's windows run. Each leads a group of its own, with the
+ * harness and what the harness started in it.
+ */
+async function sessionPids(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<number[]> {
+  const pids = (out: string) => out.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 1);
+  if (kind === 'tmux') {
+    const r = await exec(ctx)('tmux', ['list-panes', '-s', '-t', `=${session}`, '-F', '#{pane_pid}'], ctx.cwd);
+    return r.code === 0 ? pids(r.out) : [];
+  }
+  const id = await screenId(ctx, session);
+  if (!id) return [];
+  const r = await exec(ctx)('pgrep', ['-P', id.slice(0, id.indexOf('.'))], ctx.cwd);
+  return r.code === 0 ? pids(r.out) : [];
+}
+
+/**
+ * Ends a background session: that one, and no other whose name begins with its name. What it runs
+ * is ended first, by konnect itself, since closing the session doesn't everywhere do it: on macOS,
+ * screen leaves a harness running with no terminal. Each window's group is hung up on, as a closed
+ * terminal would, then told to end, then ended, with a moment between for it to go by itself.
+ */
 export async function endSession(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<{ code: number; out: string }> {
+  const signal = ctx.io.signal ?? ((pid: number, sig: NodeJS.Signals | 0) => { try { process.kill(pid, sig); return true; } catch { return false; } });
+  const groups = await sessionPids(ctx, kind, session);
+  const left = () => groups.filter((g) => signal(-g, 0));
+  for (const sig of ['SIGHUP', 'SIGTERM', 'SIGKILL'] as const) {
+    for (const g of left()) signal(-g, sig);
+    for (let waited = 0; waited < END_WAIT_MS && left().length; waited += END_LOOK_MS) await ctx.pause(END_LOOK_MS);
+    if (!left().length) break;
+  }
+  // The session closes by itself when what it ran has ended; one that is still there is closed.
+  if (!await running(ctx, kind, session)) return { code: 0, out: '' };
   if (kind === 'tmux') return exec(ctx)('tmux', ['kill-session', '-t', `=${session}`], ctx.cwd);
   const id = await screenId(ctx, session);
-  return id ? exec(ctx)('screen', ['-S', id, '-X', 'quit'], ctx.cwd) : { code: 1, out: 'there is no such session' };
+  return id ? exec(ctx)('screen', ['-S', id, '-X', 'quit'], ctx.cwd) : { code: 0, out: '' };
 }
 
 /**

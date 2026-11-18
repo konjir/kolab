@@ -165,6 +165,8 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
         // Hosting in the background on this machine: its session is ended, and the service told.
         const r = await endSession(ctx, kind, session);
         if (r.code !== 0) throw new Error(`${kind} couldn't end ${session}: ${r.out.trim() || `it exited with ${r.code}`}`);
+        // Told once the session's last word to the service, if one was on its way, has landed: or that word would list it as hosting again.
+        await ctx.pause(1_500);
         await client.endHost(name).catch(() => undefined);
         ctx.print({ team, host: name, stopped: true }, () => `This machine no longer hosts as ${name} in team ${team}. Agents it started keep running: konnect agent stop <name> ends one.`);
         return;
