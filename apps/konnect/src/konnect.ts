@@ -133,7 +133,12 @@ export async function main(argv: string[], io: IO = {}) {
   // Plumbing: the hook that wakes an agent's idle harness.
   if (parsed.words[0] === 'wake') return wake(ctx, parsed.words.slice(1));
   // Plumbing: what the shell's completion asks. Its words are someone's half-typed command line, never run.
-  if (parsed.words[0] === '_complete') return complete(ctx, parsed.words.slice(1));
+  if (parsed.words[0] === '_complete') {
+    await complete(ctx, parsed.words.slice(1));
+    // A Tab never waits on a connection left open: what was asked of the service and didn't come in time is dropped with the process.
+    if (io.out === undefined) process.exit(0);
+    return;
+  }
 
   const said = new Set<string>();
   const words = fromOld(parsed, (old, now) => { if (!said.has(old)) { said.add(old); err(`(${old} is now ${now})`); } }, () => ctx.team());

@@ -18,7 +18,7 @@ import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
 import { printable, shownName } from './names.js';
-import { freePort, givenPort, wakeOpenCode } from './opencode.js';
+import { freePort, wakeOpenCode, withPort } from './opencode.js';
 import { systemPrompt } from './system-prompt.js';
 import { HOSTED_URL, agentFile, agentFileReady, dropIfEmpty } from './teams.js';
 
@@ -216,9 +216,10 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
       // submitting the notice of new messages as a prompt.
       let stopWaking: (() => Promise<void>) | undefined;
       if (tool === 'opencode') {
-        const port = givenPort(extra) ?? await (ctx.io.port ?? freePort)();
-        if (givenPort(extra) === undefined) run = { ...run, args: ['--port', String(port), ...run.args] };
-        stopWaking = await (ctx.io.wakeOpenCode ?? wakeOpenCode)({ team, url: ctx.url, file: agentFile(team, name, ctx.env), label: name, owner: r.owner, port, wakeOn: wakeOn(ctx).join(',') || undefined, log: ctx.err })
+        const settled = await withPort(run.args, ctx.io.port ?? freePort);
+        run = { ...run, args: settled.args };
+        // Nothing is written to the terminal from here on: it is OpenCode's.
+        stopWaking = await (ctx.io.wakeOpenCode ?? wakeOpenCode)({ team, url: ctx.url, file: agentFile(team, name, ctx.env), label: name, owner: r.owner, port: settled.port, wakeOn: wakeOn(ctx).join(',') || undefined })
           .catch((e: unknown) => { ctx.err(`konnect can't wake ${name} in OpenCode (${(e as Error)?.message ?? e}): it receives at the start of each turn`); return undefined; });
       }
       let code: number;

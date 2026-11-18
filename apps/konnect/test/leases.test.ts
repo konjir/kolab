@@ -72,6 +72,21 @@ test('konnect lease run holds the lease while the command runs and releases it a
   await ann.run(['lease', 'run', '--wait', '1m', 'testdb', 'true'], { pause: async () => { if (!freed) { freed = true; await bo.run(['lease', 'release', 'testdb']); } }, start: async (c) => { ran.push(c); return 0; } });
   expect(ran).toHaveLength(2);
   expect(await fails(ann.run(['lease', 'run', 'testdb']))).toBe('konnect lease run testdb <command>...: say what to run while holding it');
+
+  // A lease is a member's, not a process's: one Ann holds already (a claim, or another lease run) starts
+  // nothing (4), and is left as it was, never released under whoever is using it.
+  await ann.run(['lease', 'claim', 'testdb', 'by hand']);
+  expect(await fails(ann.run(['lease', 'run', 'testdb', 'npm', 'test'], { start: async () => { throw new Error('started'); } })))
+    .toBe('you hold testdb already, from another konnect lease run or a konnect lease claim, so this command wasn\'t started: wait for that to end, or konnect lease release testdb');
+  expect(await bo.run(['lease', 'list'])).toMatch(/^testdb {3}@ann {3}until .* {3}by hand$/);
+  let inner = '';
+  await ann.run(['lease', 'release', 'testdb']);
+  await ann.run(['lease', 'run', 'testdb', 'outer'], { start: async () => { inner = await fails(ann.run(['lease', 'run', 'testdb', 'inner'], { start: async () => { throw new Error('started'); } })); expect(await bo.run(['lease', 'list'])).toMatch(/^testdb {3}@ann /); return 0; } });
+  expect(inner).toMatch(/^you hold testdb already/);
+  // A person ends the lease while the command runs: it is not taken back, and not released from under its next holder.
+  await ann.run(['lease', 'run', 'testdb', 'long'], { start: async () => { await bo.run(['lease', 'break', 'testdb']); await bo.run(['lease', 'claim', 'testdb']); return 0; } });
+  expect(await ann.run(['lease', 'list'])).toMatch(/^testdb {3}@bo /);
+  await bo.run(['lease', 'release', 'testdb']);
   expect(await fails(ann.run(['lease', 'run', 'testdb', '--wait', '1m', 'true']))).toMatch(/^konnect lease run: --wait is an option of konnect's, and options go before <name>/);
 
   // An agent holds leases as itself: with --agent from a script, and with its three tools in its harness. It can't break one.

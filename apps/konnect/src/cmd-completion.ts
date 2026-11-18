@@ -59,13 +59,13 @@ export async function completion(ctx: Ctx, rest: string[]) {
 interface Names { at: number; channels: string[]; people: string[]; agents: string[] }
 
 /** The team's channels and members, from what is kept when it is fresh, else asked for briefly; nothing when neither can be had. */
-async function names(ctx: Ctx): Promise<Names> {
+async function names(ctx: Ctx, typed?: string): Promise<Names> {
   const none: Names = { at: 0, channels: [], people: [], agents: [] };
   let team: string;
-  try { team = chooseTeam(ctx.args.team, ctx.url, ctx.env); } catch { return none; }
+  try { team = chooseTeam(typed ?? ctx.args.team, ctx.url, ctx.env); } catch { return none; }
   const file = join(configDir(ctx.env), 'completion', `${team}.json`);
   let kept = none;
-  try { kept = JSON.parse(readFileSync(file, 'utf8')) as Names; } catch { /* none kept */ }
+  try { const read = JSON.parse(readFileSync(file, 'utf8')) as Names | null; if (read && Array.isArray(read.channels) && Array.isArray(read.people) && Array.isArray(read.agents)) kept = read; } catch { /* none kept, or not what konnect wrote */ }
   if (Date.now() - (kept.at ?? 0) < KEPT_MS) return kept;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -109,11 +109,14 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
     if (!before[i].startsWith('-')) pos.push(before[i]);
   }
   const [cmd, verb] = pos;
+  // The team named on the line being typed is the one whose channels and members are offered.
+  const typed = before.includes('--team') ? before[before.indexOf('--team') + 1] : undefined;
+  const team = typed && /^[a-z0-9][a-z0-9-]{0,39}$/.test(typed) ? typed : undefined;
 
   if (prev === '--team') return teamsAt(ctx.url, ctx.env);
   if (prev === '--agent') return agentsHere(ctx);
   if (prev === '--act-for') return [...ACT_FOR];
-  if (prev === '--wake-on') return (await names(ctx)).channels;
+  if (prev === '--wake-on') return (await names(ctx, team)).channels;
   if (prev && VALUED.has(prev)) return [];
 
   if (cur.startsWith('-')) {
@@ -131,11 +134,11 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
   if (cmd === 'agent' && ['run', 'attach', 'stop', 'remove', 'add'].includes(verb) && pos.length === 2) return agentsHere(ctx);
   if (cmd === 'agent' && verb === 'run' && pos.length === 3) return [...HARNESSES];
   if (['send', 'receive', 'history', 'watch'].includes(cmd) && pos.length === 1) {
-    const n = await names(ctx);
+    const n = await names(ctx, team);
     return [...n.channels.map((c) => `#${c}`), ...n.people.map((p) => `@${p}`), ...n.agents.map((a) => `@${a}`)];
   }
-  if (cmd === 'channel' && (verb === 'follow' || verb === 'unfollow') && pos.length === 2) return (await names(ctx)).channels;
-  if (cmd === 'team' && verb === 'remove' && pos.length === 2) return (await names(ctx)).people;
+  if (cmd === 'channel' && (verb === 'follow' || verb === 'unfollow') && pos.length === 2) return (await names(ctx, team)).channels;
+  if (cmd === 'team' && verb === 'remove' && pos.length === 2) return (await names(ctx, team)).people;
   return [];
 }
 

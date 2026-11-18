@@ -205,18 +205,37 @@ test('OpenCode is woken through its own API: the notice is put in its prompt box
   await signIn(ann, annId, 'hub');
   await ann.run(['agent', 'add', 'coder'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
   const bo = await kolab.openSession('bo', 'product', { kolab: 'hub' });
-  const { wakeOpenCode, givenPort } = await import('../src/opencode.js');
-  expect([givenPort(['--model', 'x']), givenPort(['--port', '5123']), givenPort(['--port=77']), givenPort(['--port', 'x'])]).toStrictEqual([undefined, 5123, 77, undefined]);
+  const { wakeOpenCode, withPort } = await import('../src/opencode.js');
+  // The port is settled once: the person's when it is usable, else konnect's, and an unusable one of theirs is taken out.
+  const ours = async () => 4000;
+  expect(await withPort(['--model', 'x'], ours)).toStrictEqual({ port: 4000, args: ['--port', '4000', '--model', 'x'] });
+  expect(await withPort(['--port', '5123', '-c'], ours)).toStrictEqual({ port: 5123, args: ['--port', '5123', '-c'] });
+  expect(await withPort(['--port=77'], ours)).toStrictEqual({ port: 77, args: ['--port', '77'] });
+  expect(await withPort(['--port', '0', '--model', 'x'], ours)).toStrictEqual({ port: 4000, args: ['--port', '4000', '--model', 'x'] });
 
+  // A stand-in for OpenCode's prompt box: what is put in it, and what is sent when it is submitted.
   const given: string[] = [];
+  let box = '';
+  let appends = 0;
   let up = false;
-  const stop = await wakeOpenCode({ team: 'hub', url: server.url, file: join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'coder.json'), label: 'coder', owner: 'ann', port: 1, submit: async (text) => { if (!up) return false; given.push(text); return true; } });
+  let submits = true;
+  const stop = await wakeOpenCode({
+    team: 'hub', url: server.url, file: join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'coder.json'), label: 'coder', owner: 'ann', port: 1,
+    append: async (text) => { if (!up) return false; appends++; box += text; return true; },
+    submit: async () => { if (!submits) return false; given.push(box); box = ''; return true; },
+  });
   try {
     // A message while OpenCode isn't answering yet: tried again, and given once it is.
     await kolab.sendMessage(bo, 'ann-coder', 'SECRET are you there?');
     await new Promise((r) => setTimeout(r, 600));
     expect(given).toStrictEqual([]);
+    // It takes the notice but not the submit, at first: the notice is put in once, never twice.
+    submits = false;
     up = true;
+    for (const end = Date.now() + 10_000; !appends && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 1_200));
+    expect(appends).toBe(1);
+    submits = true;
     for (const end = Date.now() + 10_000; !given.length && Date.now() < end;) await new Promise((r) => setTimeout(r, 50));
     expect(given).toHaveLength(1);
     expect(given[0]).toMatch(/^New for you in team hub: a direct message from @bo\.\nReceive it now with konnect_receive/);
