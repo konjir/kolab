@@ -74,7 +74,7 @@ export type Block =
  * waits. With a `limit` that runs out, the channels not reached come back with their unread as
  * `more` and nothing read.
  */
-export async function readAll(client: TeamClient, onBlock: (b: Block) => void, opts: { limit?: number } = {}): Promise<{ listed: Channel[] }> {
+export async function readAll(client: TeamClient, onBlock: (b: Block) => void, opts: { limit?: number; mentioned?: boolean } = {}): Promise<{ listed: Channel[] }> {
   let left = opts.limit;
   const deliver = (b: Block) => {
     onBlock(b);
@@ -83,8 +83,10 @@ export async function readAll(client: TeamClient, onBlock: (b: Block) => void, o
   };
   deliver({ kind: 'direct', ...await client.readDirect(undefined, left) });
   const listed = await client.channels();
-  for (const c of listed.filter((x) => x.following && x.unread > 0)) {
-    if (left !== undefined && left <= 0) { onBlock({ kind: 'channel', channel: c.channel, messages: [], more: c.unread }); continue; }
+  // An agent's place in a channel starts when the service first sees it there, so one that mentions
+  // it is read too (`mentioned`); a person's would start at the channel's first message.
+  for (const c of listed.filter((x) => (x.following && x.unread > 0) || (opts.mentioned && !x.following && x.mentions > 0))) {
+    if (left !== undefined && left <= 0) { onBlock({ kind: 'channel', channel: c.channel, messages: [], more: c.following ? c.unread : c.mentions }); continue; }
     deliver({ kind: 'channel', channel: c.channel, ...await client.readChannel(c.channel, left) });
   }
   return { listed };
