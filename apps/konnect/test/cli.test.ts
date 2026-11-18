@@ -4,6 +4,9 @@
 // options; the exit status for each kind of failure; what an agent may not run; and the system
 // prompt konnect gives an agent, for each --act-for. The service here is an address with nothing
 // behind it, so anything that reached it would fail as unreachable, not as asserted.
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, test } from '@jest/globals';
 import { NotYet, Refused, SignInError, USAGE, UsageError, WaitRanOut, duration, exitStatus, helpFor, parseArgs, systemPrompt } from '../src/konnect.js';
 import { NoTerminal } from '../src/errors.js';
@@ -213,4 +216,22 @@ test('the system prompt: who the agent is, then whose messages it carries out (n
     'Be brief.\nUse British spelling.',
   ].join('\n\n'));
   expect(systemPrompt({ team: 'hub', name: 'helper', owner: 'ann', own: '   ' })).toBe(`${always}\n\n${nobody}`);
+});
+
+test('an entry an earlier konnect wrote in the folder\'s .mcp.json is taken out, and only that one: Claude Code is given it on its command line now', async () => {
+  const { dropOldEntry } = await import('../src/agents.js');
+  const dir = mkdtempSync(join(tmpdir(), 'konnect-mcp-'));
+  const file = join(dir, '.mcp.json');
+  expect(dropOldEntry(dir, 'konnect-helper', 'helper')).toBeUndefined();
+  const ours = { type: 'stdio', command: 'node', args: ['k.mjs', 'mcp'], env: { KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper' } };
+  const theirs = { command: 'other', args: ['serve'] };
+  writeFileSync(file, JSON.stringify({ note: 'kept', mcpServers: { 'konnect-helper': ours, other: theirs, 'konnect-reviewer': { ...ours, env: { KONNECT_AGENT: 'reviewer' } } } }));
+  expect(dropOldEntry(dir, 'konnect-helper', 'helper')).toBe(file);
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toStrictEqual({ note: 'kept', mcpServers: { other: theirs, 'konnect-reviewer': { ...ours, env: { KONNECT_AGENT: 'reviewer' } } } });
+  // One of that name that konnect didn't write, or for another agent, is left as it is.
+  writeFileSync(file, JSON.stringify({ mcpServers: { 'konnect-helper': theirs } }));
+  expect(dropOldEntry(dir, 'konnect-helper', 'helper')).toBeUndefined();
+  writeFileSync(file, 'not json');
+  expect(dropOldEntry(dir, 'konnect-helper', 'helper')).toBeUndefined();
+  expect(readFileSync(file, 'utf8')).toBe('not json');
 });

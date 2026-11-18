@@ -36,6 +36,8 @@ export interface IO {
   terminal?: boolean;
   /** Told how to end `konnect wake` quietly, as a signal would; for tests. */
   waking?: (end: () => void) => void;
+  /** What the harness gives `konnect wake` on standard input; by default, standard input. */
+  hookInput?: () => Promise<string>;
 }
 
 export type Env = Record<string, string | undefined>;

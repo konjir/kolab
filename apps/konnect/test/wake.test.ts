@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { readFileSync } from 'node:fs';
 import { Woke, describeWake, exitStatus, serveMcp, wakeFile } from '../src/konnect.js';
-import { browse, fails, machine, pressing, teams } from './team.js';
+import { browse, exitOf, fails, machine, pressing, teams } from './team.js';
 
 const until = async (what: string, ok: () => boolean, ms = 10_000) => {
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) if (ok()) return;
@@ -127,10 +127,13 @@ test('konnect wake, the hook a harness runs after each turn: it waits as the age
   await signIn(ann, annId, 'hub');
   await ann.run(['agent', 'add', 'helper'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
   const bo = await kolab.openSession('bo', 'product', { kolab: 'hub' });
-  const asHelper = { env: { ...ann.env, KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper' } };
+  const asHelper = { env: { ...ann.env, KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper' }, hookInput: async () => '{"session_id":"one"}' };
 
-  // It is the agent's to run: as the person, nothing is listened to (2).
+  // It is the agent's to run: as the person, nothing is listened to. Its own mistakes never exit 2,
+  // which is what wakes the harness: only a message does.
   expect(await fails(ann.run(['wake']))).toBe('konnect wake runs as an agent, from its harness: KONNECT_AGENT names it');
+  expect(await exitOf(ann.run(['wake']))).toBe(1);
+  expect(await exitOf(ann.run(['wake', 'x'], asHelper))).toBe(1);
 
   // Nothing waits: it keeps waiting, until a message for the agent arrives; then the notice, and exit 2.
   let end: () => void = () => undefined;
@@ -164,5 +167,20 @@ test('konnect wake, the hook a harness runs after each turn: it waits as the age
   await quiet();
   end();
   expect(await third).toBe('');
-  expect(JSON.parse(readFileSync(wakeFile('hub', 'helper', ann.env), 'utf8')).announced).toHaveLength(2);
+  const kept = JSON.parse(readFileSync(wakeFile('hub', 'helper', ann.env), 'utf8'));
+  expect(kept.announced).toHaveLength(2);
+  expect(kept.session).toBe('one');
+  expect(kept.pid).toBeUndefined();
+
+  // A newer hook for the same agent takes over: the older one sees so, and ends quietly by itself.
+  const older = ann.run(['wake'], asHelper);
+  await quiet();
+  const newer = ann.run(['wake'], { ...asHelper, waking: (e) => { end = e; } });
+  expect(await older).toBe('');
+  end();
+  await newer;
+
+  // A new session of the harness starts afresh: what the earlier one was told of and never received is its to hear, at once.
+  const fresh = await ann.run(['wake'], { ...asHelper, hookInput: async () => '{"session_id":"two"}' }).then(() => undefined, (e: unknown) => e);
+  expect((fresh as Error).message).toMatch(/^New for you in team hub: a direct message from @bo; a message in #general \(mentioning you\)\./);
 });

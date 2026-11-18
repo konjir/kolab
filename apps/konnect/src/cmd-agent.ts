@@ -11,7 +11,7 @@
  */
 import { existsSync } from 'node:fs';
 import { logout } from '@konjir/login';
-import { HARNESSES, INSTALL, checkLabel, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgent, shellLine, startTool, toolCommand, type Tool } from './agents.js';
+import { HARNESSES, INSTALL, checkLabel, dropOldEntry, entryEnv, keepKonnect, konnectCommand, listenList, serverName, setUpAgent, shellLine, startTool, toolCommand, type Tool } from './agents.js';
 import { NotYet, Refused, TeamClient } from './client.js';
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
@@ -129,8 +129,10 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     try { run = toolCommand(tool, server, entry, extra, prompt); } catch (e) { throw new UsageError(String((e as Error)?.message ?? e)); }
     // konnect commands run inside the harness act as the agent, never as the person; the hook that wakes it reads the same.
     const env = { ...run.env, ...entry.env };
+    const dropped = tool === 'claude' ? dropOldEntry(ctx.cwd, server, name) : undefined;
     ctx.err([
       `Your agent @${printable(r.owner)}/${name} is ${r.made ? 'added to' : 'in'} team ${team}.`,
+      ...(dropped ? [`Took ${server} out of ${printable(dropped)}, where an earlier konnect wrote it: Claude Code is given it on its command line now.`] : []),
       ...(tool !== 'claude' ? [`${tool === 'codex' ? 'Codex' : 'OpenCode'} isn't woken by messages: the agent receives at the start of each turn.`] : []),
     ].join('\n'));
     const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ ...run, env }, ctx.cwd);

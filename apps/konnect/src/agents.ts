@@ -131,6 +131,25 @@ export function listenList(given: string | undefined): string[] {
   return [...new Set(names)];
 }
 
+/**
+ * konnect 0.1.0 and 0.2.0 wrote the agent's entry in the folder's `.mcp.json`. Claude Code would
+ * load it beside the one konnect now passes on its command line, under the same name, so that
+ * entry, and only one konnect itself wrote (it runs `konnect mcp` for this agent), is taken out.
+ * Returns the file when it did.
+ */
+export function dropOldEntry(dir: string, name: string, label: string): string | undefined {
+  const path = join(dir, '.mcp.json');
+  let doc: { mcpServers?: Record<string, { args?: unknown; env?: Record<string, unknown> }> } & Record<string, unknown>;
+  try { doc = JSON.parse(readFileSync(path, 'utf8')); } catch { return undefined; }
+  const entry = doc?.mcpServers?.[name];
+  if (!entry || !Array.isArray(entry.args) || entry.args.at(-1) !== 'mcp' || entry.env?.KONNECT_AGENT !== label) return undefined;
+  const { [name]: _, ...others } = doc.mcpServers!;
+  const tmp = join(dir, `.mcp.json.${randomBytes(6).toString('hex')}.tmp`);
+  writeFileSync(tmp, `${JSON.stringify({ ...doc, mcpServers: others }, null, 2)}\n`, { flag: 'wx', mode: 0o644 });
+  renameSync(tmp, path);
+  return path;
+}
+
 /** The TOML value of a string, an array of strings, or a table of strings, for Codex's `-c key=value`. */
 const toml = (v: string | string[] | Record<string, string>): string => (typeof v === 'string' ? JSON.stringify(v)
   : Array.isArray(v) ? `[${v.map((s) => JSON.stringify(s)).join(', ')}]`
