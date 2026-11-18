@@ -10,8 +10,10 @@
  * It then takes requests from the service every few seconds. It carries out only a request that is
  * sealed with its pairing code (seal.ts), which it made itself and showed you, and which you gave
  * to each machine that may ask: the service never has it, so a request can't come from the
- * service, from a teammate, from an agent, or from a copy of your login on a machine you never
- * paired. A request names agents of yours, one of the harnesses konnect starts, and konnect's own
+ * service, from a teammate, or from a copy of your login alone. (The code is in konnect's files on
+ * the hosting and the paired machines: what runs there as the person, an agent with a shell among
+ * it, can read it.) A request is carried out once, with a word this machine has just given for it
+ * (a `hello`), so one kept and sent again later does nothing. A request names agents of yours, one of the harnesses konnect starts, and konnect's own
  * options; it carries no command, no path and no argument for the harness (host-ask.ts reads it,
  * and refuses anything it doesn't know). Each agent is started as `konnect agent run --background`
  * starts one here, in this folder. What that agent may then do on this machine is set here, in its
@@ -30,7 +32,7 @@ import { endSession, inSession, multiplexer, running, sessionName, sessions, sta
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
-import { HOST_NAME, REQUEST_FRESH_MS, ago, answerBound, askHost, checkHost, keepPairing, pairing, readEnd, readStart, readStop, requestBound, type Asked, type Started } from './host-ask.js';
+import { HOST_NAME, WORD_FRESH_MS, ago, answerBound, askHost, checkHost, keepPairing, pairing, readEnd, readHello, readStart, readStop, requestBound, type Asked, type Started } from './host-ask.js';
 import { printable } from './names.js';
 import { CODE, fingerprint, keyOf, newCode, readCode, seal, unseal } from './seal.js';
 import { agentFile, agentFileReady, dropIfEmpty, hostFile, hostFileReady } from './teams.js';
@@ -177,14 +179,19 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
         // Hosting somewhere else (another machine, or another terminal here): it is asked to end itself.
         const key = pairing(ctx, team, h);
         let a: { ok?: boolean; why?: string };
+        let confirmed = true;
         try { a = await askHost<{ ok?: boolean; why?: string }>(ctx, client, team, name, key, 'end', {}); } catch (e) {
-          // A machine that ends says so to the service, and its requests go with it: an answer that
-          // can no longer be read, from a machine that no longer hosts, is the answer.
+          // A machine that ends says so to the service, and its requests go with it, its answer among
+          // them. One no longer listed as hosting has most likely ended; but that is the service's
+          // word, not the machine's own, and it is said as that.
           if ((await client.hosts()).some((x) => x.name === name && x.serving)) throw e;
           a = { ok: true };
+          confirmed = false;
         }
         if (a.ok !== true) throw new Error(`${name} didn't stop hosting${typeof a.why === 'string' ? `: ${printable(a.why)}` : ''}`);
-        ctx.print({ team, host: name, stopped: true }, () => `${name} no longer hosts in team ${team}. Agents it started keep running there.`);
+        ctx.print({ team, host: name, stopped: true, confirmed }, () => (confirmed
+          ? `${name} no longer hosts in team ${team}. Agents it started keep running there.`
+          : `${name} is no longer listed as hosting in team ${team}, though its own answer didn't arrive: konnect host list shows whether it comes back. Agents it started keep running there.`));
         return;
       }
       await client.endHost(name);
@@ -266,16 +273,29 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
     process.on('SIGHUP', end);
     (ctx.io.waking ?? (() => undefined))(end);
 
-    /** The requests carried out of late, by their own word: one sent again does nothing. */
-    const seen = new Map<string, number>();
-    /** Refuses a request made too long ago (or by a clock too far from this one), or seen before. */
-    const once = (a: Asked) => {
+    /**
+     * The words this machine has given out and not yet taken, each with when it lapses. A request
+     * is carried out only with one of them, once: so a request kept and sent again later, or sent
+     * twice, or to a later run of this command, does nothing, whatever anyone's clock says.
+     */
+    const words = new Map<string, number>();
+    const word = () => {
       const now = Date.now();
-      for (const [id, at] of seen) if (now - at > 2 * REQUEST_FRESH_MS) seen.delete(id);
-      if (Math.abs(now - a.at) > REQUEST_FRESH_MS) throw new Error('the request was made too long ago, or the two machines\' clocks are more than ten minutes apart');
-      if (seen.has(a.id)) throw new Error('that request was carried out already');
-      seen.set(a.id, now);
+      for (const [w, until] of words) if (until < now) words.delete(w);
+      // A hundred at once is more than anyone asks: the oldest goes, so memory stays small whatever is sent.
+      if (words.size >= 100) words.delete(words.keys().next().value!);
+      const w = randomBytes(16).toString('hex');
+      words.set(w, now + WORD_FRESH_MS);
+      return w;
     };
+    /** Takes the request's word, once; refuses a request whose word this run never gave, has taken, or gave too long ago. */
+    const fresh = (a: Asked) => {
+      const until = words.get(a.word);
+      words.delete(a.word);
+      if (until === undefined || until < Date.now()) throw new Error('that request is no longer fresh: it was carried out already, or made too long ago, so nothing was done. Ask again');
+    };
+    /** What was answered of late, by the request's own name: a request delivered twice is answered the same twice, and carried out once. */
+    const answered = new Map<string, string>();
 
     /** Whether the agent's login kept here works, as that agent of this person: no when there is none or it has ended, unknown when the service couldn't say. */
     const works = async (label: string): Promise<'yes' | 'no' | 'unknown'> => {
@@ -286,7 +306,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
 
     const start = async (text: string): Promise<Started & { id: string }> => {
       const asked = readStart(text);
-      once(asked);
+      fresh(asked);
       const r: Started & { id: string } = { v: 1, id: asked.id, ok: false, in: kind, folder, started: [], failed: [], needs_login: [], kept: [] };
       for (const a of asked.agents) {
         if (await running(ctx, kind, sessionName(team, a.name))) r.failed.push({ name: a.name, why: 'it is running there already' });
@@ -299,18 +319,22 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
         // The service couldn't say just now: what is kept here is left exactly as it is.
         if (has === 'unknown') { r.failed.push({ name: a.name, why: 'its login there couldn\'t be checked just now: try again' }); continue; }
         if (a.login === undefined) { r.needs_login.push(a.name); continue; }
-        const f = agentFileReady(team, a.name, ctx.env);
+        let f: string | undefined;
         try {
+          f = agentFileReady(team, a.name, ctx.env);
           // Kept for this machine's own service: where to renew it is found out here, never taken from the request.
           await keepSignIn(ctx.url, f, { client: a.login.client as never, tokens: a.login.tokens as never });
           const now = await works(a.name);
           if (now === 'no') throw new Error('not that agent\'s');
-          if (now === 'unknown') { r.failed.push({ name: a.name, why: 'the login sent for it couldn\'t be checked just now: try again' }); continue; }
+          // Kept, and said to be: whoever sent it must not revoke a login this machine holds.
           r.kept.push(a.name);
+          if (now === 'unknown') r.failed.push({ name: a.name, why: 'the login sent for it is kept there, but couldn\'t be checked just now: try again' });
         } catch {
           // What was there before had ended (the service said so); what was sent isn't this agent's login: neither is kept.
-          await logout(ctx.url, { path: f, forget: true }).catch(() => undefined);
-          dropIfEmpty(f);
+          if (f !== undefined) {
+            await logout(ctx.url, { path: f, forget: true }).catch(() => undefined);
+            dropIfEmpty(f);
+          }
           r.failed.push({ name: a.name, why: 'the login sent for it couldn\'t be used there' });
         }
       }
@@ -342,13 +366,24 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
       }
       // Its answer is sealed too, as the answer to this request alone.
       let id = '';
-      try { const b = JSON.parse(text) as { id?: unknown }; if (typeof b?.id === 'string' && /^[a-f0-9]{32}$/.test(b.id)) id = b.id; } catch { /* answered below, to no request's word */ }
-      const sealed = (a: object) => answer(seal(key, JSON.stringify(a), answerBound(team, name, id)));
+      try { const b = JSON.parse(text) as { id?: unknown }; if (typeof b?.id === 'string' && /^[a-f0-9]{32}$/.test(b.id)) id = b.id; } catch { /* answered below, to no request's name */ }
+      // The same request again (the service may deliver one twice): the same answer, and nothing done twice.
+      const before = id ? answered.get(id) : undefined;
+      if (before !== undefined) { await answer(before); return; }
+      const sealed = async (a: object) => {
+        const said = seal(key, JSON.stringify(a), answerBound(team, name, id));
+        if (id) {
+          if (answered.size >= 200) answered.delete(answered.keys().next().value!);
+          answered.set(id, said);
+        }
+        await answer(said);
+      };
       try {
+        if (req.kind === 'hello') { readHello(text); await sealed({ v: 1, ok: true, word: word() }); return; }
         if (req.kind === 'start') { await sealed(await start(text)); return; }
         if (req.kind === 'stop') {
           const asked = readStop(text);
-          once(asked);
+          fresh(asked);
           const s = sessionName(team, asked.agent);
           if (!await running(ctx, kind, s)) { await sealed({ v: 1, ok: false, why: `your agent ${asked.agent} isn't running in the background there` }); return; }
           const went = await endSession(ctx, kind, s);
@@ -358,7 +393,7 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
           return;
         }
         if (req.kind === 'end') {
-          once(readEnd(text));
+          fresh(readEnd(text));
           await sealed({ v: 1, ok: true, ended: true });
           say('asked to stop hosting');
           // A moment for the asker to read the answer, before this machine's goodbye takes its requests with it.

@@ -431,7 +431,7 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   const signals: [number, string | number][] = [];
   let alive = true;
   const signal = (pid: number, sig: NodeJS.Signals | 0) => { signals.push([pid, sig]); if (sig === 'SIGTERM') alive = false; return alive || sig === 'SIGTERM'; };
-  const panes = async (cmd: string, args: string[]) => { if (cmd === 'tmux' && args[0] === 'list-panes') { ran.push([cmd, ...args]); return { code: 0, out: '4242\n' }; } if (cmd === 'pgrep') { ran.push([cmd, ...args]); return { code: 0, out: '5151\n' }; } return exec(cmd, args); };
+  const panes = async (cmd: string, args: string[]) => { if (cmd === 'tmux' && args[0] === 'list-panes') { ran.push([cmd, ...args]); return { code: 0, out: '4242\n' }; } if (cmd === 'ps') { ran.push([cmd, ...args]); return { code: 0, out: ' 4242     1  4242\n 4300  4242  4242\n 5151  1234  5151\n 6000  1234  5999\n 7000     1  7000\n' }; } return exec(cmd, args); };
   expect(await ann.run(['agent', 'stop', 'helper'], { exec: panes, signal, pause: async () => undefined })).toBe('Stopped your agent helper\'s harness here. It stays in team hub.');
   expect([...ran].reverse().find((c) => c[1] === 'list-panes')).toStrictEqual(['tmux', 'list-panes', '-s', '-t', '=konnect-hub-helper', '-F', '#{pane_pid}']);
   expect(signals.filter(([, sig]) => sig !== 0).map(([pid, sig]) => `${pid} ${sig}`)).toStrictEqual(['-4242 SIGHUP', '-4242 SIGTERM']);
@@ -441,8 +441,16 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   await ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start });
   signals.length = 0; alive = true;
   await ann.run(['agent', 'stop', 'helper'], { exec: panes, signal, pause: async () => undefined });
-  expect([...ran].reverse().find((c) => c[0] === 'pgrep')).toStrictEqual(['pgrep', '-P', '1234']);
+  // Only a process seen to be the window's own is signalled: a child of screen's own process that leads its group.
+  expect([...ran].reverse().find((c) => c[0] === 'ps')).toStrictEqual(['ps', '-eo', 'pid=,ppid=,pgid=']);
   expect(signals.filter(([, sig]) => sig !== 0).map(([pid, sig]) => `${pid} ${sig}`)).toStrictEqual(['-5151 SIGHUP', '-5151 SIGTERM']);
+  // A session someone named so that it ends in an agent's session name isn't taken for it: it isn't running,
+  // and nothing is signalled (read loosely, its "pid" would be 1, and every process's parent).
+  const planted = async (cmd: string, args: string[]) => (cmd === 'screen' && args[0] === '-ls' ? { code: 0, out: 'There is a screen on:\n\t90184.x1.konnect-hub-helper\t(Detached)\n' } : cmd === 'screen' && args[0] === '-v' ? { code: 1, out: 'Screen version 4.00.03' } : panes(cmd, args));
+  signals.length = 0;
+  expect(await fails(ann.run(['agent', 'stop', 'helper'], { exec: planted, signal, pause: async () => undefined }))).toBe('your agent helper isn\'t running in the background on this machine: konnect agent run --background helper <harness> starts it');
+  expect(await ann.run(['agent', 'list'], { exec: planted })).toMatch(/^helper\s+(connected\s+)?set up here$/m);
+  expect(signals).toStrictEqual([]);
   // A pid that could be every process, or none, is never signalled.
   expect(signals.every(([pid]) => pid < -1)).toBe(true);
   has.tmux = true;

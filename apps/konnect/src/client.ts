@@ -339,7 +339,7 @@ export class TeamClient {
 export interface Host { name: string; folder: string | null; serving: boolean; started_at: string; seen_at: string; agents: string[]; running: string[]; public_key: string }
 
 /** A request a hosting machine took: `from` is who asked, always the machine's own person. */
-export interface HostRequest { id: string; kind: 'start' | 'stop' | 'end'; body: string; from: string; requested_at: string; expires_at: string }
+export interface HostRequest { id: string; kind: 'hello' | 'start' | 'stop' | 'end'; body: string; from: string; requested_at: string; expires_at: string }
 
 /** A lease, as Kolab's lease tools give one: `holder` a stored name. */
 export interface Lease { name: string; holder: string; claimed_at: string; expires_at: string; note: string | null }

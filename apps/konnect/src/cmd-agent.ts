@@ -100,10 +100,17 @@ export async function multiplexer(ctx: Ctx): Promise<'tmux' | 'screen' | undefin
   return undefined;
 }
 
+/**
+ * A session's own line in what `screen -ls` prints: `<pid>.<name>`, from the start of the line. A
+ * name is only ever read there, so a session someone named `x1.konnect-…` is never taken for
+ * `konnect-…` with the pid 1.
+ */
+const screenLine = (session: string) => new RegExp(`^\\s*(\\d+)\\.${session}\\s`, 'm');
+
 /** Whether the background session is there. */
 export async function running(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<boolean> {
   if (kind === 'tmux') return (await exec(ctx)('tmux', ['has-session', '-t', `=${session}`], ctx.cwd)).code === 0;
-  return new RegExp(`\\d+\\.${session}\\s`).test((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out);
+  return screenLine(session).test((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out);
 }
 
 /** The entry that runs `konnect mcp` for the agent: no token, only what names it and sets its system prompt. */
@@ -128,7 +135,7 @@ export async function sessions(ctx: Ctx, kind: 'tmux' | 'screen'): Promise<strin
     const r = await exec(ctx)('tmux', ['list-sessions', '-F', '#{session_name}'], ctx.cwd);
     return r.code === 0 ? r.out.split('\n').map((l) => l.trim()).filter(Boolean) : [];
   }
-  return [...(await exec(ctx)('screen', ['-ls'], ctx.cwd)).out.matchAll(/\d+\.(\S+)/g)].map((m) => m[1]);
+  return [...(await exec(ctx)('screen', ['-ls'], ctx.cwd)).out.matchAll(/^\s*\d+\.(\S+)/gm)].map((m) => m[1]);
 }
 
 /**
@@ -136,26 +143,36 @@ export async function sessions(ctx: Ctx, kind: 'tmux' | 'screen'): Promise<strin
  * a name alone could reach another session that begins with it (helper, helper-1); this names one.
  */
 async function screenId(ctx: Ctx, session: string): Promise<string | undefined> {
-  return new RegExp(`(\\d+\\.${session})\\s`).exec((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out)?.[1];
+  const pid = screenLine(session).exec((await exec(ctx)('screen', ['-ls'], ctx.cwd)).out)?.[1];
+  return pid === undefined ? undefined : `${pid}.${session}`;
 }
 
 /** How long what a session runs is given to end after each signal, and how often konnect looks. */
 const END_WAIT_MS = 1_500, END_LOOK_MS = 100;
 
 /**
- * The processes a background session's windows run. Each leads a group of its own, with the
- * harness and what the harness started in it.
+ * The process groups a background session's windows run: each window's own process leads a group
+ * of its own, with the harness and what the harness started in it. Only a process that is seen to
+ * be one is given: a window's process as tmux names it, or a child of screen's own process, and in
+ * both cases the leader of its group. Never this command's own group, nor its parent's.
  */
-async function sessionPids(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<number[]> {
-  const pids = (out: string) => out.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 1);
+async function sessionGroups(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<number[]> {
+  let panes: number[] | undefined;
+  let parent: number | undefined;
   if (kind === 'tmux') {
     const r = await exec(ctx)('tmux', ['list-panes', '-s', '-t', `=${session}`, '-F', '#{pane_pid}'], ctx.cwd);
-    return r.code === 0 ? pids(r.out) : [];
+    if (r.code !== 0) return [];
+    panes = r.out.split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 1);
+  } else {
+    const id = await screenId(ctx, session);
+    parent = id === undefined ? undefined : Number(id.slice(0, id.indexOf('.')));
+    if (parent === undefined || !Number.isInteger(parent) || parent <= 1) return [];
   }
-  const id = await screenId(ctx, session);
-  if (!id) return [];
-  const r = await exec(ctx)('pgrep', ['-P', id.slice(0, id.indexOf('.'))], ctx.cwd);
-  return r.code === 0 ? pids(r.out) : [];
+  const ps = await exec(ctx)('ps', ['-eo', 'pid=,ppid=,pgid='], ctx.cwd);
+  if (ps.code !== 0) return [];
+  return ps.out.split('\n').map((l) => l.trim().split(/\s+/).map(Number)).filter((r) => r.length === 3 && r.every((n) => Number.isInteger(n)))
+    .filter(([pid, ppid, pgid]) => pid > 1 && pgid === pid && pid !== process.pid && pid !== process.ppid && (panes ? panes.includes(pid) : ppid === parent))
+    .map(([pid]) => pid);
 }
 
 /**
@@ -166,7 +183,7 @@ async function sessionPids(ctx: Ctx, kind: 'tmux' | 'screen', session: string): 
  */
 export async function endSession(ctx: Ctx, kind: 'tmux' | 'screen', session: string): Promise<{ code: number; out: string }> {
   const signal = ctx.io.signal ?? ((pid: number, sig: NodeJS.Signals | 0) => { try { process.kill(pid, sig); return true; } catch { return false; } });
-  const groups = await sessionPids(ctx, kind, session);
+  const groups = await sessionGroups(ctx, kind, session);
   const left = () => groups.filter((g) => signal(-g, 0));
   for (const sig of ['SIGHUP', 'SIGTERM', 'SIGKILL'] as const) {
     for (const g of left()) signal(-g, sig);

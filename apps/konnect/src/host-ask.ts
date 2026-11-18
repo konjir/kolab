@@ -11,6 +11,10 @@
  * made from the machine's pairing code (seal.ts), which the service never sees, and the machine
  * carries out only what opens with it. Its answer comes back sealed the same way.
  *
+ * Asking takes two steps, so that a request kept and sent again later does nothing: a `hello`, to
+ * which the machine answers with a word it has just made and will take once, within two minutes;
+ * then the request itself, carrying that word.
+ *
  * A request carries no command: it names agents of yours, one of the harnesses konnect starts, and
  * konnect's own options. What follows the harness on a command line is not sent; what an agent may
  * do on a machine is set on that machine.
@@ -35,8 +39,8 @@ import { hostFile, pairFile, pairFileReady } from './teams.js';
 export const HOST_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** The most words of the person's own a request carries as an agent's system prompt. */
 export const MAX_PROMPT = 16_000;
-/** How far apart the two machines' clocks may be: a request older or newer than this is refused, so one kept and sent again later does nothing. */
-export const REQUEST_FRESH_MS = 10 * 60_000;
+/** How long a hosting machine takes the word it gave: less than an asker waits for an answer, so a request it gave up on is never carried out after. */
+export const WORD_FRESH_MS = 120_000;
 /** How often the asker looks for the answer, how long it waits for one, and how many looks in a row may fail to reach the service. */
 const LOOK_EVERY_MS = 1_000, ANSWER_WAIT_MS = 150_000, LOOKS_UNREACHED = 20;
 
@@ -46,8 +50,8 @@ export interface Said { actFor?: ActFor; wakeOn: string[]; systemPrompt?: string
 /** A login as it travels in a request: the client it was issued to, and its tokens. Where to renew it is never part of it. */
 export interface SentLogin { client: Record<string, unknown>; tokens: Record<string, unknown> }
 
-/** What every request carries: when it was made, and a word of its own, so that none is carried out twice. */
-export interface Asked { v: 1; at: number; id: string }
+/** What every request carries: a name of its own, which its answer is bound to, and the word the machine gave for it, which the machine takes once. */
+export interface Asked { v: 1; id: string; word: string }
 
 /** What a request to start agents carries. Nothing here is a command, a path or a harness's argument. */
 export interface Start extends Asked {
@@ -119,17 +123,26 @@ const only = (o: Record<string, unknown>, keys: string[], what: string) => {
 
 const NOT_OURS = 'the request isn\'t one konnect wrote';
 
-/** A request, opened: an object that says when it was made and carries a word of its own. */
-function asked(text: string): Record<string, unknown> & Asked {
+const WORD = /^[a-f0-9]{32}$/;
+
+/** A request, opened: an object with a name of its own and, unless it is a hello, the word the machine gave for it. */
+function asked(text: string, hello = false): Record<string, unknown> & Asked {
   let b: Record<string, unknown>;
   try { b = JSON.parse(text) as Record<string, unknown>; } catch { throw new Error(NOT_OURS); }
   if (!b || typeof b !== 'object' || Array.isArray(b)) throw new Error(NOT_OURS);
   if (b.v !== 1) throw new Error('the request is from a newer konnect than this machine\'s: update konnect on this machine');
-  if (typeof b.at !== 'number' || !Number.isFinite(b.at) || typeof b.id !== 'string' || !/^[a-f0-9]{32}$/.test(b.id)) throw new Error(NOT_OURS);
+  if (typeof b.id !== 'string' || !WORD.test(b.id) || (!hello && (typeof b.word !== 'string' || !WORD.test(b.word)))) throw new Error(NOT_OURS);
   return b as Record<string, unknown> & Asked;
 }
 
-/** What of a client or of tokens is kept: plain values and lists of words, by the names given. Nothing nested, so nothing that says where a login is renewed. */
+/** A hello, opened and read on the machine that hosts: it asks for nothing but a word to ask with. */
+export function readHello(text: string): { id: string } {
+  const b = asked(text, true);
+  only(b, ['v', 'id'], 'the request');
+  return { id: b.id };
+}
+
+/** What of a client or of tokens is kept: plain values and lists of words, by the names given. Nothing nested, and no address: where a login is renewed is found out on the machine that keeps it. */
 const plain = (o: Record<string, unknown>, keys: string[]): Record<string, unknown> => Object.fromEntries(keys.flatMap((k) => {
   const v = Object.hasOwn(o, k) ? o[k] : undefined;
   return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' || (Array.isArray(v) && v.every((x) => typeof x === 'string')) ? [[k, v]] : [];
@@ -152,7 +165,7 @@ function sentLogin(given: unknown, name: string): SentLogin {
  */
 export function readStart(text: string): Start {
   const b = asked(text);
-  only(b, ['v', 'at', 'id', 'harness', 'agents', 'act_for', 'wake_on', 'system_prompt'], 'the request');
+  only(b, ['v', 'id', 'word', 'harness', 'agents', 'act_for', 'wake_on', 'system_prompt'], 'the request');
   if (typeof b.harness !== 'string' || !(HARNESSES as readonly string[]).includes(b.harness)) throw new Error('the request names no harness konnect starts: claude, codex or opencode');
   if (!Array.isArray(b.agents) || b.agents.length < 1 || b.agents.length > 10) throw new Error('the request names no agents, or more than 10');
   const agents = b.agents.map((a: unknown) => {
@@ -173,7 +186,7 @@ export function readStart(text: string): Start {
   // A command line and an environment can't carry a NUL, so a prompt holding one would start nothing.
   if (b.system_prompt !== undefined && (typeof b.system_prompt !== 'string' || b.system_prompt.length > MAX_PROMPT || b.system_prompt.includes('\0'))) throw new Error(`the request's system prompt isn't text of at most ${MAX_PROMPT} characters`);
   return {
-    v: 1, at: b.at, id: b.id, harness: b.harness as Tool, agents,
+    v: 1, id: b.id, word: b.word, harness: b.harness as Tool, agents,
     ...(b.act_for !== undefined ? { act_for: b.act_for as ActFor } : {}),
     ...(wakeOn?.length ? { wake_on: wakeOn } : {}),
     ...(typeof b.system_prompt === 'string' && b.system_prompt.trim() ? { system_prompt: b.system_prompt } : {}),
@@ -183,16 +196,16 @@ export function readStart(text: string): Start {
 /** A stop request, opened and read on the machine that hosts. */
 export function readStop(text: string): Asked & { agent: string } {
   const b = asked(text);
-  only(b, ['v', 'at', 'id', 'agent'], 'the request');
+  only(b, ['v', 'id', 'word', 'agent'], 'the request');
   if (typeof b.agent !== 'string') throw new Error(NOT_OURS);
-  return { v: 1, at: b.at, id: b.id, agent: checkLabel(b.agent) };
+  return { v: 1, id: b.id, word: b.word, agent: checkLabel(b.agent) };
 }
 
 /** A request to end hosting, opened and read on the machine that hosts. */
 export function readEnd(text: string): Asked {
   const b = asked(text);
-  only(b, ['v', 'at', 'id'], 'the request');
-  return { v: 1, at: b.at, id: b.id };
+  only(b, ['v', 'id', 'word'], 'the request');
+  return { v: 1, id: b.id, word: b.word };
 }
 
 // ---- asking ----------------------------------------------------------------------------------------
@@ -220,38 +233,50 @@ export async function hostingNow(client: TeamClient, team: string, name: string)
 }
 
 /**
- * Asks the machine and waits for its answer, which only that machine could have written: it is
- * sealed with the pairing key, as the answer to this request and no other. Throws when the machine
- * never took the request (it lapses after a minute, and is never taken after), took it and didn't
- * answer in time, or answered with something the key doesn't open.
+ * One sealed request and its sealed answer, which only that machine could have written: it opens
+ * with the pairing key, as the answer to this request and no other. `carried` says what a request
+ * that went unanswered may have done there: nothing, for a hello, or nobody knows.
  */
-export async function askHost<T extends { ok?: boolean }>(ctx: Ctx, client: TeamClient, team: string, host: string, key: Buffer, kind: HostRequest['kind'], inner: Record<string, unknown>): Promise<T> {
+async function sealedAsk<T>(ctx: Ctx, client: TeamClient, team: string, host: string, key: Buffer, kind: HostRequest['kind'], inner: Record<string, unknown>, carried: 'nothing' | 'unknown'): Promise<T> {
   const id = randomBytes(16).toString('hex');
-  const { request } = await client.askHost(host, kind, seal(key, JSON.stringify({ v: 1, at: Date.now(), id, ...inner }), requestBound(kind, team, host)));
-  const unknown = `it may have been carried out all the same: look at konnect agent list, and at konnect host run on ${host}`;
+  const { request } = await client.askHost(host, kind, seal(key, JSON.stringify({ v: 1, id, ...inner }), requestBound(kind, team, host)));
+  // What the service says of a request is its word, not the machine's: only a sealed answer says what was done.
+  const after = carried === 'nothing' ? 'nothing was asked of it' : `whether it was carried out there isn't known: look at konnect agent list, and at konnect host run on ${host}`;
   let unreached = 0;
   for (let waited = 0; waited < ANSWER_WAIT_MS; waited += LOOK_EVERY_MS) {
     await ctx.pause(LOOK_EVERY_MS);
     let r;
     try { r = await client.hostRequest(request); unreached = 0; } catch (e) {
       // A look that didn't reach the service is tried again: the request is on its way all the same.
-      if (e instanceof Refused || e instanceof SignInError || ++unreached >= LOOKS_UNREACHED) throw new Error(`${host}'s answer couldn't be read (${printable(String((e as Error)?.message ?? e))}): ${unknown}`);
+      if (e instanceof Refused || e instanceof SignInError || ++unreached >= LOOKS_UNREACHED) throw new Error(`${host}'s answer couldn't be read (${printable(String((e as Error)?.message ?? e))}): ${after}`);
       continue;
     }
-    if (r.state === 'expired') throw new Error(`${host} didn't take the request in time, so nothing was done there: check that konnect host run is still running on it`);
+    if (r.state === 'expired') throw new Error(`${host} didn't take the request in time, the service says: check that konnect host run is still running on it. ${carried === 'nothing' ? 'Nothing was asked of it' : `If it did take it, ${after}`}`);
     if (r.state !== 'done') continue;
     let said: string;
     try { said = unseal(key, r.result ?? '', answerBound(team, host, id)); } catch {
       // The one thing a machine says unsealed: that it couldn't open the request.
       let why: unknown;
       try { why = (JSON.parse(r.result ?? '{}') as { why?: unknown }).why; } catch { /* nothing readable */ }
-      if (why === 'unpaired') throw new Refused(`${host} couldn't open the request: its code isn't the one this machine was paired with, so nothing was done there. Pair again with konnect host pair ${host} <code>`);
-      throw new Error(`${host}'s answer wasn't sealed with its code, so it isn't taken as its own: ${unknown}`);
+      if (why === 'unpaired') throw new Refused(`${host} couldn't open the request, it says: its code isn't the one this machine was paired with. Pair again with konnect host pair ${host} <code>`);
+      throw new Error(`${host}'s answer wasn't sealed with its code, so it isn't taken as its own: ${after}`);
     }
     try { const a = JSON.parse(said) as T; if (a && typeof a === 'object' && !Array.isArray(a)) return a; } catch { /* said below */ }
     throw new Error(`${host}'s answer isn't one this konnect can read: update konnect on this machine`);
   }
-  throw new Error(`${host} took the request and hasn't answered: ${unknown}`);
+  throw new Error(`${host} took the request and hasn't answered: ${after}`);
+}
+
+/**
+ * Asks the machine and waits for its answer. First a hello, for the word the machine will take
+ * once, in the next two minutes; then the request, carrying it. Throws when the machine never took
+ * a request (it lapses after a minute, and is never taken after), took it and didn't answer in
+ * time, or answered with something the key doesn't open.
+ */
+export async function askHost<T extends { ok?: boolean }>(ctx: Ctx, client: TeamClient, team: string, host: string, key: Buffer, kind: Exclude<HostRequest['kind'], 'hello'>, inner: Record<string, unknown>): Promise<T> {
+  const hello = await sealedAsk<{ ok?: boolean; word?: unknown; why?: unknown }>(ctx, client, team, host, key, 'hello', {}, 'nothing');
+  if (hello.ok !== true || typeof hello.word !== 'string' || !WORD.test(hello.word)) throw new Error(`${host} gave no word to ask it with${typeof hello.why === 'string' ? ` (${printable(hello.why)})` : ''}: nothing was asked of it`);
+  return sealedAsk<T>(ctx, client, team, host, key, kind, { ...inner, word: hello.word }, 'unknown');
 }
 
 const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
