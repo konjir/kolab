@@ -90,6 +90,16 @@ export function agentFileReady(team: string, label: string, env: Record<string, 
   return fileReady(agentFile(team, label, env), env);
 }
 
+/**
+ * The file a machine keeps what it hosts as in a team: `hosts/<team>/<name>.json` in konnect's
+ * config folder, its folders made ready as a login's are. It holds the key agents' logins are
+ * sealed to (seal.ts), so it is the person's alone.
+ */
+export function hostFileReady(team: string, name: string, env: Record<string, string | undefined> = process.env): string {
+  if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(name)) throw new Error(`${printable(name)} isn't a machine's name: lowercase letters, digits and -, at most 40 characters`);
+  return fileReady(join(configDir(env), 'hosts', checkTeam(team), `${name}.json`), env);
+}
+
 /** Removes a login file that holds no login any more (its last one was dropped), and its folder if that leaves it empty. */
 export function dropIfEmpty(file: string) {
   try {

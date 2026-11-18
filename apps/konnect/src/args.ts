@@ -25,8 +25,10 @@ export interface Args {
   for?: number;
   /** --wake-on, --act-for, --system-prompt: agent add, agent run. */
   wakeOn: string[]; actFor?: ActFor; systemPrompt?: string;
-  /** --background, --count: agent run. */
+  /** --background, --count: agent run (and --background: host run). */
   background: boolean; count?: number;
+  /** --on: agent run and agent stop, on another machine of the person's that is hosting. */
+  on?: string;
   /** Plumbing: konnect logout --forget. */
   forget: boolean;
   /** Names from 0.1.0, still read for one release (aliases in konnect.ts). */
@@ -41,7 +43,7 @@ export function duration(given: string, option = '--wait'): number {
 }
 
 /** konnect's own options, as written. */
-const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--background', '--count', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
+const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--background', '--count', '--on', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
 
 export function parseArgs(argv: string[]): Args {
   const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], background: false, forget: false };
@@ -96,6 +98,7 @@ export function parseArgs(argv: string[]): Args {
       if (!Number.isInteger(n) || n < 1 || n > 10) throw new UsageError('--count is a whole number from 1 to 10');
       a.count = n; i++; continue;
     }
+    if (w === '--on') { a.on = value(i, 'the name of a machine of yours that is hosting'); i++; continue; }
     if (w === '--forget') { a.forget = true; continue; }
     // 0.1.0's options.
     if (w === '--history') { a.history = true; continue; }

@@ -305,9 +305,41 @@ export class TeamClient {
   /** konjir_list_leases: every lease held in the team now, soonest to expire first. */
   async leases(): Promise<Lease[]> { return (await this.newer<{ leases: Lease[] }>('konjir_list_leases', {}, 'hold leases')).leases; }
 
+  // ---- hosts: the person's own machines that start their agents when asked ---------------------------
+
+  /** konjir_list_hosts: the person's own machines that host, or did, in the team. */
+  async hosts(): Promise<Host[]> { return (await this.newer<{ hosts: Host[] }>('konjir_list_hosts', {}, 'start agents on another machine')).hosts; }
+
+  /** konjir_serve_host: this machine says it is hosting, and takes the requests waiting for it; each is given out once. */
+  serveHost(h: { name: string; instance: string; public_key: string; folder?: string; agents?: string[]; running?: string[] }) {
+    return this.newer<{ host: Host; requests: HostRequest[] }>('konjir_serve_host', h, 'start agents on another machine');
+  }
+
+  /** konjir_ask_host: asks a machine of the person's own that is hosting; `body` is between the two konnects, and the service never reads it. */
+  askHost(host: string, kind: HostRequest['kind'], body: string) {
+    return this.newer<{ request: string; expires_at: string }>('konjir_ask_host', { host, kind, body }, 'start agents on another machine');
+  }
+
+  /** konjir_answer_host: the hosting machine's answer to a request it took. */
+  answerHost(request: string, ok: boolean, result: string) { return this.call<{ answered: boolean }>('konjir_answer_host', { request, ok, result }); }
+
+  /** konjir_read_host_request: where a request the person made stands, and its answer once it has one. */
+  async hostRequest(request: string) {
+    return (await this.call<{ request: { id: string; host: string; kind: string; state: 'waiting' | 'taken' | 'done' | 'expired'; ok?: boolean | null; result?: string | null } }>('konjir_read_host_request', { request })).request;
+  }
+
+  /** konjir_end_host: forgets a machine of the person's; with `instance`, only while it is still that one. */
+  endHost(name: string, instance?: string) { return this.newer<{ ended: boolean }>('konjir_end_host', { name, ...(instance ? { instance } : {}) }, 'start agents on another machine'); }
+
   /** konjir_leave_kolab: the person leaves the team, and their agents with them. */
   leave() { return this.call<{ left: string; agents: string[]; ended: number }>('konjir_leave_kolab'); }
 }
+
+/** A machine of the person's that hosts, as Kolab's host tools give one: `serving` while it has said so in the last half minute. */
+export interface Host { name: string; folder: string | null; serving: boolean; started_at: string; seen_at: string; agents: string[]; running: string[]; public_key: string }
+
+/** A request a hosting machine took: `from` is who asked, always the machine's own person. */
+export interface HostRequest { id: string; kind: 'start' | 'stop' | 'end'; body: string; from: string; requested_at: string; expires_at: string }
 
 /** A lease, as Kolab's lease tools give one: `holder` a stored name. */
 export interface Lease { name: string; holder: string; claimed_at: string; expires_at: string; note: string | null }

@@ -5,7 +5,7 @@
 // logins with it. Then `konnect agent run|add|list|remove`: the agent made and logged in through
 // Kolab's setup page, its entry with no token, the harness started (or what to install), and
 // `--agent` acting as it.
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@jest/globals';
 import { agentSetupScope, systemPrompt, toolCommand } from '../src/konnect.js';
@@ -195,8 +195,11 @@ test('konnect agent run in codex and opencode: the entry on the command line or 
   const ran: string[][] = [];
   const exec = async (cmd: string, args: string[]) => { ran.push([cmd, ...args]); return cmd === 'tmux' ? { code: args[0] === 'has-session' ? 1 : 0, out: '' } : { code: -1, out: '' }; };
   await ann.run(['agent', 'run', '--background', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y'], { self, start, exec, wakeOpenCode });
+  // tmux is given konnect's own plumbing and a file's name; what is to run waits in the file.
   const line = ran.find((c) => c[1] === 'new-session')!;
-  expect(line.slice(line.indexOf('env'))).toStrictEqual(['env', `KONNECT_URL=${server.url}`, `KONNECT_CONFIG_DIR=${ann.env.KONNECT_CONFIG_DIR}`, '/usr/bin/node', '/opt/konnect/konnect.mjs', '--team', 'hub', 'agent', 'run', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y']);
+  const kept = join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'coder.start.json');
+  expect(line.slice(6)).toStrictEqual([ann.cwd, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start', kept]);
+  expect(JSON.parse(readFileSync(kept, 'utf8'))).toStrictEqual({ cmd: '/usr/bin/node', args: ['/opt/konnect/konnect.mjs', '--team', 'hub', 'agent', 'run', '--act-for', 'me', '--wake-on', 'general', 'coder', 'opencode', '--model', 'x/y'], env: { KONNECT_URL: server.url, KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR } });
 });
 
 test('OpenCode is woken through its own API: the notice is put in its prompt box and submitted, each message once, and tried again while OpenCode isn\'t up', async () => {
@@ -275,9 +278,9 @@ test('konnect agent add prints the entry and starts nothing; agent list says whi
   expect(lines).toHaveLength(2);
   expect(lines[0]).toMatch(/^helper {5}(connected {3}| {12})set up here$/);
   expect(lines[1]).toBe('reviewer');
-  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'helper', connected: expect.any(Boolean), set_up_here: true, running_here: false });
+  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'helper', connected: expect.any(Boolean), set_up_here: true, running_here: false, running_on: [] });
   await kolab.openSession('ann-reviewer', 'product', { kolab: 'hub' });
-  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'reviewer', connected: true, set_up_here: false, running_here: false });
+  expect(JSON.parse(await ann.run(['agent', 'list', '--json']))).toContainEqual({ name: 'reviewer', connected: true, set_up_here: false, running_here: false, running_on: [] });
   expect((await ann.run(['agent', 'list'])).split('\n')).toContain('reviewer   connected');
   // Someone with none.
   const bo = machine(server.url, 'bo');
@@ -357,13 +360,26 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   // With screen alone: the harness is started detached, with the agent's environment and Claude Code's command line.
   const out = await ann.run(['agent', 'run', '--background', '--act-for', 'me', 'helper', 'claude', '--model', 'opus'], { open: allow, self, exec, start });
   expect(out).toMatch(/^Your agent @ann\/helper is added to team hub, and claude is running as it in the background \(screen session konnect-hub-helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-a d leaves it running\n {2}konnect agent stop helper {7}end it\nThe first time in a folder, Claude Code asks whether to trust it: attach once and answer\.$/);
+  // screen is given konnect's own plumbing and a file's name, never the words themselves: what is to run waits in the file, the person's alone.
+  const kept = join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', 'helper.start.json');
   const launch = ran.find((c) => c[0] === 'screen' && c[1] === '-dmS')!;
-  expect(launch.slice(0, 4)).toStrictEqual(['screen', '-dmS', 'konnect-hub-helper', 'env']);
-  expect(launch).toContain('KONNECT_AGENT=helper');
-  expect(launch).toContain('KONNECT_ACT_FOR=me');
-  expect(launch.slice(launch.indexOf('claude'), launch.indexOf('claude') + 2)).toStrictEqual(['claude', '--mcp-config']);
-  expect(launch.slice(-2)).toStrictEqual(['--model', 'opus']);
-  expect(launch.join(' ')).not.toMatch(/kj[rsa]_/);
+  expect(launch).toStrictEqual(['screen', '-dmS', 'konnect-hub-helper', '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start', kept]);
+  expect(statSync(kept).mode & 0o777).toBe(0o600);
+  const waiting = JSON.parse(readFileSync(kept, 'utf8')) as { cmd: string; args: string[]; env: Record<string, string> };
+  expect(waiting.cmd).toBe('claude');
+  expect(waiting.args[0]).toBe('--mcp-config');
+  expect(waiting.args.slice(-2)).toStrictEqual(['--model', 'opus']);
+  expect(waiting.env).toMatchObject({ KONNECT_TEAM: 'hub', KONNECT_AGENT: 'helper', KONNECT_ACT_FOR: 'me', KONNECT_URL: server.url, KONNECT_CONFIG_DIR: ann.env.KONNECT_CONFIG_DIR });
+  expect(JSON.stringify(waiting)).not.toMatch(/kj[rsa]_/);
+  // konnect _start, in the session, runs what waits there once, and the file is gone.
+  const inSession: { cmd: string; args: string[]; env: Record<string, string> }[] = [];
+  await ann.run(['_start', kept], { start: async (c) => { inSession.push(c); return 0; } });
+  expect(inSession).toStrictEqual([waiting]);
+  expect(existsSync(kept)).toBe(false);
+  // It runs nothing but a file konnect wrote, in its own folder.
+  writeFileSync(join(ann.cwd, 'x.start.json'), JSON.stringify(waiting));
+  expect(await fails(ann.run(['_start', join(ann.cwd, 'x.start.json')], { start }))).toMatch(/^konnect _start is plumbing/);
+  expect(await fails(ann.run(['_start', kept], { start }))).toMatch(/^konnect _start is plumbing/);
   expect(sessions).toStrictEqual(new Set(['konnect-hub-helper']));
 
   // It is said where your agents are listed; a second one for the same agent is refused (4).
@@ -384,13 +400,19 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   has.tmux = true;
   expect(await ann.run(['agent', 'run', '--background', 'helper', 'codex'], { self, exec, start })).toMatch(/codex is running as it in the background \(tmux session konnect-hub-helper\)\.\n {2}konnect agent attach helper {5}look in on it; Ctrl-b d leaves it running/);
   const tmux = ran.find((c) => c[0] === 'tmux' && c[1] === 'new-session')!;
-  expect(tmux.slice(0, 8)).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect-hub-helper', '-c', ann.cwd, 'env']);
+  expect(tmux).toStrictEqual(['tmux', 'new-session', '-d', '-s', 'konnect-hub-helper', '-c', ann.cwd, '/usr/bin/node', '/opt/konnect/konnect.mjs', '_start', kept]);
+  // A system prompt that ends in ';', which tmux would read as the end of its command, never reaches tmux's command line.
+  await ann.run(['agent', 'stop', 'helper'], { exec });
+  ran.length = 0;
+  await ann.run(['agent', 'run', '--background', '--system-prompt', 'be brief;', 'helper', 'claude'], { self, exec, start });
+  expect(ran.flat().some((w) => w.includes(';'))).toBe(false);
+  expect(JSON.parse(readFileSync(kept, 'utf8')).env.KONNECT_SYSTEM_PROMPT).toBe('be brief;');
   await ann.run(['agent', 'stop', 'helper'], { exec });
 
   // With neither, it says what to install, and starts nothing; --background belongs to agent run alone (2).
   has.tmux = false; has.screen = false;
   expect(await fails(ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start }))).toBe('konnect agent run --background keeps the harness in tmux or screen, and neither is installed here: install tmux, or run it without --background');
-  expect(await fails(ann.run(['agent', 'add', '--background', 'helper'], { self, exec }))).toBe('konnect agent add takes no --background: only konnect agent run does');
+  expect(await fails(ann.run(['agent', 'add', '--background', 'helper'], { self, exec }))).toBe('konnect agent add takes no --background: konnect agent run and konnect host run do');
 });
 
 test('several agents at once: konnect agent add <name>... and konnect agent run --background --count <n> allow them all on one page of the browser', async () => {

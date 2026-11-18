@@ -18,16 +18,17 @@ import { UsageError } from './errors.js';
 import { printable, shownName } from './names.js';
 import { agentFile, configDir, teamsAt } from './teams.js';
 
-const TOP = ['status', 'send', 'receive', 'history', 'watch', 'login', 'logout', 'channel', 'team', 'agent', 'lease', 'doctor', 'completion'];
+const TOP = ['status', 'send', 'receive', 'history', 'watch', 'login', 'logout', 'channel', 'team', 'agent', 'lease', 'host', 'doctor', 'completion'];
 const VERBS: Record<string, string[]> = {
   channel: ['list', 'create', 'follow', 'unfollow'],
   team: ['list', 'create', 'invite', 'remove', 'leave'],
   agent: ['list', 'add', 'run', 'attach', 'stop', 'remove'],
   lease: ['list', 'claim', 'release', 'break', 'run'],
+  host: ['list', 'run', 'stop'],
 };
 const GLOBAL = ['--team', '--agent', '--json', '--help'];
 /** Options that take a value, so the word after one isn't a command or a name. */
-const VALUED = new Set(['--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--count']);
+const VALUED = new Set(['--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--count', '--on']);
 /** How long the team's channels and members are kept, and how long a Tab waits to ask for them again. */
 const KEPT_MS = 10 * 60_000, ASK_MS = 1_500;
 
@@ -56,7 +57,7 @@ export async function completion(ctx: Ctx, rest: string[]) {
   ctx.out(SCRIPTS[shell]);
 }
 
-interface Names { at: number; channels: string[]; people: string[]; agents: string[] }
+interface Names { at: number; channels: string[]; people: string[]; agents: string[]; hosts?: string[] }
 
 /** The team's channels and members, from what is kept when it is fresh, else asked for briefly; nothing when neither can be had. */
 async function names(ctx: Ctx, typed?: string): Promise<Names> {
@@ -72,8 +73,8 @@ async function names(ctx: Ctx, typed?: string): Promise<Names> {
     const asked = (async () => {
       const client = await ctx.open(team);
       try {
-        const [channels, members] = await Promise.all([client.channels(), client.members()]);
-        return { at: Date.now(), channels: channels.map((c) => c.channel), people: members.filter((m) => m.kind !== 'agent').map((m) => m.actor), agents: members.filter((m) => m.kind === 'agent').map(shownName) };
+        const [channels, members, hosts] = await Promise.all([client.channels(), client.members(), client.as.kind === 'person' ? client.hosts().catch(() => []) : []]);
+        return { at: Date.now(), hosts: hosts.map((h) => h.name), channels: channels.map((c) => c.channel), people: members.filter((m) => m.kind !== 'agent').map((m) => m.actor), agents: members.filter((m) => m.kind === 'agent').map(shownName) };
       } finally { await client.close(); }
     })();
     asked.catch(() => undefined);
@@ -85,6 +86,9 @@ async function names(ctx: Ctx, typed?: string): Promise<Names> {
     return fresh;
   } catch { return kept; } finally { clearTimeout(timer); }
 }
+
+/** The person's machines that host, from what is kept: none when an older konnect kept it. */
+const hostsOf = (n: Names): string[] => (Array.isArray(n.hosts) ? n.hosts.filter((h) => typeof h === 'string') : []);
 
 /** The agents konnect keeps a login for on this machine, in the team a command would work in (or in any, when none is settled). */
 function agentsHere(ctx: Ctx): string[] {
@@ -117,11 +121,14 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
   if (prev === '--agent') return agentsHere(ctx);
   if (prev === '--act-for') return [...ACT_FOR];
   if (prev === '--wake-on') return (await names(ctx, team)).channels;
+  if (prev === '--on') return hostsOf(await names(ctx, team));
   if (prev && VALUED.has(prev)) return [];
 
   if (cur.startsWith('-')) {
     const own = cmd === 'receive' ? ['-n', '--wait'] : cmd === 'history' ? ['-n']
-      : cmd === 'agent' && verb === 'run' ? ['--act-for', '--wake-on', '--system-prompt', '--background', '--count']
+      : cmd === 'agent' && verb === 'run' ? ['--act-for', '--wake-on', '--system-prompt', '--background', '--count', '--on']
+      : cmd === 'agent' && verb === 'stop' ? ['--on']
+      : cmd === 'host' && verb === 'run' ? ['--background']
       : cmd === 'agent' && verb === 'add' ? ['--act-for', '--wake-on', '--system-prompt']
       : cmd === 'lease' && (verb === 'claim' || verb === 'run') ? ['--for', '--wait'] : [];
     return [...own, ...GLOBAL];
@@ -139,6 +146,7 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
   }
   if (cmd === 'channel' && (verb === 'follow' || verb === 'unfollow') && pos.length === 2) return (await names(ctx, team)).channels;
   if (cmd === 'team' && verb === 'remove' && pos.length === 2) return (await names(ctx, team)).people;
+  if (cmd === 'host' && verb === 'stop' && pos.length === 2) return hostsOf(await names(ctx, team));
   return [];
 }
 

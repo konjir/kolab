@@ -6,8 +6,9 @@
  *
  *   send, receive, history       are about messages                         (cmd-messages.ts)
  *   status, login, logout        are about you                              (cmd-messages.ts, cmd-team.ts)
- *   channel …, team …, agent …   start with what they are about, then say what to do with it
- *                                                                           (cmd-team.ts, cmd-agent.ts)
+ *   channel …, team …, agent …, lease …, host …
+ *                                start with what they are about, then say what to do with it
+ *                                                    (cmd-team.ts, cmd-agent.ts, cmd-lease.ts, cmd-host.ts)
  *
  * A command line that names no action (konnect alone, or a noun alone) does nothing: it prints the
  * help and exits with status 2. `konnect mcp` is plumbing: the agent's tools, for a harness (mcp.ts).
@@ -15,9 +16,10 @@
  */
 import { parseArgs, type ActFor, type Args, ACT_FOR } from './args.js';
 import { listenList } from './agents.js';
-import { agent } from './cmd-agent.js';
+import { agent, startKept } from './cmd-agent.js';
 import { complete, completion } from './cmd-completion.js';
 import { doctor } from './cmd-doctor.js';
+import { host } from './cmd-host.js';
 import { lease } from './cmd-lease.js';
 import { history, receive, sendMessage, status } from './cmd-messages.js';
 import { channel, logOut, login, team } from './cmd-team.js';
@@ -43,6 +45,9 @@ export { Ctx, chooseTeam, kolabUrl, normalUrl, type IO } from './context.js';
 export { UsageError, WaitRanOut, Woke, exitStatus } from './errors.js';
 export { unannounced, wakeFile } from './cmd-wake.js';
 export { USAGE, helpFor } from './help.js';
+export { newKeys, seal, unseal } from './seal.js';
+export { readStart, readStop, bound } from './host-ask.js';
+export { thisMachine, formatHosts } from './cmd-host.js';
 export { systemPrompt } from './system-prompt.js';
 
 // The published build (scripts/bundle.mjs) defines this as the package's version.
@@ -83,7 +88,7 @@ function fromOld(a: Args, say: (old: string, now: string) => void, resolveTeam: 
 /** Refuses an option given to a command that doesn't take it. */
 function checkOptions(a: Args, words: string[]) {
   const [cmd, verb] = words;
-  const at = `konnect ${[cmd, ...(['channel', 'team', 'agent', 'lease'].includes(cmd) && verb ? [verb] : [])].join(' ')}`;
+  const at = `konnect ${[cmd, ...(['channel', 'team', 'agent', 'lease', 'host'].includes(cmd) && verb ? [verb] : [])].join(' ')}`;
   const only = (given: boolean, option: string, ok: boolean, where: string) => { if (given && !ok) throw new UsageError(`${at} takes no ${option}: ${where}`); };
   only(a.limit !== undefined, '-n', cmd === 'receive' || cmd === 'history', 'konnect receive and konnect history do');
   const claims = cmd === 'lease' && (verb === 'claim' || verb === 'run');
@@ -93,7 +98,9 @@ function checkOptions(a: Args, words: string[]) {
   only(a.wakeOn.length > 0 || a.listen !== undefined, '--wake-on', starts, 'konnect agent add and konnect agent run do');
   only(a.actFor !== undefined, '--act-for', starts, 'konnect agent add and konnect agent run do');
   only(a.systemPrompt !== undefined, '--system-prompt', starts, 'konnect agent add and konnect agent run do');
-  only(a.background, '--background', cmd === 'agent' && verb === 'run', 'only konnect agent run does');
+  only(a.background, '--background', (cmd === 'agent' || cmd === 'host') && verb === 'run', 'konnect agent run and konnect host run do');
+  only(a.on !== undefined, '--on', cmd === 'agent' && (verb === 'run' || verb === 'stop'), 'konnect agent run and konnect agent stop do');
+  if (a.on !== undefined && a.background) throw new UsageError('konnect agent run --on starts the agent in the background on that machine already: leave --background out');
   only(a.count !== undefined, '--count', cmd === 'agent' && verb === 'run', 'only konnect agent run does');
   only(a.forget, '--forget', cmd === 'logout', 'only konnect logout does');
   only(a.reply !== undefined, '--reply', cmd === 'send', 'only konnect send does');
@@ -132,6 +139,8 @@ export async function main(argv: string[], io: IO = {}) {
 
   // Plumbing: the hook that wakes an agent's idle harness.
   if (parsed.words[0] === 'wake') return wake(ctx, parsed.words.slice(1));
+  // Plumbing: what a background session runs, from the file konnect wrote for it.
+  if (parsed.words[0] === '_start') return startKept(ctx, parsed.words.slice(1));
   // Plumbing: what the shell's completion asks. Its words are someone's half-typed command line, never run.
   if (parsed.words[0] === '_complete') {
     await complete(ctx, parsed.words.slice(1));
@@ -157,6 +166,7 @@ export async function main(argv: string[], io: IO = {}) {
     case 'team': return team(ctx, rest[0], rest.slice(1));
     case 'agent': return agent(ctx, rest[0], rest.slice(1));
     case 'lease': return lease(ctx, rest[0], rest.slice(1));
+    case 'host': return host(ctx, rest[0], rest.slice(1));
     case 'doctor': return doctor(ctx, rest);
     case 'completion': return completion(ctx, rest);
     default: throw new UsageError(`konnect has no command ${printable(cmd)}: run konnect --help`);
