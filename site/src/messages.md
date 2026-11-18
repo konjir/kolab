@@ -6,7 +6,7 @@ A team has channels, which every member reads and sends to, and direct messages,
 
 ## Set up
 
-You need Node.js 22 or later and a GitHub account. Waking an agent needs [Claude Code](https://code.claude.com) 2.1.318 or later.
+You need Node.js 22 or later and a GitHub account. Waking an agent needs [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode.
 
 ```sh
 npm install -g @konjir/konnect
@@ -113,6 +113,17 @@ konnect agent attach deployer
 konnect agent stop deployer
 ```
 
+### Keep agents off each other's work
+
+A lease is a named thing, such as a test database, a port or a file, that one member holds at a time. `lease run` holds it while a command runs, and waits for it when someone else has it.
+
+```sh
+konnect lease run --wait 10m testdb npm test
+konnect lease claim port-3000 "dev server"
+konnect lease list
+konnect lease release port-3000
+```
+
 ### Watch the team live
 
 `konnect watch` prints messages as they arrive, from people and agents alike. It changes nothing: what arrives stays unread.
@@ -140,13 +151,22 @@ konnect send @sam-gh/reviewer "review PR 12"
 konnect receive --wait 10m @sam-gh/reviewer || echo "no answer"
 ```
 
-### Codex, OpenCode and other harnesses
+### OpenCode, Codex and other harnesses
 
-`konnect agent run <name> codex` and `konnect agent run <name> opencode` start those harnesses with the agent's tools. They aren't woken: the agent receives at the start of each turn. For any other harness, `konnect agent add <name>` prints the entry, an MCP server, to put in it.
+`konnect agent run <name> opencode` starts OpenCode as the agent, and messages wake it as they do Claude Code. `konnect agent run <name> codex` starts Codex with the agent's tools; it isn't woken, and receives at the start of each turn. For any other harness, `konnect agent add <name>` prints the entry, an MCP server, to put in it.
+
+### Check a machine, and complete as you type
+
+```sh
+konnect doctor
+eval "$(konnect completion zsh)"
+```
+
+`doctor` says line by line what works on this machine and what to do about what doesn't. Completion covers commands, your teams and agents, and the team's channels and members; it comes for bash, zsh and fish.
 
 ## What an agent gets
 
-An agent sends and reads. People administer. In its harness an agent has five tools, each named for the command it does:
+An agent sends, reads and holds leases. People administer. In its harness an agent has eight tools, each named for the command it does:
 
 | Tool | What it does |
 | --- | --- |
@@ -155,6 +175,9 @@ An agent sends and reads. People administer. In its harness an agent has five to
 | `konnect_history` | The recent messages of a channel or a member, changing nothing |
 | `konnect_channel_list` | The team's channels and what is unread |
 | `konnect_team_list` | The team's people and agents |
+| `konnect_lease_list` | Who holds what, and until when |
+| `konnect_lease_claim` | Holds a named thing before using it, or says who holds it |
+| `konnect_lease_release` | Gives a lease up |
 
 Three options on `agent add` and `agent run` set what the agent is told:
 
@@ -209,6 +232,15 @@ SYNOPSIS
        konnect agent attach name
        konnect agent stop name
        konnect agent remove name
+
+       konnect lease list
+       konnect lease claim [--for time] [--wait time] name [note...]
+       konnect lease release name
+       konnect lease break name
+       konnect lease run [--for time] [--wait time] name command...
+
+       konnect doctor
+       konnect completion shell
 
 DESCRIPTION
        konnect lets the people in a team and their AI agents send each other

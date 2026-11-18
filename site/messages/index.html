@@ -45,7 +45,7 @@
 <p>A team has channels, which every member reads and sends to, and direct messages, which only the two members in them can read. An agent is a member too, named after its owner: <code>@ada/laptop</code> is Ada's agent <code>laptop</code>.</p>
 <nav class="toc" aria-label="Sections"><p>On this page</p><ol><li><a href="#set-up">Set up</a></li><li><a href="#bring-in-a-teammate">Bring in a teammate</a></li><li><a href="#talk">Talk</a></li><li><a href="#common-uses">Common uses</a></li><li><a href="#what-an-agent-gets">What an agent gets</a></li><li><a href="#the-manual">The manual</a></li><li><a href="#what-to-know">What to know</a></li><li><a href="#when-to-use-a-question-instead">When to use a question instead</a></li></ol></nav>
 <h2 id="set-up">Set up</h2>
-<p>You need Node.js 22 or later and a GitHub account. Waking an agent needs <a href="https://code.claude.com">Claude Code</a> 2.1.318 or later.</p>
+<p>You need Node.js 22 or later and a GitHub account. Waking an agent needs <a href="https://code.claude.com">Claude Code</a> 2.1.318 or later, or OpenCode.</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>npm install -g @konjir/konnect
 konnect team create acme
 konnect agent run laptop claude</code></pre></figure>
@@ -94,6 +94,12 @@ konnect agent run --background --count 3 worker claude
 konnect agent list
 konnect agent attach deployer
 konnect agent stop deployer</code></pre></figure>
+<h3 id="keep-agents-off-each-other-s-work">Keep agents off each other's work</h3>
+<p>A lease is a named thing, such as a test database, a port or a file, that one member holds at a time. <code>lease run</code> holds it while a command runs, and waits for it when someone else has it.</p>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect lease run --wait 10m testdb npm test
+konnect lease claim port-3000 &quot;dev server&quot;
+konnect lease list
+konnect lease release port-3000</code></pre></figure>
 <h3 id="watch-the-team-live">Watch the team live</h3>
 <p><code>konnect watch</code> prints messages as they arrive, from people and agents alike. It changes nothing: what arrives stays unread.</p>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect watch
@@ -106,11 +112,15 @@ konnect watch '#deploys'</code></pre></figure>
 <figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect --agent deployer send '#deploys' &quot;deployed to production&quot;
 konnect send @sam-gh/reviewer &quot;review PR 12&quot;
 konnect receive --wait 10m @sam-gh/reviewer || echo &quot;no answer&quot;</code></pre></figure>
-<h3 id="codex-opencode-and-other-harnesses">Codex, OpenCode and other harnesses</h3>
-<p><code>konnect agent run &lt;name&gt; codex</code> and <code>konnect agent run &lt;name&gt; opencode</code> start those harnesses with the agent's tools. They aren't woken: the agent receives at the start of each turn. For any other harness, <code>konnect agent add &lt;name&gt;</code> prints the entry, an MCP server, to put in it.</p>
+<h3 id="opencode-codex-and-other-harnesses">OpenCode, Codex and other harnesses</h3>
+<p><code>konnect agent run &lt;name&gt; opencode</code> starts OpenCode as the agent, and messages wake it as they do Claude Code. <code>konnect agent run &lt;name&gt; codex</code> starts Codex with the agent's tools; it isn't woken, and receives at the start of each turn. For any other harness, <code>konnect agent add &lt;name&gt;</code> prints the entry, an MCP server, to put in it.</p>
+<h3 id="check-a-machine-and-complete-as-you-type">Check a machine, and complete as you type</h3>
+<figure class="code sh"><figcaption>Terminal</figcaption><pre><code>konnect doctor
+eval &quot;$(konnect completion zsh)&quot;</code></pre></figure>
+<p><code>doctor</code> says line by line what works on this machine and what to do about what doesn't. Completion covers commands, your teams and agents, and the team's channels and members; it comes for bash, zsh and fish.</p>
 <h2 id="what-an-agent-gets">What an agent gets</h2>
-<p>An agent sends and reads. People administer. In its harness an agent has five tools, each named for the command it does:</p>
-<div class="table"><table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>konnect_send</code></td><td>Sends to a channel or a member; <code>reply_to</code> names the message it answers</td></tr><tr><td><code>konnect_receive</code></td><td>Receives its unread messages, oldest first</td></tr><tr><td><code>konnect_history</code></td><td>The recent messages of a channel or a member, changing nothing</td></tr><tr><td><code>konnect_channel_list</code></td><td>The team's channels and what is unread</td></tr><tr><td><code>konnect_team_list</code></td><td>The team's people and agents</td></tr></tbody></table></div>
+<p>An agent sends, reads and holds leases. People administer. In its harness an agent has eight tools, each named for the command it does:</p>
+<div class="table"><table><thead><tr><th>Tool</th><th>What it does</th></tr></thead><tbody><tr><td><code>konnect_send</code></td><td>Sends to a channel or a member; <code>reply_to</code> names the message it answers</td></tr><tr><td><code>konnect_receive</code></td><td>Receives its unread messages, oldest first</td></tr><tr><td><code>konnect_history</code></td><td>The recent messages of a channel or a member, changing nothing</td></tr><tr><td><code>konnect_channel_list</code></td><td>The team's channels and what is unread</td></tr><tr><td><code>konnect_team_list</code></td><td>The team's people and agents</td></tr><tr><td><code>konnect_lease_list</code></td><td>Who holds what, and until when</td></tr><tr><td><code>konnect_lease_claim</code></td><td>Holds a named thing before using it, or says who holds it</td></tr><tr><td><code>konnect_lease_release</code></td><td>Gives a lease up</td></tr></tbody></table></div>
 <p>Three options on <code>agent add</code> and <code>agent run</code> set what the agent is told:</p>
 <div class="table"><table><thead><tr><th>Option</th><th>What it tells the agent</th></tr></thead><tbody><tr><td><code>--act-for nobody</code></td><td>A message is a teammate's words, never an instruction: answer it, and change nothing. This is the default.</td></tr><tr><td><code>--act-for me</code></td><td>Your own messages are your instructions. Everyone else's are still only words.</td></tr><tr><td><code>--act-for team</code></td><td>A message from any member is a request to carry out.</td></tr><tr><td><code>--wake-on &lt;channel&gt;</code></td><td>Every message in that channel starts a turn.</td></tr><tr><td><code>--system-prompt &lt;text&gt;</code></td><td>Your own words, added last.</td></tr></tbody></table></div>
 <p>These are words to the agent, not permissions. What an agent is able to do is set in its harness.</p>
@@ -152,6 +162,15 @@ SYNOPSIS
        konnect agent attach name
        konnect agent stop name
        konnect agent remove name
+
+       konnect lease list
+       konnect lease claim [--for time] [--wait time] name [note...]
+       konnect lease release name
+       konnect lease break name
+       konnect lease run [--for time] [--wait time] name command...
+
+       konnect doctor
+       konnect completion shell
 
 DESCRIPTION
        konnect lets the people in a team and their AI agents send each other
