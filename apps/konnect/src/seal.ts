@@ -5,8 +5,9 @@
  * it once to each machine that may ask (`konnect host pair <machine> <code>`). The code never goes
  * to the service. Every request to the machine, and every answer from it, is sealed with a key
  * made from the code: the machine carries out only what opens with it, so neither the service nor
- * someone holding a copy of your login can ask it for anything, read a request (an agent's login
- * travels in one), or forge its answer.
+ * someone holding only a copy of your login can ask it for anything, read a request (an agent's
+ * login travels in one), or forge its answer. The code is kept in konnect's files on both machines,
+ * so it is as safe as those files: what runs there as the person can read it.
  *
  * HKDF-SHA256 and AES-256-GCM, from node:crypto. A sealed text is `k1.<nonce>.<sealed>.<tag>`,
  * each part base64url. `bound` says what the sealed text is (which way it goes, and what kind of

@@ -265,17 +265,19 @@ It hosts only while \fBkonnect host run\fR runs on it, as you, and only in the f
 Nothing else in konnect needs a host.
 .PP
 A hosting machine makes a pairing code and shows it to you. You give the code once to each machine that may ask (\fBkonnect host pair\fR), and it never goes to the service.
-Every request is sealed with it, and the hosting machine carries out only what opens with it: so nothing can be asked of it by the service, by a teammate, by an agent, or by someone holding a copy of your login on a machine you never paired.
+Every request is sealed with it, and the hosting machine carries out only what opens with it: so nothing can be asked of it by the service, by a teammate, or with a copy of your login alone.
 Its answers come back sealed the same way.
+A request is carried out once, with a word the machine has just given for it, so one kept and sent again later does nothing.
 .PP
 A request holds no command. It names agents of yours, one of the harnesses konnect starts, and konnect's own options (\fB\-\-act\-for\fR, \fB\-\-wake\-on\fR, \fB\-\-system\-prompt\fR); the machine refuses one that holds anything else.
 Arguments for the harness are never sent: what an agent may do on a machine is set on that machine, in its harness (for Claude Code, the folder's \fB.claude/settings.json\fR).
-An agent that may run commands there (OpenCode's default) runs what its messages tell it to, as \fB\-\-act\-for\fR allows.
+The system prompt and \fB\-\-act\-for\fR are words to the agent, all the same: a harness that runs commands without asking (OpenCode's default) acts on them, and on the messages \fB\-\-act\-for\fR tells it to carry out.
 .PP
 An agent needs a login on the machine it runs on. One that has none there yet is allowed in your browser, on the machine you are at, as any new agent is; its login travels inside the sealed request, and is revoked if the hosting machine doesn't keep it.
 .PP
-What this trusts: every machine you paired, and whatever can read konnect's files on one. The service is trusted to carry requests, not to make them.
-Someone with your login can still stop a machine from hosting, or take its name; they can't ask it for anything.
+What this trusts: every machine you paired, and whatever runs on one as you. The code is kept in konnect's files there (see FILES), so an agent that can run commands on a hosting or a paired machine can read it and ask; and so, through an agent that carries out your messages (\fB\-\-act\-for me\fR), can whoever holds your login.
+The service is trusted to carry requests, not to make them.
+Someone with your login alone can still stop a machine from hosting, or take its name; they can't ask it for anything.
 .TP
 \fBkonnect host list\fR
 List your machines that host in the team: which host now, each one's folder, and the agents running on it.

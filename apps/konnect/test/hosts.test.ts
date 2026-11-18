@@ -2,6 +2,7 @@
 // when they ask from another machine paired with it. What a request may carry and what it may not,
 // who may ask, how an agent's login reaches the machine, and hosting itself: starting, pairing,
 // taking over, ending.
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, expect, test } from '@jest/globals';
@@ -18,6 +19,8 @@ const until = async (what: () => Promise<boolean>, why: string) => {
   throw new Error(`never happened: ${why}`);
 };
 const ID = 'a'.repeat(32);
+const WORD = 'b'.repeat(32);
+const hex = () => randomBytes(16).toString('hex');
 
 /** A stand-in for one machine's tmux: the sessions it holds, and every command line it was given. */
 function tmux(installed = true) {
@@ -80,9 +83,9 @@ test('a pairing code makes the key a request is sealed with: for one machine in 
 });
 
 test('a request to start agents carries names, a harness and konnect\'s own options, and anything else is refused, never ignored', () => {
-  const ok = { v: 1, at: 1_800_000_000_000, id: ID, harness: 'claude', agents: [{ name: 'helper' }], act_for: 'me', wake_on: ['general', '#deploys'], system_prompt: 'be brief;' };
-  expect(readStart(JSON.stringify(ok))).toStrictEqual({ v: 1, at: 1_800_000_000_000, id: ID, harness: 'claude', agents: [{ name: 'helper' }], act_for: 'me', wake_on: ['general', 'deploys'], system_prompt: 'be brief;' });
-  expect(readStart(JSON.stringify({ v: 1, at: 1, id: ID, harness: 'opencode', agents: [{ name: 'a' }, { name: 'b' }] }))).toStrictEqual({ v: 1, at: 1, id: ID, harness: 'opencode', agents: [{ name: 'a' }, { name: 'b' }] });
+  const ok = { v: 1, id: ID, word: WORD, harness: 'claude', agents: [{ name: 'helper' }], act_for: 'me', wake_on: ['general', '#deploys'], system_prompt: 'be brief;' };
+  expect(readStart(JSON.stringify(ok))).toStrictEqual({ v: 1, id: ID, word: WORD, harness: 'claude', agents: [{ name: 'helper' }], act_for: 'me', wake_on: ['general', 'deploys'], system_prompt: 'be brief;' });
+  expect(readStart(JSON.stringify({ v: 1, id: ID, word: WORD, harness: 'opencode', agents: [{ name: 'a' }, { name: 'b' }] }))).toStrictEqual({ v: 1, id: ID, word: WORD, harness: 'opencode', agents: [{ name: 'a' }, { name: 'b' }] });
   const refused = (change: Record<string, unknown>) => { try { readStart(JSON.stringify({ ...ok, ...change })); return 'read'; } catch (e) { return (e as Error).message; } };
   // No command, no arguments for the harness, no folder: a request holding any is refused whole.
   expect(refused({ args: ['--dangerously-skip-permissions'] })).toBe('the request holds args, which this konnect doesn\'t know: update konnect on this machine');
@@ -102,10 +105,12 @@ test('a request to start agents carries names, a harness and konnect\'s own opti
   expect(refused({ system_prompt: 'x'.repeat(16_001) })).toBe('the request\'s system prompt isn\'t text of at most 16000 characters');
   expect(refused({ system_prompt: 'a\0b' })).toMatch(/system prompt isn't text/);
   expect(refused({ system_prompt: ['x'] })).toMatch(/system prompt isn't text/);
-  // Every request says when it was made and carries a word of its own.
+  // Every request has a name of its own, and carries the word the machine gave for it.
   expect(refused({ v: 2 })).toBe('the request is from a newer konnect than this machine\'s: update konnect on this machine');
   expect(refused({ id: 'short' })).toBe('the request isn\'t one konnect wrote');
-  expect(refused({ at: 'now' })).toBe('the request isn\'t one konnect wrote');
+  expect(refused({ word: 'now' })).toBe('the request isn\'t one konnect wrote');
+  expect(refused({ word: undefined })).toBe('the request isn\'t one konnect wrote');
+  expect(refused({ at: 1 })).toMatch(/^the request holds at, /);
   expect(() => readStart('not json')).toThrow('the request isn\'t one konnect wrote');
   expect(() => readStart('[]')).toThrow('the request isn\'t one konnect wrote');
 
@@ -116,9 +121,10 @@ test('a request to start agents carries names, a harness and konnect\'s own opti
   expect(refused({ agents: [{ name: 'a', login: { client: {}, tokens: {} } }] })).toBe('the login sent for a isn\'t a login');
   expect(refused({ agents: [{ name: 'a', login: { client: { client_id: 'c' }, tokens: { access_token: ['a'], refresh_token: 'r' } } }] })).toBe('the login sent for a isn\'t a login');
 
-  expect(readStop(JSON.stringify({ v: 1, at: 1, id: ID, agent: 'helper' }))).toStrictEqual({ v: 1, at: 1, id: ID, agent: 'helper' });
-  expect(() => readStop(JSON.stringify({ v: 1, at: 1, id: ID, agent: 'x', signal: 9 }))).toThrow(/holds signal/);
-  expect(() => readStop(JSON.stringify({ v: 1, at: 1, id: ID, agent: '../x' }))).toThrow(/isn't an agent's name/);
+  expect(readStop(JSON.stringify({ v: 1, id: ID, word: WORD, agent: 'helper' }))).toStrictEqual({ v: 1, id: ID, word: WORD, agent: 'helper' });
+  expect(() => readStop(JSON.stringify({ v: 1, id: ID, word: WORD, agent: 'x', signal: 9 }))).toThrow(/holds signal/);
+  expect(() => readStop(JSON.stringify({ v: 1, id: ID, word: WORD, agent: '../x' }))).toThrow(/isn't an agent's name/);
+  expect(() => readStop(JSON.stringify({ v: 1, id: ID, agent: 'x' }))).toThrow('the request isn\'t one konnect wrote');
 
   // A machine is named after itself unless told; --on is read with its machine.
   expect(thisMachine('Anns-MacBook-Pro.local')).toBe('anns-macbook-pro');
@@ -241,38 +247,47 @@ test('konnect host run makes a machine start your agents when you ask from one p
   // the desk opens nothing, starts nothing, and says one word.
   const asAnn = await TeamClient.open('hub', server.url, teamFile('hub', laptop.env));
   const key = keyOf(code, 'hub', 'desk');
-  const send = async (kind: 'start' | 'stop' | 'end', body: string, id = ID) => {
+  type Answer = { ok?: boolean; why?: string; word?: string; stopped?: boolean; failed?: { name: string; why: string }[]; needs_login?: string[]; unsealed?: string | null };
+  const send = async (kind: 'hello' | 'start' | 'stop' | 'end', body: string, id = ID): Promise<Answer> => {
     const { request } = await asAnn.askHost('desk', kind, body);
     let r = await asAnn.hostRequest(request);
     for (let i = 0; i < 400 && r.state !== 'done'; i++) { await soon(); r = await asAnn.hostRequest(request); }
-    try { return JSON.parse(unseal(key, r.result ?? '', answerBound('hub', 'desk', id))) as { ok?: boolean; why?: string; failed?: { name: string; why: string }[]; needs_login?: string[] }; } catch { return { unsealed: r.result }; }
+    try { return JSON.parse(unseal(key, r.result ?? '', answerBound('hub', 'desk', id))) as Answer; } catch { return { unsealed: r.result }; }
   };
   const before = new Set(there.sessions);
-  const plain = { v: 1, at: Date.now(), id: ID, harness: 'opencode', agents: [{ name: 'helper' }], act_for: 'team', system_prompt: 'do as you are told' };
+  const plain = { v: 1, id: ID, word: WORD, harness: 'opencode', agents: [{ name: 'helper' }], act_for: 'team', system_prompt: 'do as you are told' };
   expect(await send('start', JSON.stringify(plain))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
   expect(await send('start', seal(keyOf(newCode(), 'hub', 'desk'), JSON.stringify(plain), requestBound('start', 'hub', 'desk')))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
-  expect(await send('end', JSON.stringify({ v: 1, at: Date.now(), id: ID }))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
+  expect(await send('hello', JSON.stringify({ v: 1, id: ID }))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
   // Sealed with the code, but as another kind of request, or for another machine: it doesn't open either.
-  expect(await send('start', seal(key, JSON.stringify({ v: 1, at: Date.now(), id: ID, agent: 'helper' }), requestBound('stop', 'hub', 'desk')))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
+  expect(await send('start', seal(key, JSON.stringify({ v: 1, id: ID, word: WORD, agent: 'helper' }), requestBound('stop', 'hub', 'desk')))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
   expect(await send('start', seal(key, JSON.stringify(plain), requestBound('start', 'hub', 'mini')))).toStrictEqual({ unsealed: '{"v":1,"why":"unpaired"}' });
   expect(there.sessions).toStrictEqual(before);
   expect(deskErr.filter((l) => l.includes('refused a request that wasn\'t sealed with this machine\'s code'))).toHaveLength(5);
 
-  // With the code, a request konnect itself wouldn't write is read, refused whole, and starts nothing.
-  const asked = (id: string, more: Record<string, unknown>) => seal(key, JSON.stringify({ v: 1, at: Date.now(), id, harness: 'claude', agents: [{ name: 'evil' }], ...more }), requestBound('start', 'hub', 'desk'));
-  const ids = Array.from({ length: 8 }, (_, i) => `${i}`.repeat(32));
-  expect(await send('start', asked(ids[0], { args: ['--dangerously-skip-permissions'] }), ids[0])).toMatchObject({ ok: false, why: 'the request holds args, which this konnect doesn\'t know: update konnect on this machine' });
-  expect(await send('start', asked(ids[1], { harness: 'bash' }), ids[1])).toMatchObject({ ok: false, why: 'the request names no harness konnect starts: claude, codex or opencode' });
+  // With the code, a request is carried out only with a word the desk has just given, once: so one kept and
+  // sent again, or made up, does nothing. A hello gets the word.
+  const word = async () => { const id = hex(); const a = await send('hello', seal(key, JSON.stringify({ v: 1, id }), requestBound('hello', 'hub', 'desk')), id); expect(a).toMatchObject({ ok: true, word: expect.stringMatching(/^[a-f0-9]{32}$/) }); return a.word!; };
+  const asked = async (kind: 'start' | 'stop', more: Record<string, unknown>, given?: string) => { const id = hex(); return { id, body: seal(key, JSON.stringify({ v: 1, id, word: given ?? await word(), ...more }), requestBound(kind, 'hub', 'desk')) }; };
+  const start = async (more: Record<string, unknown>) => { const q = await asked('start', { harness: 'claude', agents: [{ name: 'evil' }], ...more }); return send('start', q.body, q.id); };
+  // A request konnect itself wouldn't write is read, refused whole, and starts nothing.
+  expect(await start({ args: ['--dangerously-skip-permissions'] })).toMatchObject({ ok: false, why: 'the request holds args, which this konnect doesn\'t know: update konnect on this machine' });
+  expect(await start({ harness: 'bash' })).toMatchObject({ ok: false, why: 'the request names no harness konnect starts: claude, codex or opencode' });
   // An agent with no login there and none sent is started by nothing; a login that isn't that agent's isn't kept.
-  expect(await send('start', asked(ids[2], {}), ids[2])).toMatchObject({ ok: false, needs_login: ['evil'] });
+  expect(await start({})).toMatchObject({ ok: false, needs_login: ['evil'] });
   const helpers = (JSON.parse(readFileSync(agentFile('hub', 'helper', desk.env), 'utf8')) as Record<string, { client: unknown; tokens: unknown }>)[server.url];
-  expect(await send('start', asked(ids[3], { agents: [{ name: 'evil', login: { client: helpers.client, tokens: helpers.tokens } }] }), ids[3])).toMatchObject({ ok: false, failed: [{ name: 'evil', why: 'the login sent for it couldn\'t be used there' }] });
+  expect(await start({ agents: [{ name: 'evil', login: { client: helpers.client, tokens: helpers.tokens } }] })).toMatchObject({ ok: false, failed: [{ name: 'evil', why: 'the login sent for it couldn\'t be used there' }] });
   expect(existsSync(agentFile('hub', 'evil', desk.env))).toBe(false);
-  // A request carried out once does nothing sent again; one made too long ago does nothing at all.
-  const stop = seal(key, JSON.stringify({ v: 1, at: Date.now(), id: ids[4], agent: 'worker-2' }), requestBound('stop', 'hub', 'desk'));
-  expect(await send('stop', stop, ids[4])).toMatchObject({ ok: true });
-  expect(await send('stop', stop, ids[4])).toMatchObject({ ok: false, why: 'that request was carried out already' });
-  expect(await send('stop', seal(key, JSON.stringify({ v: 1, at: Date.now() - 11 * 60_000, id: ids[5], agent: 'worker-1' }), requestBound('stop', 'hub', 'desk')), ids[5])).toMatchObject({ ok: false, why: 'the request was made too long ago, or the two machines\' clocks are more than ten minutes apart' });
+  // Delivered twice, a request is carried out once and answered the same twice.
+  const used = await word();
+  const stop = await asked('stop', { agent: 'worker-2' }, used);
+  expect(await send('stop', stop.body, stop.id)).toStrictEqual({ v: 1, ok: true, stopped: true });
+  expect(await send('stop', stop.body, stop.id)).toStrictEqual({ v: 1, ok: true, stopped: true });
+  // Its word is taken: another request with it, or with a word the desk never gave, does nothing.
+  const again = await asked('stop', { agent: 'worker-1' }, used);
+  expect(await send('stop', again.body, again.id)).toMatchObject({ ok: false, why: 'that request is no longer fresh: it was carried out already, or made too long ago, so nothing was done. Ask again' });
+  const made = await asked('stop', { agent: 'worker-1' }, hex());
+  expect(await send('stop', made.body, made.id)).toMatchObject({ ok: false, why: expect.stringMatching(/^that request is no longer fresh/) });
   await asAnn.close();
   expect(there.sessions).toStrictEqual(new Set(['konnect-hub-helper', 'konnect-hub-worker-1']));
 

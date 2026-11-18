@@ -75,9 +75,10 @@ const HOST = `  konnect host list                 your machines that host, and t
   konnect host stop [<name>]        end hosting, here or on the machine named
 
   A machine that hosts carries out only requests sealed with its pairing code, which the service
-  never has: not the service's, not a teammate's, not an agent's. It starts claude, codex or
-  opencode as an agent of yours, with konnect's own options and nothing else; what that agent may
-  do on the machine is set there, in its harness.`;
+  never has: so not the service's, nor a teammate's, nor one made with a copy of your login alone.
+  It starts claude, codex or opencode as an agent of yours, with konnect's own options and nothing
+  else; what that agent may do on the machine is set there, in its harness. The code is kept in
+  konnect's files on the hosting and the paired machines: what runs there as you can read it.`;
 
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
   --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,
