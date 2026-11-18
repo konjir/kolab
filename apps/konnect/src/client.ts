@@ -9,7 +9,7 @@
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StoredLogin, safeUrl } from '@konjir/login';
-import type { Channel, ChannelMessage, Member, Message } from './names.js';
+import type { AgentState, Channel, ChannelMessage, Member, Message } from './names.js';
 
 /** What a server that can't do something yet answers, said plainly. */
 export class NotYet extends Error {}
@@ -304,6 +304,9 @@ export class TeamClient {
 
   /** konjir_list_leases: every lease held in the team now, soonest to expire first. */
   async leases(): Promise<Lease[]> { return (await this.newer<{ leases: Lease[] }>('konjir_list_leases', {}, 'hold leases')).leases; }
+
+  /** konjir_say_state: a running agent says what it is doing, for the lists; an older service that has no such tool is told nothing (NotYet). */
+  sayState(state: AgentState | 'gone') { return this.newer<{ state: string }>('konjir_say_state', { state }, 'say what an agent is doing'); }
 
   // ---- hosts: the person's own machines that start their agents when asked ---------------------------
 

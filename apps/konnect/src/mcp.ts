@@ -32,10 +32,10 @@ import { wakeDescriber } from './wake.js';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod';
 import type { ActFor } from './args.js';
-import { CLIENT_NAME, Refused, SignInError, TeamClient } from './client.js';
+import { CLIENT_NAME, NotYet, Refused, SignInError, TeamClient } from './client.js';
 import { readAll, readOne, send, targetOf, type Block } from './chat.js';
 import { formatLeases, until } from './cmd-lease.js';
-import { formatChannels, formatTeam, memberJson, shownActor, type Member } from './names.js';
+import { formatChannels, formatTeam, memberJson, shownActor, type AgentState, type Member } from './names.js';
 import { systemPrompt } from './system-prompt.js';
 
 export { framed } from './frame.js';
@@ -51,6 +51,13 @@ export interface McpOptions {
   own?: string;
   /** Whether to hold the subscription stream and wake the agent (true by default). */
   wake?: boolean;
+  /**
+   * What the agent is doing now, asked each time it is told to the service (every `stateEveryMs`,
+   * half a minute unless given): by default `running`, since only a harness whose hooks konnect
+   * set knows whether it waits or works.
+   */
+  state?: () => AgentState;
+  stateEveryMs?: number;
   /** How long the server waits, as it starts, to learn whose agent it is, for the system prompt. */
   ownerWaitMs?: number;
   /** The bridge's reconnect delays (KolabBridge's backoff); for tests. */
@@ -65,6 +72,8 @@ const READ_DEFAULT = 20;
 const READ_MAX = 100;
 /** How long the server waits to learn whose agent it is before it starts without knowing. */
 const OWNER_WAIT_MS = 4_000;
+/** How often a running agent says what it is doing: the service forgets one that hasn't for a minute and a half. */
+const STATE_EVERY_MS = 30_000;
 
 type Transport = Parameters<McpServer['connect']>[0];
 
@@ -93,6 +102,7 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
           // The channels that wake it, followed: their messages reach its answers.
           for (const ch of opts.wakeOn ?? []) await c.follow(ch).catch((e: unknown) => log(`konnect mcp: couldn't follow #${ch}: ${(e as Error)?.message ?? e}`));
           startWaking(c);
+          startSaying();
           return c;
         });
       client = opening;
@@ -110,6 +120,24 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
    * Waking (Claude Code's channel): the bridge holds the subscription to the agent's answers, with
    * the agent's login, once its identity is checked, and says that messages wait, in konnect's words.
    */
+  /**
+   * What the lists show of the agent: said as its session opens and again every half minute, for
+   * as long as this server runs, which is as long as its harness does. A service that keeps no
+   * states is asked once and no more.
+   */
+  let saying: ReturnType<typeof setInterval> | undefined;
+  let says = true;
+  const say = async (state: AgentState | 'gone') => {
+    if (!says || !client) return;
+    await client.then((c) => c.sayState(state)).catch((e: unknown) => { if (e instanceof NotYet) says = false; });
+  };
+  const startSaying = () => {
+    if (saying) return;
+    void say((opts.state ?? (() => 'running' as const))());
+    saying = setInterval(() => void say((opts.state ?? (() => 'running' as const))()), opts.stateEveryMs ?? STATE_EVERY_MS);
+    saying.unref?.();
+  };
+
   let bridge: KolabBridge | undefined;
   const startWaking = (c: TeamClient) => {
     if (opts.wake === false || bridge) return;
@@ -292,6 +320,9 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
 
   await server.connect(transport);
   const close = async () => {
+    clearInterval(saying);
+    // Said as it ends, so the lists don't show it for another minute and a half.
+    await say('gone');
     const c = client;
     client = undefined;
     await bridge?.stop().catch(() => undefined);

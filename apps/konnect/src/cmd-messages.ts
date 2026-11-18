@@ -77,8 +77,12 @@ export async function sendMessage(ctx: Ctx, rest: string[]) {
       if (r.kind === 'direct') {
         const given = printable(to.kind === 'direct' ? to.given : '');
         if (!agent) return `Sent to ${given}.`;
-        // The service calls an agent connected while its login is open, whether or not its harness is running:
-        // only the lack of one is certain, so only that is said.
+        // What the agent last said of itself, when the service tells: nothing running as it, or in the middle of a turn.
+        if (agent.state === null) return `Sent to ${given}. It isn't running now, so the message waits for it.`;
+        if (agent.state === 'working') return `Sent to ${given}. It is in the middle of a turn, and sees the message when that ends.`;
+        if (agent.state !== undefined) return `Sent to ${given}.`;
+        // A service that tells no states calls an agent connected while its login is open, whether or not its
+        // harness is running: only the lack of one is certain, so only that is said.
         return agent.here ? `Sent to ${given}.` : `Sent to ${given}. It isn't connected, so the message waits for it.`;
       }
       const named = r.sent.mentions.map((m) => `@${printable(shownActor(m, r.members))}`);

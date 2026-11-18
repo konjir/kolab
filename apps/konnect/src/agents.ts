@@ -223,8 +223,8 @@ export function toolCommand(tool: Tool, name: string, entry: { command: string; 
   }
   return {
     cmd: 'opencode', args: extra,
-    // konnect wakes OpenCode itself, from beside it (opencode.ts), so the server is told not to.
-    env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { [name]: { type: 'local', command: [entry.command, ...entry.args], environment: { ...entry.env, KONNECT_WAKE: 'hook' }, enabled: true } } }) },
+    // konnect wakes OpenCode itself, from beside it (opencode.ts), so the server is told not to (KONNECT_WAKE; `hook` is Claude Code's alone, whose hook also says when it waits).
+    env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { [name]: { type: 'local', command: [entry.command, ...entry.args], environment: { ...entry.env, KONNECT_WAKE: 'beside' }, enabled: true } } }) },
   };
 }
 

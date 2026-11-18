@@ -22,7 +22,7 @@ import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
 import { helpFor } from './help.js';
 import { runOn, stopOn, type Said } from './host-ask.js';
-import { printable, shownName } from './names.js';
+import { printable, shownName, stateWord } from './names.js';
 import { freePort, wakeOpenCode, withPort } from './opencode.js';
 import { systemPrompt } from './system-prompt.js';
 import { HOSTED_URL, agentFile, agentFileReady, configDir, dropIfEmpty } from './teams.js';
@@ -306,16 +306,16 @@ export async function agent(ctx: Ctx, verb: string | undefined, rest: string[]) 
     const client = await ctx.open(team);
     try {
       const mine = (await client.members()).filter((m) => m.kind === 'agent' && m.owner === client.me.actor)
-        .map((m) => { const full = shownName(m); const name = full.slice(full.indexOf('/') + 1); return { name, connected: m.here, set_up_here: existsSync(agentFile(team, name, ctx.env)), running_here: false, running_on: [] as string[] }; });
+        .map((m) => { const full = shownName(m); const name = full.slice(full.indexOf('/') + 1); return { name, connected: m.here, ...(m.state !== undefined ? { state: m.state } : {}), word: stateWord(m), set_up_here: existsSync(agentFile(team, name, ctx.env)), running_here: false, running_on: [] as string[] }; });
       const kind = mine.length ? await multiplexer(ctx) : undefined;
       if (kind) for (const a of mine) a.running_here = !!await sessionOf(ctx, kind, team, a.name);
       // And on the person's other machines that are hosting now, as each last said.
       const hosting = mine.length ? (await client.hosts().catch(() => [])).filter((h) => h.serving) : [];
       for (const a of mine) a.running_on = hosting.filter((h) => h.running.includes(a.name)).map((h) => h.name);
-      ctx.print(mine, () => {
+      ctx.print(mine.map(({ word: _, ...a }) => a), () => {
         if (!mine.length) return `You have no agents in team ${team}. Add one with: konnect agent run <name> claude`;
         const width = Math.max(...mine.map((a) => a.name.length)) + 3;
-        return mine.map((a) => `${printable(a.name).padEnd(width)}${(a.connected ? 'connected' : '').padEnd(12)}${(a.set_up_here ? 'set up here' : '').padEnd(14)}${[...(a.running_here ? ['running here, in the background'] : []), ...(a.running_on.length ? [`running on ${a.running_on.map(printable).join(', ')}`] : [])].join('; ')}`.trimEnd()).join('\n');
+        return mine.map((a) => `${printable(a.name).padEnd(width)}${a.word.padEnd(14)}${(a.set_up_here ? 'set up here' : '').padEnd(14)}${[...(a.running_here ? ['running here, in the background'] : []), ...(a.running_on.length ? [`running on ${a.running_on.map(printable).join(', ')}`] : [])].join('; ')}`.trimEnd()).join('\n');
       });
     } finally { await client.close(); }
     return;

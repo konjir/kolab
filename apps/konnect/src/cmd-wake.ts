@@ -26,7 +26,14 @@ import { wakeDescriber, type Waking } from './wake.js';
  * What is kept between one `konnect wake` and the next: whose turn it is to wait (`claim`, a word
  * only that process knows), the harness session the announcements were made to, and their ids.
  */
-interface WakeState { claim?: string; session?: string; announced?: string[] }
+interface WakeState { claim?: string; session?: string; announced?: string[]; waiting?: boolean }
+
+/**
+ * Whether the agent's harness is waiting for a message now, as its hook last left it: true from
+ * the moment a `konnect wake` starts waiting until it wakes the harness. The agent's own server
+ * (`konnect mcp`) tells the service from this whether the agent is idle or working.
+ */
+export const waitingNow = (team: string, label: string, env: Record<string, string | undefined>): boolean => read(wakeFile(team, label, env)).waiting === true;
 
 /** The most announced ids kept: enough to cover everything unread an agent could be shown. */
 const KEPT = 500;
@@ -86,7 +93,7 @@ export async function wake(ctx: Ctx, rest: string[]): Promise<void> {
   const claim = randomBytes(12).toString('hex');
   const before = read(stateFile);
   const announced = new Set(session !== undefined && before.session !== session ? [] : before.announced ?? []);
-  write(stateFile, { claim, ...(session !== undefined ? { session } : {}), announced: [...announced] });
+  write(stateFile, { claim, ...(session !== undefined ? { session } : {}), announced: [...announced], waiting: true });
   const mine = () => read(stateFile).claim === claim;
   // A harness that has gone leaves its hook an orphan (the parent is then 1): nobody is there to wake.
   const parent = process.ppid;
@@ -143,6 +150,7 @@ export async function wake(ctx: Ctx, rest: string[]): Promise<void> {
   for (const m of [...last.direct, ...last.woken]) announced.add(m.id);
   // What was announced is kept whoever holds the claim now: a newer process keeps its own claim.
   const now = read(stateFile);
-  write(stateFile, { ...(now.claim ? { claim: now.claim } : {}), ...(now.session !== undefined ? { session: now.session } : session !== undefined ? { session } : {}), announced: [...new Set([...(now.session === session ? now.announced ?? [] : []), ...announced])].slice(-KEPT) });
+  // The harness is woken, so it waits no more; unless a newer process has taken over, whose waiting is its own to say.
+  write(stateFile, { ...(now.claim ? { claim: now.claim } : {}), ...(now.claim !== claim && now.waiting ? { waiting: true } : {}), ...(now.session !== undefined ? { session: now.session } : session !== undefined ? { session } : {}), announced: [...new Set([...(now.session === session ? now.announced ?? [] : []), ...announced])].slice(-KEPT) });
   throw new Woke(notice);
 }
