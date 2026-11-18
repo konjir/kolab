@@ -201,7 +201,7 @@ test('konnect agent add prints the entry and starts nothing; agent list says whi
   expect(JSON.parse(await ann.run(['agent', 'add', 'helper', '--json', '--act-for', 'team', '--wake-on', '#deploys', '--system-prompt', 'Be brief.'], { open: () => { throw new Error('no browser'); }, self, start })))
     .toStrictEqual({ team: 'hub', agent: 'ann/helper', added: false, entry });
   expect(await fails(ann.run(['agent', 'add', 'helper', 'claude'], { self, start }))).toBe('konnect agent add <name>: unknown claude. To start a harness with it: konnect agent run helper claude');
-  expect(await fails(ann.run(['agent', 'add'], { self, start }))).toBe('konnect agent add <name>: name the agent, such as konnect agent add reviewer');
+  expect(await fails(ann.run(['agent', 'add'], { self, start }))).toBe('konnect agent add <name>...: name the agent, such as konnect agent add reviewer');
 
   // Ann's agents: reviewer (made on the service, not set up here) and helper; connected is the
   // service's word (it calls an agent connected while a login of its is open).
@@ -325,4 +325,40 @@ test('konnect agent run --background keeps the harness in tmux, or in screen whe
   has.tmux = false; has.screen = false;
   expect(await fails(ann.run(['agent', 'run', '--background', 'helper', 'claude'], { self, exec, start }))).toBe('konnect agent run --background keeps the harness in tmux or screen, and neither is installed here: install tmux, or run it without --background');
   expect(await fails(ann.run(['agent', 'add', '--background', 'helper'], { self, exec }))).toBe('konnect agent add takes no --background: only konnect agent run does');
+});
+
+test('several agents at once: konnect agent add <name>... and konnect agent run --background --count <n> allow them all on one page of the browser', async () => {
+  const { server, idp, signIn, ann: annId } = await teams();
+  const ann = machine(server.url, 'ann');
+  await signIn(ann, annId, 'hub');
+  const self = () => ({ command: 'node', args: ['k.mjs'] });
+  let pages = 0;
+  let page = '';
+  const allow = (u: URL) => { pages++; idp.next(annId); void browse(u, (b, h) => { page = h; return pressing('decision=allow')(b); }); };
+
+  // agent add with two names: one page names both, and each gets its own login and its own entry.
+  const added = JSON.parse(await ann.run(['agent', 'add', '--json', 'one', 'two'], { open: allow, self }));
+  expect(pages).toBe(1);
+  expect(page).toContain('one');
+  expect(page).toContain('two');
+  expect(added.agents).toStrictEqual([{ agent: 'ann/one', added: true }, { agent: 'ann/two', added: true }]);
+  expect(Object.keys(added.entry.mcpServers)).toStrictEqual(['konnect-one', 'konnect-two']);
+  for (const n of ['one', 'two']) expect(JSON.parse(readFileSync(join(ann.env.KONNECT_CONFIG_DIR, 'agents', 'hub', `${n}.json`), 'utf8'))[server.url].tokens.refresh_token).toMatch(/^kjr_/);
+  expect(await fails(ann.run(['agent', 'add', 'one', 'one'], { open: allow, self }))).toBe('konnect agent add one one: an agent is named twice');
+
+  // --count: <name>-1 to <name>-<n>, each in the background, allowed together; it needs --background (2).
+  const sessions = new Set<string>();
+  const exec = async (cmd: string, args: string[]) => {
+    if (cmd !== 'tmux') return { code: -1, out: '' };
+    if (args[0] === 'has-session') return { code: sessions.has(args[2].slice(1)) ? 0 : 1, out: '' };
+    if (args[0] === 'new-session') sessions.add(args[3]);
+    return { code: 0, out: '' };
+  };
+  expect(await fails(ann.run(['agent', 'run', '--count', '3', 'worker', 'claude'], { open: allow, self, exec }))).toBe('konnect agent run --count starts several harnesses, which one terminal can\'t hold: add --background');
+  const out = await ann.run(['agent', 'run', '--background', '--count', '3', 'worker', 'claude'], { open: allow, self, exec });
+  expect(pages).toBe(2);
+  expect(out).toMatch(/^Your agents @ann\/worker-1, @ann\/worker-2, @ann\/worker-3 are in team hub, and claude is running as each in the background \(tmux sessions konnect-hub-worker-1 to konnect-hub-worker-3\)\./);
+  expect(sessions).toStrictEqual(new Set(['konnect-hub-worker-1', 'konnect-hub-worker-2', 'konnect-hub-worker-3']));
+  expect(await ann.run(['agent', 'list'], { exec })).toMatch(/^worker-2\s+(connected\s+)?set up here\s+running here, in the background$/m);
+  expect(await fails(ann.run(['agent', 'run', '--background', '--count', '11', 'worker', 'claude'], { self, exec }))).toBe('--count is a whole number from 1 to 10');
 });

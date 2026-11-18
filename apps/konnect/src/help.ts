@@ -31,7 +31,7 @@ const TEAM = `  konnect team list                 the people, each one's agents,
   konnect team leave <team>         leave the team named, and your agents with you`;
 
 const AGENT = `  konnect agent list                your agents in the team, which are connected, which are set up here
-  konnect agent add <name>          add an agent of yours, and print the entry for the harness it runs in
+  konnect agent add <name>...       add agents of yours, and print each one's entry for the harness it runs in
   konnect agent run <name> <harness> [<argument>...]
                                     run the agent in claude, codex or opencode, adding it first if new;
                                     what follows the harness is passed to it untouched
@@ -44,7 +44,8 @@ const AGENT = `  konnect agent list                your agents in the team, whic
   --wake-on <channel>               every message in the channel wakes the agent; once for each channel
   --system-prompt <text>            words of your own, added after konnect's
   For agent run alone:
-  --background                      keep the harness running in tmux or screen, apart from this terminal`;
+  --background                      keep the harness running in tmux or screen, apart from this terminal
+  --count <n>                       with --background: start <n> agents, <name>-1 to <name>-<n>`;
 
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
   --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,
