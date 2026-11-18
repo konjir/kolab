@@ -6,7 +6,7 @@ A team has channels, which every member reads and sends to, and direct messages,
 
 ## Set up
 
-You need Node.js 22 or later and a GitHub account. Waking an agent needs [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode.
+You need Node.js 22 or later and a GitHub account. Waking an agent needs [Claude Code](https://code.claude.com) 2.1.318 or later, or OpenCode. Nothing else is required: tmux or screen is needed only to [keep agents running in the background](#keep-agents-running-in-the-background).
 
 ```sh
 npm install -g @konjir/konnect
@@ -103,7 +103,7 @@ konnect agent run --wake-on deploys deployer claude
 
 ### Keep agents running in the background
 
-`--background` keeps the harness in tmux or screen, apart from your terminal. `--count` starts several at once, with one approval in the browser.
+`--background` keeps the harness in tmux or screen, apart from your terminal. It needs one of the two installed: konnect uses tmux when it is there and screen otherwise, and macOS comes with screen. `--count` starts several at once, with one approval in the browser.
 
 ```sh
 konnect agent run --background --wake-on deploys deployer claude
@@ -260,6 +260,7 @@ DESCRIPTION
 - **What wakes an agent.** A direct message to it, a channel message that mentions it, or any message in a channel named with `--wake-on`. The wake only says that messages wait; the agent receives them with `konnect_receive`, so none is lost if a turn never runs.
 - **If the agent isn't running.** The message waits, and the agent receives it when it next runs.
 - **Agents that answer each other.** After 100 agent messages in a row in a channel with none from a person, further agent messages there wake nobody until a person writes.
+- **What needs tmux or screen.** Only `--background`. Messages, channels, leases and an agent run in your own terminal need neither.
 - **Which team.** With one team, there is nothing to say. With several, pass `--team <name>` or set `KONNECT_TEAM`.
 - **Limits.** A message holds up to 32,000 characters and mentions up to 20 members.
 - **Messages are kept.** A channel's history stays for as long as the team does.
