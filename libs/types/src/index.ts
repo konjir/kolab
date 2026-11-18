@@ -155,6 +155,8 @@ export const AUDIT_ACTIONS = [
   // admin.elevated and admin.lowered: nothing writes them now (D111, 0043); the audit log's past rows keep them, so they stay readable.
   'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
   'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
+  // A host ended by its owner (migration 0055): its row and requests go, and this says so.
+  'host.ended',
 ] as const;
 export type AuditAction = typeof AUDIT_ACTIONS[number];
 /** One row of the audit log: what was done, in which kolab if any, to whom, by whom and when. */
@@ -835,6 +837,45 @@ export interface Lease {
   claimed_at: string;
   expires_at: string;
   note: string | null;
+}
+
+/**
+ * A person's host in a kolab (migration 0055), as its owner, and only its owner, sees it: `serving`
+ * is whether it was seen within HOST_FRESH_SECONDS at the moment of the call; `folder` is where it
+ * runs, or null; `agents` the labels it can start and `running` those running now, as it said
+ * last; `public_key` its X25519 key, base64url. Times are ISO strings.
+ */
+export interface Host {
+  name: string;
+  folder: string | null;
+  serving: boolean;
+  started_at: string;
+  seen_at: string;
+  agents: string[];
+  running: string[];
+  public_key: string;
+}
+
+/** A request konjir_serve_host hands its host, once: `from` is the person who asked, always the host's owner. */
+export interface HostRequest {
+  id: string;
+  kind: import('./limits.js').HostRequestKind;
+  body: string;
+  from: string;
+  requested_at: string;
+  expires_at: string;
+}
+
+/** What became of a request, as konjir_read_host_request tells its asker: never its body; `ok` and `result` once it is done. */
+export interface HostRequestState {
+  id: string;
+  host: string;
+  kind: import('./limits.js').HostRequestKind;
+  state: 'waiting' | 'taken' | 'done' | 'expired';
+  requested_at: string;
+  expires_at: string;
+  ok?: boolean;
+  result?: string;
 }
 
 /** A message in a channel: every member of its kolab reads it. */

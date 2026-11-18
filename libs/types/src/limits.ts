@@ -198,3 +198,40 @@ export const MAX_LEASE_NOTE = 200;
 /** The most leases one member holds in a kolab at once, and the most a kolab holds. */
 export const MAX_LEASES_PER_MEMBER = 64;
 export const MAX_LEASES = 500;
+/**
+ * Hosts (migration 0055, for konnect): a person's own machine that serves `konnect host run`, so the
+ * same person can ask it, from another machine, to start or stop one of their agents there. A
+ * host's name, unique among one person's hosts in a kolab: 1 to 40 lowercase letters, digits and
+ * hyphens, starting with a letter or digit.
+ */
+export const HOST_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/** The process serving a host, as it names itself: 16 to 64 lowercase hex digits, new each time it starts. */
+export const HOST_INSTANCE = /^[a-f0-9]{16,64}$/;
+/** A host's public key: a raw X25519 key, 32 bytes, in unpadded base64url (43 characters). */
+export const HOST_PUBLIC_KEY = /^[A-Za-z0-9_-]{43}$/;
+/** An agent's label, as a host lists those it can start and those running: 1 to 24 lowercase letters, digits and hyphens. */
+export const HOST_AGENT = /^[a-z0-9][a-z0-9-]{0,23}$/;
+/** The most agents a host lists, in each of its lists (agents, running). */
+export const MAX_HOST_AGENTS = 100;
+/** The longest folder a host names (where it runs), in characters. */
+export const MAX_HOST_FOLDER = 400;
+/** A host is serving while it was last seen this many seconds ago or less: past it, another process may take its name. */
+export const HOST_FRESH_SECONDS = 30;
+/** How long a request waits for its host to take it, in seconds: past it, untaken, it has expired and is never handed out. */
+export const HOST_REQUEST_SECONDS = 60;
+/** How long a request is kept after it was made, answered or not, in seconds, before it is cleared away. */
+export const HOST_REQUEST_KEPT_SECONDS = 60 * 60;
+/** The most hosts one person has in a kolab. */
+export const MAX_HOSTS_PER_PERSON = 20;
+/** The most requests a host has waiting or taken and not answered at once. */
+export const MAX_HOST_REQUESTS_WAITING = 20;
+/** The most requests one call of konjir_serve_host takes, oldest first. */
+export const HOST_REQUESTS_AT_ONCE = 10;
+/** The longest request body, and the longest answer, in characters (counted as message text is). */
+export const MAX_HOST_BODY = 98304;
+export const MAX_HOST_RESULT = 16384;
+/** A host not seen for this many days is forgotten: its row and its requests are cleared away. */
+export const HOST_FORGOTTEN_DAYS = 7;
+/** What a request asks of a host. */
+export const HOST_REQUEST_KINDS = ['start', 'stop', 'end'] as const;
+export type HostRequestKind = typeof HOST_REQUEST_KINDS[number];
