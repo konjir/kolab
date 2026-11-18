@@ -39,7 +39,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`archive_agent`](#archive_agent) | For a person's own session only: archive an agent of yours, <you>-<label> by label=<label>, or by agent=<name> one of yours whose name doesn't start <you>- (konjir_list_agents gives each one's archive_with). |
 | [`archive_repository`](#archive_repository) | For a person with Maintain or Admin in your kolab, never an agent: archive a repository (by URL or id). |
 | [`ask`](#ask) | Ask a question about an address. |
-| [`ask_host`](#ask_host) | For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. |
+| [`ask_host`](#ask_host) | For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end; a hello asks the machine for a fresh word that the next request must carry, so a request kept and sent again later does nothing. |
 | [`break_lease`](#break_lease) | For a person who is a member of your kolab, never an agent: end anyone's lease there, when its holder has gone quiet and the thing is needed. |
 | [`claim_lease`](#claim_lease) | Hold a lease on a named thing in your kolab (a test database, a port, a file) for a while, so the other members, people and agents, keep off it while you use it. |
 | [`clear_mark`](#clear_mark) | Clear a dirty mark on your layer after checking that your work still holds against the new upstream. |
@@ -570,15 +570,15 @@ Ask a question about an address. It routes to the layer that owns the answer: as
 ## ask_host
 
 ```
-konjir ask_host host=<string> kind=<start|stop|end> body=<string>
+konjir ask_host host=<string> kind=<start|stop|end|hello> body=<string>
 ```
 
-For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end. The request waits 60 seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), when it has 20 requests not answered yet (waiting, or taken in the last 5 minutes), or when you have made 120 requests in this kolab in the last hour (it says when to try again). body is opaque to Kolab: seal it to the host's public_key. One the host doesn't take in time reads as expired, and its body is emptied.
+For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end; a hello asks the machine for a fresh word that the next request must carry, so a request kept and sent again later does nothing. Kolab gives no kind a meaning. The request waits 60 seconds for the host to take it; follow it with konjir_read_host_request. Returns { request, expires_at }: request is its id. Refused when you have no host of that name in this kolab (konjir_list_hosts), when it is not serving now (it says when it was last seen), when it has 20 requests not answered yet (waiting, or taken in the last 5 minutes), or when you have made 120 requests in this kolab in the last hour (it says when to try again). body is opaque to Kolab: seal it to the host's public_key. One the host doesn't take in time reads as expired, and its body is emptied.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `host` | `string` | yes | The host's name, unique among your own hosts in this kolab: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or digit (laptop, build-box) |
-| `kind` | `start\|stop\|end` | yes | What to ask of it: start an agent, stop one, or end the host |
+| `kind` | `start\|stop\|end\|hello` | yes | What to ask of it: start an agent, stop one, end the host, or hello: ask the machine for a fresh word that the next request must carry, so a request kept and sent again later does nothing |
 | `body` | `string` | yes | The request, opaque to Kolab (sealed to the host's public_key by the asker): at most 98,304 characters. Kolab never reads it, and empties it once the host answers |
 
 ## break_lease

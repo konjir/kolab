@@ -65,6 +65,7 @@ test('a person serves a host, asks it, it takes and answers, and the asker reads
 
   // Bad arguments: refused by the schema, or by Kolab, never quoting a body.
   expect(await rejection(call(ann, 'ask_host', { host: 'laptop', kind: 'restart', body: 'b' }))).toMatch(/kind/);
+  expect(await call(ann, 'ask_host', { host: 'laptop', kind: 'hello', body: 'b' })).toStrictEqual({ request: expect.stringMatching(/^[a-f0-9]{32}$/), expires_at: expect.any(String) });
   expect(await rejection(call(ann, 'serve_host', { name: 'laptop', instance: I1, public_key: KEY, owner: 'bo' }))).toMatch(/unknown argument owner/);
   expect(await rejection(call(ann, 'list_hosts', { owner: 'bo' }))).toMatch(/unknown argument owner/);
   const big = await rejection(call(ann, 'ask_host', { host: 'laptop', kind: 'start', body: 'SECRET'.repeat(20000) }));

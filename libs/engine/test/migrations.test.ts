@@ -2971,6 +2971,7 @@ test('a database at 0054 reaches 0055: hosts, two new tables, and nothing that e
       return db.exec(`insert into kolab_host_request(${Object.keys(cols).join(', ')}) values (${Object.values(cols).join(', ')})`);
     };
     await request('a'.repeat(32));
+    await request('c'.repeat(32), { kind: `'hello'` });
     expect(await rejection(request('nothex'))).toMatch(/kolab_host_request_id_check/);
     expect(await rejection(request('b'.repeat(32), { kind: `'restart'` }))).toMatch(/kolab_host_request_kind_check/);
     expect(await rejection(request('b'.repeat(32), { body: `repeat('x', 98305)` }))).toMatch(/kolab_host_request_body_check/);
