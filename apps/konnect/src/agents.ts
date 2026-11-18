@@ -240,7 +240,7 @@ export function toolCommand(tool: Tool, name: string, entry: { command: string; 
 }
 
 /** What Codex is started with when the person gives it nothing of their own. */
-export const CODEX_FIRST_PROMPT = 'Receive your konnect messages now with konnect_receive, and answer any that are for you. Then wait.';
+export const CODEX_FIRST_PROMPT = 'Receive your konnect messages now with konnect_receive, and answer any that are for you. Then end your turn: a new one starts by itself when a message arrives for you.';
 
 /** How long Claude Code lets the wake hook wait: 20 days, after which the next turn starts another. */
 const WAKE_HOOK_SECONDS = 1_728_000;
