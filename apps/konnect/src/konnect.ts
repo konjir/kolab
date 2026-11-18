@@ -16,6 +16,9 @@
 import { parseArgs, type ActFor, type Args, ACT_FOR } from './args.js';
 import { listenList } from './agents.js';
 import { agent } from './cmd-agent.js';
+import { complete, completion } from './cmd-completion.js';
+import { doctor } from './cmd-doctor.js';
+import { lease } from './cmd-lease.js';
 import { history, receive, sendMessage, status } from './cmd-messages.js';
 import { channel, logOut, login, team } from './cmd-team.js';
 import { wake } from './cmd-wake.js';
@@ -80,10 +83,12 @@ function fromOld(a: Args, say: (old: string, now: string) => void, resolveTeam: 
 /** Refuses an option given to a command that doesn't take it. */
 function checkOptions(a: Args, words: string[]) {
   const [cmd, verb] = words;
-  const at = `konnect ${[cmd, ...(['channel', 'team', 'agent'].includes(cmd) && verb ? [verb] : [])].join(' ')}`;
+  const at = `konnect ${[cmd, ...(['channel', 'team', 'agent', 'lease'].includes(cmd) && verb ? [verb] : [])].join(' ')}`;
   const only = (given: boolean, option: string, ok: boolean, where: string) => { if (given && !ok) throw new UsageError(`${at} takes no ${option}: ${where}`); };
   only(a.limit !== undefined, '-n', cmd === 'receive' || cmd === 'history', 'konnect receive and konnect history do');
-  only(a.wait !== undefined, '--wait', cmd === 'receive', 'konnect receive does');
+  const claims = cmd === 'lease' && (verb === 'claim' || verb === 'run');
+  only(a.wait !== undefined, '--wait', cmd === 'receive' || claims, 'konnect receive, konnect lease claim and konnect lease run do');
+  only(a.for !== undefined, '--for', claims, 'konnect lease claim and konnect lease run do');
   const starts = cmd === 'agent' && (verb === 'add' || verb === 'run');
   only(a.wakeOn.length > 0 || a.listen !== undefined, '--wake-on', starts, 'konnect agent add and konnect agent run do');
   only(a.actFor !== undefined, '--act-for', starts, 'konnect agent add and konnect agent run do');
@@ -127,6 +132,8 @@ export async function main(argv: string[], io: IO = {}) {
 
   // Plumbing: the hook that wakes an agent's idle harness.
   if (parsed.words[0] === 'wake') return wake(ctx, parsed.words.slice(1));
+  // Plumbing: what the shell's completion asks. Its words are someone's half-typed command line, never run.
+  if (parsed.words[0] === '_complete') return complete(ctx, parsed.words.slice(1));
 
   const said = new Set<string>();
   const words = fromOld(parsed, (old, now) => { if (!said.has(old)) { said.add(old); err(`(${old} is now ${now})`); } }, () => ctx.team());
@@ -144,6 +151,9 @@ export async function main(argv: string[], io: IO = {}) {
     case 'channel': return channel(ctx, rest[0], rest.slice(1));
     case 'team': return team(ctx, rest[0], rest.slice(1));
     case 'agent': return agent(ctx, rest[0], rest.slice(1));
+    case 'lease': return lease(ctx, rest[0], rest.slice(1));
+    case 'doctor': return doctor(ctx, rest);
+    case 'completion': return completion(ctx, rest);
     default: throw new UsageError(`konnect has no command ${printable(cmd)}: run konnect --help`);
   }
 }

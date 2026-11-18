@@ -4,6 +4,7 @@
  * Options may go anywhere, with two exceptions where what follows belongs to someone else:
  *   konnect send <to> <message…>             everything after <to> is the message, as written
  *   konnect agent run <name> <harness> …     everything after <name> is the harness and its arguments
+ *   konnect lease run <name> <command> …     everything after <name> is the command to run while holding it
  * `--` ends konnect's options wherever it stands.
  */
 import { UsageError } from './errors.js';
@@ -18,8 +19,10 @@ export interface Args {
   team?: string; agent?: string;
   /** -n, --limit: receive, history. */
   limit?: number;
-  /** --wait, in milliseconds: receive. */
+  /** --wait, in milliseconds: receive, lease claim, lease run. */
   wait?: number;
+  /** --for, in milliseconds: lease claim, lease run. */
+  for?: number;
   /** --wake-on, --act-for, --system-prompt: agent add, agent run. */
   wakeOn: string[]; actFor?: ActFor; systemPrompt?: string;
   /** --background, --count: agent run. */
@@ -31,14 +34,14 @@ export interface Args {
 }
 
 /** `30s`, `5m`, `1h` as milliseconds. */
-export function duration(given: string): number {
+export function duration(given: string, option = '--wait'): number {
   const m = /^(\d+(?:\.\d+)?)(s|m|h)$/.exec(given);
-  if (!m) throw new UsageError(`--wait takes a number and a unit, such as 30s, 5m or 1h (${given} isn't one)`);
+  if (!m) throw new UsageError(`${option} takes a number and a unit, such as 30s, 5m or 1h (${given} isn't one)`);
   return Math.round(Number(m[1]) * { s: 1_000, m: 60_000, h: 3_600_000 }[m[2] as 's' | 'm' | 'h']);
 }
 
 /** konnect's own options, as written. */
-const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--wake-on', '--act-for', '--system-prompt', '--background', '--count', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
+const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--background', '--count', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
 
 export function parseArgs(argv: string[]): Args {
   const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], background: false, forget: false };
@@ -51,7 +54,7 @@ export function parseArgs(argv: string[]): Args {
     const w = argv[i];
     if (w === '--') { a.words.push(...argv.slice(i + 1)); break; }
     // The message, or the harness's own command line: taken as written from its first word.
-    const theirs = (a.words[0] === 'send' && a.words.length >= 2) || (a.words[0] === 'agent' && a.words[1] === 'run' && a.words.length >= 3);
+    const theirs = (a.words[0] === 'send' && a.words.length >= 2) || ((a.words[0] === 'agent' || a.words[0] === 'lease') && a.words[1] === 'run' && a.words.length >= 3);
     if (theirs) {
       // An option of konnect's right after <to> or <name> is a slip, not a message or a harness: it would
       // be sent as words, or as the wrong person. `--` before it says it is meant.
@@ -59,7 +62,7 @@ export function parseArgs(argv: string[]): Args {
       if (first && OPTIONS.has(w)) {
         throw new UsageError(a.words[0] === 'send'
           ? `konnect send: ${w} is an option of konnect's, and options go before <to>. To send it as words: konnect send ${a.words[1]} -- ${w} ...`
-          : `konnect agent run: ${w} is an option of konnect's, and options go before <name>: konnect agent run ${w} ... ${a.words[2]} <harness>`);
+          : `konnect ${a.words[0]} run: ${w} is an option of konnect's, and options go before <name>: konnect ${a.words[0]} run ${w} ... ${a.words[2]} ${a.words[0] === 'agent' ? '<harness>' : '<command>'}`);
       }
       a.words.push(...argv.slice(i));
       break;
@@ -75,6 +78,7 @@ export function parseArgs(argv: string[]): Args {
       a.limit = n; i++; continue;
     }
     if (w === '--wait') { a.wait = duration(value(i, 'how long to wait, such as 30s')); i++; continue; }
+    if (w === '--for') { a.for = duration(value(i, 'how long to hold it, such as 15m'), '--for'); i++; continue; }
     if (w === '--wake-on') { a.wakeOn.push(value(i, 'a channel')); i++; continue; }
     if (w === '--act-for') {
       const v = value(i, 'nobody, me or team');

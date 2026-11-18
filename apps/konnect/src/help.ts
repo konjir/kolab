@@ -47,6 +47,19 @@ const AGENT = `  konnect agent list                your agents in the team, whic
   --background                      keep the harness running in tmux or screen, apart from this terminal
   --count <n>                       with --background: start <n> agents, <name>-1 to <name>-<n>`;
 
+const LEASE = `  konnect lease list                who holds what, and until when
+  konnect lease claim <name> [<note>]
+                                    hold a named thing (a test database, a port, a file), 15 minutes
+                                    unless --for says; claiming yours again renews it
+  konnect lease release <name>      give it up
+  konnect lease break <name>        end anyone's lease (a person)
+  konnect lease run <name> <command>...
+                                    hold it while the command runs, then release it
+
+  For lease claim and lease run:
+  --for <time>                      how long to hold it: 15m unless given, 1m to 4h
+  --wait <time>                     if someone else holds it, wait up to this long for it`;
+
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
   --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,
                     team list): else KONNECT_AGENT
@@ -65,6 +78,11 @@ ${TEAM}
 
 ${AGENT}
 
+${LEASE}
+
+  konnect doctor                    check this machine: logins, harnesses, what would work and what wouldn't
+  konnect completion <shell>        print completion for bash, zsh or fish, to load in your shell
+
 ${OPTIONS}
 
   send, receive and history take a channel or a member, so there '#name' (quoted, for the shell) or
@@ -82,6 +100,7 @@ export function helpFor(words: string[]): string {
   if (first === 'channel') return section('konnect channel: the team\'s channels.', CHANNEL);
   if (first === 'team') return section('konnect team: the team and who is in it.', TEAM);
   if (first === 'agent') return section('konnect agent: your agents in the team.', AGENT);
+  if (first === 'lease') return section('konnect lease: named things one member holds at a time.', LEASE);
   const line = MESSAGES.split('\n  konnect ').map((l, i) => (i ? `  konnect ${l}` : l)).find((l) => l.startsWith(`  konnect ${first} `) || l.startsWith(`  konnect ${first}\n`));
   return line ? `${line}\n\n${OPTIONS}` : USAGE;
 }

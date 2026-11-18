@@ -289,9 +289,28 @@ export class TeamClient {
     return this.newer<{ kolab: string; removed: string; label: string; revoked: number; ended: number }>(REMOVE_AGENT_TOOL, { agent: label }, 'remove an agent');
   }
 
+  // ---- leases: a named thing one member holds at a time, for a while --------------------------------
+
+  /** konjir_claim_lease: holds the lease, or renews one the session holds; `claimed` false with the holder's lease when someone else holds it. */
+  claimLease(name: string, seconds?: number, note?: string) {
+    return this.newer<{ claimed: boolean; renewed?: boolean; lease: Lease }>('konjir_claim_lease', { name, ...(seconds !== undefined ? { seconds } : {}), ...(note ? { note } : {}) }, 'hold leases');
+  }
+
+  /** konjir_release_lease: the holder gives it up; `released` false when nothing was held. */
+  releaseLease(name: string) { return this.newer<{ released: boolean; name: string }>('konjir_release_lease', { name }, 'hold leases'); }
+
+  /** konjir_break_lease: a person ends anyone's lease. */
+  breakLease(name: string) { return this.newer<{ broken: boolean; lease?: Lease; name?: string }>('konjir_break_lease', { name }, 'hold leases'); }
+
+  /** konjir_list_leases: every lease held in the team now, soonest to expire first. */
+  async leases(): Promise<Lease[]> { return (await this.newer<{ leases: Lease[] }>('konjir_list_leases', {}, 'hold leases')).leases; }
+
   /** konjir_leave_kolab: the person leaves the team, and their agents with them. */
   leave() { return this.call<{ left: string; agents: string[]; ended: number }>('konjir_leave_kolab'); }
 }
+
+/** A lease, as Kolab's lease tools give one: `holder` a stored name. */
+export interface Lease { name: string; holder: string; claimed_at: string; expires_at: string; note: string | null }
 
 /** An invitation, as Kolab's invitation tools give one. */
 export interface Invitation { id: string; kolab: string; account: string; state: string; invited_by: string; created_at: string }

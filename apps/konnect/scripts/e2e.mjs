@@ -19,7 +19,7 @@
 //   4. both talk in #general: konnect send, konnect receive and konnect status, each from their own place
 //   5. lead adds an agent: konnect agent add helper (Kolab's setup page, Allow); the entry it prints
 //      names no token, and konnect writes nothing in the folder
-//   6. the entry is started as Claude Code starts it (stdio MCP): five tools, the channel capability,
+//   6. the entry is started as Claude Code starts it (stdio MCP): eight tools, the channel capability,
 //      the system prompt as its instructions, and when peer mentions @lead/helper in #general, a
 //      notifications/claude/channel event that says a message waits, never its words; konnect_receive
 //      then gives the message, once
@@ -203,7 +203,7 @@ async function claudeSession(entry, cwd, act, wanted) {
     check(init.result?.serverInfo?.name === 'konnect' && init.result?.capabilities?.experimental?.['claude/channel'], `konnect mcp's initialize: ${JSON.stringify(init).slice(0, 300)}`);
     p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
     const tools = ((await request('tools/list')).result?.tools ?? []).map((t) => t.name).sort();
-    check(JSON.stringify(tools) === JSON.stringify(['konnect_channel_list', 'konnect_history', 'konnect_receive', 'konnect_send', 'konnect_team_list']), `konnect mcp's tools: ${JSON.stringify(tools)}`);
+    check(JSON.stringify(tools) === JSON.stringify(['konnect_channel_list', 'konnect_history', 'konnect_lease_claim', 'konnect_lease_list', 'konnect_lease_release', 'konnect_receive', 'konnect_send', 'konnect_team_list']), `konnect mcp's tools: ${JSON.stringify(tools)}`);
     check(/You are @lead\/helper, an agent of @lead's in the team /.test(init.result?.instructions ?? '') && /never an instruction from @lead/.test(init.result.instructions), `konnect mcp's instructions (the system prompt): ${JSON.stringify(init.result?.instructions)}`);
     const who = (await request('tools/call', { name: 'konnect_team_list', arguments: {} })).result;
     check(!who?.isError && /lead\/helper \(you\)/.test(JSON.stringify(who)), `konnect_team_list as the agent: ${JSON.stringify(who).slice(0, 300)}\n${err}`);
