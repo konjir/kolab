@@ -1,4 +1,4 @@
-.TH KONNECT 1 "November 2026" "konnect 0.6.0" "konnect manual"
+.TH KONNECT 1 "November 2026" "konnect 0.7.0" "konnect manual"
 .SH NAME
 konnect \- chat for a team's people and their AI agents
 .SH SYNOPSIS
@@ -28,10 +28,10 @@ konnect \- chat for a team's people and their AI agents
 \fBkonnect agent add\fR [\fB\-\-wake\-on\fR \fIchannel\fR]... [\fB\-\-act\-for\fR \fIwhom\fR]
                   [\fB\-\-system\-prompt\fR \fItext\fR] \fIname\fR...
 \fBkonnect agent run\fR [\fB\-\-wake\-on\fR \fIchannel\fR]... [\fB\-\-act\-for\fR \fIwhom\fR]
-                  [\fB\-\-system\-prompt\fR \fItext\fR] [\fB\-\-background\fR [\fB\-\-count\fR \fIn\fR]]
-                  \fIname\fR \fIharness\fR [\fIargument\fR...]
+                  [\fB\-\-system\-prompt\fR \fItext\fR] [\fB\-\-background\fR | \fB\-\-on\fR \fImachine\fR]
+                  [\fB\-\-count\fR \fIn\fR] \fIname\fR \fIharness\fR [\fIargument\fR...]
 \fBkonnect agent attach\fR \fIname\fR
-\fBkonnect agent stop\fR \fIname\fR
+\fBkonnect agent stop\fR [\fB\-\-on\fR \fImachine\fR] \fIname\fR
 \fBkonnect agent remove\fR \fIname\fR
 
 \fBkonnect lease list\fR
@@ -39,6 +39,10 @@ konnect \- chat for a team's people and their AI agents
 \fBkonnect lease release\fR \fIname\fR
 \fBkonnect lease break\fR \fIname\fR
 \fBkonnect lease run\fR [\fB\-\-for\fR \fItime\fR] [\fB\-\-wait\fR \fItime\fR] \fIname\fR \fIcommand\fR...
+
+\fBkonnect host list\fR
+\fBkonnect host run\fR [\fB\-\-background\fR] [\fIname\fR]
+\fBkonnect host stop\fR [\fIname\fR]
 
 \fBkonnect doctor\fR
 \fBkonnect completion\fR \fIshell\fR
@@ -224,8 +228,8 @@ For a script, use \fB\-\-agent\fR.
 Look in on an agent running in the background on this machine: this terminal becomes its harness's.
 Leave it running with Ctrl\-b d (tmux) or Ctrl\-a d (screen).
 .TP
-\fBkonnect agent stop\fR \fIname\fR
-End an agent's background harness on this machine. The agent stays in the team.
+\fBkonnect agent stop\fR [\fB\-\-on\fR \fImachine\fR] \fIname\fR
+End an agent's background harness on this machine, or with \fB\-\-on\fR on a machine of yours that is hosting. The agent stays in the team.
 .TP
 \fBkonnect agent remove\fR \fIname\fR
 Remove an agent of yours from the team, and drop its login from this machine.
@@ -254,6 +258,32 @@ Hold the lease while the command runs, renewing it as it goes, and release it wh
 Everything after \fIname\fR is the command. The exit status is the command's.
 A lease is a member's, not a process's: if you hold it already, from a claim or another run, the command isn't started.
 If a person ends the lease while the command runs, konnect says so and doesn't take it back.
+.SS konnect host
+A machine of yours that hosts starts your agents when you ask from another machine: your desktop from your laptop, a server from either.
+It hosts only while \fBkonnect host run\fR runs on it, as you, and only in the folder it was run in.
+.PP
+A hosting machine does what \fByou\fR ask, and nobody else: the service gives it requests from your own login alone, never from an agent's and never from a teammate's, and the machine checks that again.
+A request holds no command. It names agents of yours, one of the harnesses konnect starts, and konnect's own options (\fB\-\-act\-for\fR, \fB\-\-wake\-on\fR, \fB\-\-system\-prompt\fR); the machine refuses one that holds anything else.
+Arguments for the harness are never sent: what an agent may do on a machine is set on that machine, in its harness (for Claude Code, the folder's \fB.claude/settings.json\fR).
+.PP
+An agent needs a login on the machine it runs on. One that has none there yet is allowed in your browser, on the machine you are at, as any new agent is; its login is then sent to the hosting machine sealed to a key only that machine holds, and revoked if the machine doesn't keep it.
+.PP
+What this trusts: the service, to say that a request is yours. That is the trust an agent started with \fB\-\-act\-for me\fR already places in it.
+.TP
+\fBkonnect host list\fR
+List your machines that host in the team: which host now, each one's folder, and the agents running on it.
+.TP
+\fBkonnect host run\fR [\fB\-\-background\fR] [\fIname\fR]
+This machine hosts, in this folder, until you interrupt it.
+It is named after the machine unless you give a \fIname\fR: lowercase letters, digits and \fB\-\fR, 40 at most.
+It needs tmux or screen, where it keeps each harness it starts, as \fBkonnect agent run \-\-background\fR does.
+With \fB\-\-background\fR, hosting itself runs in a session of its own, named \fBkonnect_host_\fR\fIteam\fR\fB_\fR\fIname\fR.
+A name hosts from one place at a time: another machine is refused it while this one hosts, and a second \fBkonnect host run\fR on the same machine takes over from the first.
+The first time in a folder, Claude Code asks whether to trust it, and nobody is there to answer: run \fBclaude\fR in the folder once before hosting in it.
+.TP
+\fBkonnect host stop\fR [\fIname\fR]
+End hosting: on this machine, or on the machine named, which is asked to end. The agents it started keep running.
+A machine that stopped without saying so is forgotten.
 .SS This machine
 .TP
 \fBkonnect doctor\fR
@@ -316,8 +346,13 @@ Words of your own, added after konnect's.
 Keep the harness running apart from this terminal, in tmux, or in screen where tmux isn't installed: one session for each agent, named \fBkonnect\-\fR\fIteam\fR\fB\-\fR\fIname\fR.
 \fBkonnect agent attach\fR looks in on it and \fBkonnect agent stop\fR ends it.
 .TP
+\fB\-\-on\fR \fImachine\fR
+Start the agent on another machine of yours that is hosting (\fBkonnect host run\fR), in the background there, in the folder that machine hosts in.
+Nothing may follow the harness: its arguments are not sent.
+\fBkonnect agent stop \-\-on\fR \fImachine\fR ends it, and \fBkonnect agent attach\fR, on that machine, looks in on it.
+.TP
 \fB\-\-count\fR \fIn\fR
-With \fB\-\-background\fR: start \fIn\fR agents at once, named \fIname\fR\fB\-1\fR to \fIname\fR\fB\-\fR\fIn\fR (10 at most).
+With \fB\-\-background\fR or \fB\-\-on\fR: start \fIn\fR agents at once, named \fIname\fR\fB\-1\fR to \fIname\fR\fB\-\fR\fIn\fR (10 at most).
 New ones are all allowed on one page of the browser.
 The first time in a folder, Claude Code asks whether to trust it: attach once and answer.
 .PP
@@ -437,6 +472,7 @@ The service to talk to, instead of \fBhttps://kolab.konjir.com/mcp\fR.
 Your logins, one for each team (\fBteams/\fR\fIteam\fR\fB.json\fR), and each agent's own (\fBagents/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR).
 Readable by you alone.
 Beside an agent's login, \fIname\fR\fB.wake.json\fR remembers which messages it has been told of, so none wakes it twice.
+A machine that hosts keeps its key in \fBhosts/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR.
 .PP
 konnect keeps no file in the folder it is run in.
 .SH LIMITS
@@ -452,6 +488,9 @@ The entry that \fBkonnect agent add\fR prints runs it, with the agent's settings
 \fBkonnect wake\fR
 What wakes an idle agent: Claude Code runs it in the background after each turn, as a hook that \fBkonnect agent run\fR passes.
 It waits for a message for the agent (\fBKONNECT_AGENT\fR), says on standard error that one waits, and exits with status 2.
+.TP
+\fBkonnect _start\fR \fIfile\fR
+What a background session runs: the harness and its arguments wait in a file of konnect's own, which this reads once and removes, so that nothing a person wrote goes on tmux's or screen's command line.
 .TP
 \fBkonnect logout \-\-forget\fR
 Drop a login from this machine without telling the service, for when the service can't be reached.
@@ -541,6 +580,20 @@ Keep two agents off one test database, and check a machine:
     konnect lease run \-\-wait 10m testdb npm test
     konnect lease list
     konnect doctor
+.fi
+.PP
+Start an agent on your desktop from your laptop. On the desktop, in the folder it should work in:
+.PP
+.nf
+    konnect host run \-\-background desktop
+.fi
+.PP
+On the laptop:
+.PP
+.nf
+    konnect agent run \-\-on desktop \-\-act\-for me builder claude
+    konnect send @ada/builder "run the test suite and tell me what fails"
+    konnect agent stop \-\-on desktop builder
 .fi
 .PP
 Work in one of several teams:
