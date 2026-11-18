@@ -168,6 +168,10 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   readChannel: { recorded: ['channel_read.actor_id'] },
   unreadChannels: { recorded: ['channel_read.actor_id'] },
   setAgentReplyCap: { recorded: ['kolab_chat.cap_set_by'] },
+  // Leases (migration 0054): a lease names its holder, and who ended it, by a release or a break.
+  claimLease: { recorded: ['kolab_lease.holder'] },
+  releaseLease: { recorded: ['kolab_lease.ended_by'] },
+  breakLease: { recorded: ['kolab_lease.ended_by'] },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
   addPosition: { recorded: ['position.actor_id'] },
   rule: { recorded: ['ruling.actor_id'] },

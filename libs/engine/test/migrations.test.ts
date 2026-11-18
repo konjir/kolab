@@ -1945,6 +1945,7 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
     const jobs = (await db.query<Record<string, unknown>>(`select * from job order by id`)).rows;
     expect(jobs.map((j) => [j.kind, j.outcome])).toStrictEqual([['build', 'submitted'], ['review', null], ['build', null]]);
     // Each of these people and agents holds one open session, so 0040 goes back too, and 0041 and 0042 before it.
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -1961,7 +1962,7 @@ test('a database at 0038 holding live and ended build and review jobs reaches 00
     await db.exec(UNDO_0040);
     await db.exec(undo0039());
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     // Every job as it was: its item and how it ended, the new items empty.
     expect((await db.query(`select * from job order by id`)).rows)
       .toStrictEqual(jobs.map((j) => ({ ...j, query_id: null, mark_id: null, spec_node_id: null, spec_element_id: null })));
@@ -2015,6 +2016,7 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2030,7 +2032,7 @@ test('a database at 0039 with open and ended sessions reaches 0040: each open on
     await db.exec(UNDO_0041);
     await db.exec(UNDO_0040);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     expect((await db.query(`select actor_id, machine_key, place, last_used_at from session order by actor_id`)).rows).toStrictEqual([
       { actor_id: 'alice', machine_key: `client:${s.client}`, place: null, last_used_at: null },
       { actor_id: 'alice-pm', machine_key: 'agent', place: null, last_used_at: null },
@@ -2096,6 +2098,7 @@ test('a database at 0040 with versions in review, review requests and answered q
 
   await withDb(async (db) => {
     const requests = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2114,7 +2117,7 @@ test('a database at 0040 with versions in review, review requests and answered q
     // As the release before 0041 wrote it, alice-pm-2, an agent with Write on the layer, was asked too.
     await db.query(`insert into review_request(id, version_id, reviewer_id) values ('01ZZZZZZZZZZZZZZZZZZZZAGNT', $1, 'alice-pm-2')`, [v2]);
     const before = (await db.query<Record<string, unknown>>(`select * from review_request order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     // Nothing rewritten: each request as it was, of its version's own layer; no kolab has a policy row; no answer cites anything.
     expect((await db.query(`select * from review_request order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, product: false })));
     expect((await db.query(`select * from kolab_policy`)).rows).toStrictEqual([]);
@@ -2171,6 +2174,7 @@ test('a database at 0041 with rulings reaches 0042: every ruling is kept as it w
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2185,7 +2189,7 @@ test('a database at 0041 with rulings reaches 0042: every ruling is kept as it w
     await db.exec(UNDO_0042);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     const before = (await db.query<Record<string, unknown>>(`select * from ruling order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     expect((await db.query(`select * from ruling order by id`)).rows).toStrictEqual(before.map((r) => ({ ...r, ref: null, recorded_at: null })));
     expect(await rejection(db.query(`insert into ruling(id, version_id, kolab_id, actor_id, text, effect, ref) select 'r2', version_id, kolab_id, actor_id, 'Two.', 'keep_intent', 'not a ref' from ruling limit 1`)))
       .toMatch(/ruling_ref_form/);
@@ -2239,6 +2243,7 @@ test('a database at 0042 with raised sessions, raise requests and past raises in
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2256,7 +2261,7 @@ test('a database at 0042 with raised sessions, raise requests and past raises in
     await db.query(`insert into admin_raise(id, session_id, actor_id, expires_at) values ($1, $2, 'lee', now() + interval '10 minutes')`, ['r'.repeat(43), session]);
     await db.query(`insert into oauth_request(id, state_key, provider, client_id, redirect_uri, code_challenge, expires_at, raise_id)
       values ($1, $2, 'github', 'konjir-raise', 'http://127.0.0.1:9/oauth/raise', $3, now() + interval '10 minutes', $4)`, ['b'.repeat(43), 's'.repeat(43), 'c'.repeat(43), 'r'.repeat(43)]);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     expect((await db.query(`select client_id from oauth_request`)).rows).toStrictEqual([{ client_id: 'konjir-web' }]);
     expect((await db.query(`select to_regclass('admin_raise') as t`)).rows).toStrictEqual([{ t: null }]);
     for (const [table, column] of [['session', 'admin_until'], ['oauth_request', 'raise_id']]) {
@@ -2283,6 +2288,7 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
   const PLAN = 'Kolab — Plan (mirror of claude.ai, D32)';
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2311,7 +2317,7 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
     // As production's are: the mirrors were made before Kolab recorded who makes a node.
     await db.query(`update node set created_by = null, created_at = null where id = 'kolab'`);
 
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     const titles = async () => Object.fromEntries((await db.query<{ id: string; title: string }>(`select id, title from node`)).rows.map((r) => [r.id, r.title]));
     expect(await titles()).toStrictEqual({
       kolab: 'Kolab — Functional Spec', 'kolab-binding': 'Kolab — Technical Binding', 'kolab-plan': 'Kolab — Plan (history, D104)',
@@ -2322,6 +2328,7 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
 
     // A title changed since is left as it is, and running it over changes nothing.
     await db.query(`update node set title = title || ' (ours)' where id in ('kolab', 'kolab-binding', 'kolab-plan')`);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2332,7 +2339,7 @@ test('a database at 0043 with the mirrors reaches 0044: the kolab kolab\'s three
     await db.exec(UNDO_0046);
     await db.exec(UNDO_0045);
     await db.exec(UNDO_0044);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44, 45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     expect(await titles()).toMatchObject({
       kolab: 'Kolab — Functional Spec (ours)', 'kolab-binding': 'Kolab — Technical Binding (ours)', 'kolab-plan': 'Kolab — Plan (history, D104) (ours)',
     });
@@ -2428,6 +2435,7 @@ test('a database at 0047 reaches 0048, which lets a test run carry acceptance ch
   expect(MIGRATIONS[at].version).toBe(48);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2435,7 +2443,7 @@ test('a database at 0047 reaches 0048, which lets a test run carry acceptance ch
     await db.exec(UNDO_0049);
     await db.exec(UNDO_0048);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [48, 49, 50, 51, 52, 53, 54] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     const ok = '[{"address": "kj:k/s#R1", "version": 1, "passed": false}]';
     expect((await db.query(`select kj_evidence_checks_valid($1::jsonb) as a, kj_evidence_checks_valid(null) as b, kj_evidence_checks_valid('[]'::jsonb) as c`, [ok])).rows)
@@ -2462,13 +2470,14 @@ test('a database at 0051 with kolabs, one archived, reaches 0052: each has gener
   expect(MIGRATIONS[at].version).toBe(52);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     await db.query(`insert into account(id, kind, name, created_by) values ('acme', 'organization', 'Acme', 'admin')`);
     await db.query(`insert into kolab(id, owner_id, title, created_by, archived_at) values ('hub', 'acme', 'Hub', 'admin', null), ('old', 'acme', 'Old', 'admin', now())`);
 
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [52, 53, 54] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     expect((await db.query(`select id, kolab_id, name, made_by from channel order by kolab_id`)).rows).toStrictEqual([
       { id: 'general:hub', kolab_id: 'hub', name: 'general', made_by: null },
@@ -2497,11 +2506,12 @@ test('a database at 0050 reaches 0051: no package it holds is found built, and o
   expect(MIGRATIONS[at].version).toBe(51);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [51, 52, 53, 54] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     expect((await db.query(`select column_default, is_nullable from information_schema.columns where table_name = 'work_package' and column_name = 'found_built'`)).rows)
       .toStrictEqual([{ column_default: 'false', is_nullable: 'NO' }]);
@@ -2531,6 +2541,7 @@ test('a database at 0049 with questions and drafts counted in its rate budget re
   expect(MIGRATIONS[at].version).toBe(50);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2540,7 +2551,7 @@ test('a database at 0049 with questions and drafts counted in its rate budget re
     expect(await rejection(db.query(`insert into rate_event(id, owner_id, kind) values ('m', 'ann', 'message')`))).toMatch(/rate_event_kind_check/);
     expect(await rejection(db.query(`select kj_rate_use('message:ann:${'c'.repeat(32)}')`))).toMatch(/not a rate hold/);
 
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [50, 51, 52, 53, 54] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     await db.query(`select kj_rate_use('draft:ann:${'b'.repeat(32)}')`);
     await db.query(`select kj_rate_use('message:ann:${'c'.repeat(32)}')`);
@@ -2575,6 +2586,7 @@ test('a database at 0048 reaches 0049: every node\'s name is in node_name, kolab
   expect(MIGRATIONS[at].version).toBe(49);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2595,7 +2607,7 @@ test('a database at 0048 reaches 0049: every node\'s name is in node_name, kolab
     await node('~01ARZ3NDEKTSV4RRFFQ69G5FAX', 'other', 'kolab-plan', 'plan', 'technical', '~01ARZ3NDEKTSV4RRFFQ69G5FAW');
     await db.exec(`alter table node enable trigger user`);
 
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [49, 50, 51, 52, 53, 54] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     expect((await db.query(`select kolab_id, name, node_id from node_name order by kolab_id, name`)).rows).toStrictEqual([
       { kolab_id: 'kolab', name: 'kolab', node_id: 'kolab' },
@@ -2623,6 +2635,7 @@ test('a database at 0046 reaches 0047, which makes release a work field that a m
   expect(MIGRATIONS[at].version).toBe(47);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2633,7 +2646,7 @@ test('a database at 0046 reaches 0047, which makes release a work field that a m
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     // A release isn't evidence yet, nor release a work field.
     expect((await db.query(`select kj_work_valid('{"release": true}'::jsonb) as ok`)).rows).toStrictEqual([{ ok: false }]);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [47, 48, 49, 50, 51, 52, 53, 54] });
     expect((await db.query(`select kj_work_valid('{"release": true, "done_when": "x"}'::jsonb) as a, kj_work_valid('{"release": false}'::jsonb) as b,
       kj_work_valid('{"release": true, "milestone": true}'::jsonb) as c`)).rows).toStrictEqual([{ a: true, b: false, c: false }]);
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
@@ -2675,6 +2688,7 @@ test('a database at 0045 with questions answer jobs handed to a person reaches 0
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2689,7 +2703,7 @@ test('a database at 0045 with questions answer jobs handed to a person reaches 0
     const cols = (await db.query<{ column_name: string }>(`select column_name from information_schema.columns where table_name = 'job' order by ordinal_position`)).rows.map((r) => r.column_name);
     const copy = cols.map((c) => (c === 'id' ? `'01ZZZZZZZZZZZZZZZZZZZZTWCE'` : ['started_at', 'lease_until', 'ended_at'].includes(c) ? `${c} + interval '1 hour'` : c === 'note' ? `'  Handed to a person: again.'` : c));
     await db.query(`insert into job(${cols.join(', ')}) select ${copy.join(', ')} from job where id = $1`, [first]);
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [46, 47, 48, 49, 50, 51, 52, 53, 54] });
     const handed = async () => Object.fromEntries((await db.query<{ id: string; job: string | null; at: boolean }>(
       `select q.id, q.handed_off_job_id as job, q.handed_off_at = j.ended_at as at from query q left join job j on j.id = q.handed_off_job_id`)).rows.map((r) => [r.id, r.job && { job: r.job, at: r.at }]));
     expect(await handed()).toStrictEqual({
@@ -2782,6 +2796,7 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
   } finally { await kolab.close(); }
 
   await withDb(async (db) => {
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     await db.exec(UNDO_0052);
     await db.exec(UNDO_0051);
@@ -2799,7 +2814,7 @@ test('a database at 0044 with moves on a variant reaches 0045: the moves that st
     await db.query(`update delta set kind = 'add', base_version_id = null, base_fingerprint = null where version_id = $1 and element_id = 'A1'`, [odd]);
     await db.query(`update delta set parent_element_id = 'A' where version_id = $1 and element_id = 'A2'`, [odd]);
     const before = (await db.query<Record<string, unknown>>(`select * from delta order by id`)).rows;
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [45, 46, 47, 48, 49, 50, 51, 52, 53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [45, 46, 47, 48, 49, 50, 51, 52, 53, 54] });
     // Nothing else is rewritten: every row as it was, with the new column.
     expect((await db.query<Record<string, unknown>>(`select * from delta order by id`)).rows.map(({ top_level: _, ...r }) => r)).toStrictEqual(before);
     const movedIn = async (v: string) => (await db.query(`select element_id from delta where version_id = $1 and top_level`, [v])).rows;
@@ -2844,9 +2859,10 @@ test('a database at 0052 reaches 0053: invitations by account, a new table, and 
   expect(MIGRATIONS[at].version).toBe(53);
   await withDb(async (db) => {
     await migrate(db);
+    await db.exec(UNDO_0054);
     await db.exec(UNDO_0053);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
-    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [53] });
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [53, 54] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
     // At most one of accepted, declined and withdrawn, each with who did it.
     await db.exec(`insert into account(id, kind, name, created_by) values ('ann', 'user', 'ann', 'ann')`);
@@ -2859,5 +2875,32 @@ test('a database at 0052 reaches 0053: invitations by account, a new table, and 
     expect(await rejection(add('ivt_cccccccccccccccc', 'accepted_at=now()'))).toMatch(/kolab_invitation_accepted/);
     expect(await rejection(db.exec(`update kolab_invitation set declined_at = now(), declined_by = 'ann', withdrawn_at = now(), withdrawn_by = 'ann'`))).toMatch(/kolab_invitation_once/);
     expect(await rejection(add('nope'))).toMatch(/kolab_invitation_id_check/);
+  });
+});
+
+const UNDO_0054 = String.raw`drop table kolab_lease;
+  delete from kj_migration where version = 54;`;
+
+test('a database at 0053 reaches 0054: leases, a new table, and nothing that exists changes', async () => {
+  const at = MIGRATIONS.findIndex((x) => x.name === 'kolab_leases');
+  expect(MIGRATIONS[at].version).toBe(54);
+  await withDb(async (db) => {
+    await migrate(db);
+    await db.exec(UNDO_0054);
+    expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
+    expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [54] });
+    expect(await schemaOf(db)).toStrictEqual(await currentSchema());
+    await db.exec(`insert into account(id, kind, name, created_by) values ('ann', 'user', 'ann', 'ann')`);
+    await db.exec(`insert into actor(id, name, kind, created_by) values ('ann', 'ann', 'person', 'ann')`);
+    await db.exec(`insert into kolab(id, owner_id, title, visibility, created_by) values ('anns', 'ann', 'anns', 'private', 'ann')`);
+    const add = (name: string, extra = '') => db.exec(`insert into kolab_lease(kolab_id, name, holder, expires_at${extra ? `, ${extra.split('=')[0]}` : ''})
+      values ('anns', '${name}', 'ann', now() + interval '1 minute'${extra ? `, ${extra.split('=')[1]}` : ''})`);
+    await add('apps/server/src/x.ts');
+    // One row per name in a kolab: of two claimants of a free name, one wins.
+    expect(await rejection(add('apps/server/src/x.ts'))).toMatch(/kolab_lease_pkey/);
+    expect(await rejection(add('a b'))).toMatch(/kolab_lease_name_check/);
+    expect(await rejection(add('x'.repeat(201)))).toMatch(/kolab_lease_name_check/);
+    expect(await rejection(add('n', `note='${'x'.repeat(201)}'`))).toMatch(/kolab_lease_note_check/);
+    expect(await rejection(add('e', 'ended_at=now()'))).toMatch(/kolab_lease_ended/);
   });
 });
