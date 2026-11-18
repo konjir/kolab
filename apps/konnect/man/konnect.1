@@ -213,6 +213,7 @@ Codex. Not woken: it receives at each turn.
 .TP
 \fBopencode\fR
 OpenCode. Messages for the agent wake it: konnect starts it on a port of its own on this machine, stays beside it, and submits the notice as a prompt.
+The notice goes in OpenCode's prompt box, so anything typed there and not yet sent is sent with it.
 .RE
 .IP
 Anything else is refused.
@@ -249,8 +250,10 @@ Give up a lease you hold.
 For a person: end anyone's lease. An agent can't.
 .TP
 \fBkonnect lease run\fR [\fB\-\-for\fR \fItime\fR] [\fB\-\-wait\fR \fItime\fR] \fIname\fR \fIcommand\fR...
-Hold the lease while the command runs, renewing it as it goes, and release it when the command ends.
+Hold the lease while the command runs, renewing it as it goes, and release it when the command ends, however it ends.
 Everything after \fIname\fR is the command. The exit status is the command's.
+A lease is a member's, not a process's: if you hold it already, from a claim or another run, the command isn't started.
+If a person ends the lease while the command runs, konnect says so and doesn't take it back.
 .SS This machine
 .TP
 \fBkonnect doctor\fR

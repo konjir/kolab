@@ -12,7 +12,7 @@
  * renews it. `lease run` holds it while the command runs, renewing it as it goes, and releases it
  * when the command ends. Agents hold leases too: they have the list, claim and release tools.
  */
-import { startTool } from './agents.js';
+import { spawn } from 'node:child_process';
 import { Refused, type Lease, type TeamClient } from './client.js';
 import type { Ctx } from './context.js';
 import { UsageError, WaitRanOut } from './errors.js';
@@ -128,21 +128,65 @@ export async function lease(ctx: Ctx, verb: string | undefined, rest: string[]) 
   const held = seconds(ctx) ?? DEFAULT_S;
   const client = await ctx.open(team);
   let renewing: ReturnType<typeof setInterval> | undefined;
+  // Only a lease this run took is this run's to give up.
+  let took = false;
+  // A SIGTERM or SIGHUP sent to konnect (a closed terminal, a supervisor stopping it) is passed on to
+  // the command, and held off from then until the lease is released: konnect ends by itself, after.
+  let stopCommand: ((signal: NodeJS.Signals) => void) | undefined;
+  const onTerm = () => stopCommand?.('SIGTERM');
+  const onHup = () => stopCommand?.('SIGHUP');
+  process.on('SIGTERM', onTerm);
+  process.on('SIGHUP', onHup);
   try {
-    await claim(ctx, client, name, `running ${cmd}`.slice(0, 200));
-    // Renewed at half its length for as long as the command runs: a lease someone ended meanwhile is said, once.
+    const already = new Refused(`you hold ${printable(name)} already, from another konnect lease run or a konnect lease claim, so this command wasn't started: wait for that to end, or konnect lease release ${printable(name)}`);
+    // Looked at before it is claimed, so that one this member holds is left exactly as it was: its note and its length too.
+    if ((await client.leases()).some((l) => l.name === name && l.holder === client.me.actor)) throw already;
+    const first = await claim(ctx, client, name, `running ${cmd}`.slice(0, 200));
+    // The service holds a lease for a member, not for a process: one this member holds already (another
+    // lease run, or a lease claim) would let two commands run at once, and the first to end would free it under the other.
+    if (first.renewed) throw already;
+    took = true;
+    // Renewed at half its length for as long as the command runs. A lease that is no longer this
+    // run's (a person ended it) is said once and never taken back: the command is left running.
     let lost = false;
     renewing = setInterval(() => {
-      void client.claimLease(name, held).then((r) => {
-        if (!r.claimed && !lost) { lost = true; ctx.err(`konnect lease run: ${printable(name)} is no longer yours (someone ended the lease): the command is still running`); }
+      if (lost) return;
+      void client.claimLease(name, held).then(async (r) => {
+        if (r.claimed && r.renewed !== false) return;
+        lost = true;
+        took = false;
+        // Ended and free again, this renewal took it afresh: given straight back, as whoever ended it meant.
+        if (r.claimed) await client.releaseLease(name).catch(() => undefined);
+        ctx.err(`konnect lease run: ${printable(name)} is no longer yours (someone ended the lease): the command is still running`);
       }, () => undefined);
     }, (held * 1000) / 2);
-    const code = await (ctx.io.start ?? ((c, dir) => startTool(c, dir, ctx.env)))({ cmd, args, env: {} }, ctx.cwd);
+    const code = await (ctx.io.start ?? ((c, dir) => runHolding(c, dir, ctx.env, (stop) => { stopCommand = stop; })))({ cmd, args, env: {} }, ctx.cwd);
     if (code === -1) throw new UsageError(`konnect lease run: there is no ${printable(cmd)} to run`);
     process.exitCode = code;
   } finally {
     clearInterval(renewing);
-    await client.releaseLease(name).catch(() => undefined);
+    if (took) await client.releaseLease(name).catch(() => undefined);
     await client.close();
+    process.off('SIGTERM', onTerm);
+    process.off('SIGHUP', onHup);
   }
+}
+
+const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15, SIGKILL: 9 };
+
+/**
+ * Runs the command in this terminal and resolves with its exit status (128 + the signal's number
+ * when one ended it; -1 when there is no such command). Ctrl-C is the command's to handle.
+ * `stopping` is given what passes a signal on to the command while it runs, and nothing once it has ended.
+ */
+function runHolding(c: { cmd: string; args: string[] }, cwd: string, env: Record<string, string | undefined>, stopping: (stop: ((signal: NodeJS.Signals) => void) | undefined) => void): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(c.cmd, c.args, { cwd, stdio: 'inherit', env: env as NodeJS.ProcessEnv });
+    const ignore = () => undefined;
+    process.on('SIGINT', ignore);
+    stopping((signal) => { child.kill(signal); });
+    const done = (code: number) => { stopping(undefined); process.off('SIGINT', ignore); resolve(code); };
+    child.on('error', (e) => done((e as { code?: string }).code === 'ENOENT' ? -1 : 1));
+    child.on('exit', (code, signal) => done(code ?? 128 + (SIGNALS[signal ?? ''] ?? 0)));
+  });
 }
