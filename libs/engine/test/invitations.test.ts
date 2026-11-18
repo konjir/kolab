@@ -387,3 +387,123 @@ test('a member removed, or one who left, no longer reads or posts in the kolab\'
   // What bob wrote stays, for the members.
   expect((await kolab.readChannel(session, 'general')).messages.map((m) => m.message)).toContain('hello from bob');
 });
+
+test('a team sign-in\'s intent: intent:join or intent:create beside team:<name> only, once', () => {
+  expect(personScope('konjir team:acme intent:join')).toStrictEqual({ team: 'acme', intent: 'join' });
+  expect(personScope('konjir intent:create team:acme')).toStrictEqual({ team: 'acme', intent: 'create' });
+  expect(personScope('konjir team:acme')).toStrictEqual({ team: 'acme' });
+  for (const bad of ['konjir team:acme intent:', 'konjir team:acme intent:admin', 'konjir team:acme intent:join intent:create', 'konjir choose:kolab intent:join', 'konjir team:acme intent:Join']) {
+    expect([bad, 'error' in (personScope(bad) ?? {})]).toStrictEqual([bad, true]);
+  }
+  // An intent alone is no person's sign-in.
+  expect(personScope('konjir intent:join')).toBeUndefined();
+});
+
+test('intent:join never makes a kolab: a free name is refused as no such kolab; a member signs in; anyone else\'s is refused with no free name to make', async () => {
+  const { kolab, session: ann } = await anns();
+  const bob = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir team:acme intent:join');
+  const free = await kolab.teamPlan(bob.person, 'acme', 'join');
+  expect(free).toStrictEqual({ kolab: 'acme', kind: 'refused', refused: expect.stringMatching(/^no kolab named acme exists, so there is nothing to join and nothing was made/), refusedForApp: expect.any(String) });
+  expect(free.kind === 'refused' && free.refused).not.toMatch(/free|create|make it/i);
+  for (const shown of ['make', 'member']) expect(await rejection(kolab.consentPerson(bob.binding, bob.csrf, { team: 'acme', shown }))).toMatch(/no kolab named acme exists/);
+  expect(await kolab.kolabRow('acme')).toBeUndefined();
+
+  // Someone else's, with an invitation waiting: pointed to it, and no free name offered.
+  await kolab.inviteAccounts(ann, ['bob'], lookup());
+  const theirs = await kolab.teamPlan(bob.person, 'anns', 'join');
+  expect(theirs).toMatchObject({ kind: 'refused', refused: expect.stringMatching(/you aren't a member of kolab anns, so this sign-in can't join it.*An invitation to anns waits for you/) });
+  expect(theirs).not.toHaveProperty('suggest');
+  expect(await kolab.access('bob', 'anns')).toMatchObject({ level: null });
+
+  // A member: signed in, as without an intent.
+  await kolab.makeOwnKolab('bob', 'bobs', 'Bob\'s');
+  const mine = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir team:bobs intent:join');
+  expect(await kolab.teamPlan(mine.person, 'bobs', 'join')).toMatchObject({ kind: 'member', title: 'Bob\'s' });
+  expect(await kolab.consentPerson(mine.binding, mine.csrf, { team: 'bobs', shown: 'member' })).toMatchObject({ kolab: 'bobs', made: false });
+});
+
+test('intent:create only makes a kolab: a taken name is refused with a free one, even the person\'s own; a free one is made', async () => {
+  const { kolab } = await anns();
+  await kolab.signInWith(github('22', 'bob'));
+  await kolab.makeOwnKolab('bob', 'bobs', 'Bob\'s');
+  // Their own: refused, with a free name, and nothing joined or made.
+  const own = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir team:bobs intent:create');
+  const plan = await kolab.teamPlan(own.person, 'bobs', 'create');
+  expect(plan).toMatchObject({ kind: 'refused', suggest: 'bobs-bob' });
+  expect(plan.kind === 'refused' && plan.refused).toBe('the kolab name bobs is taken, by a kolab you are a member of: join it instead of creating it. This sign-in only creates a new kolab, and names are unique across Konjir. The name bobs-bob is free.');
+  for (const shown of ['make', 'member']) expect(await rejection(kolab.consentPerson(own.binding, own.csrf, { team: 'bobs', shown }))).toMatch(/the kolab name bobs is taken/);
+  // Someone else's: refused alike, with a free name.
+  expect(await kolab.teamPlan('bob', 'anns', 'create')).toMatchObject({ kind: 'refused', suggest: 'anns-bob', refused: expect.stringMatching(/^the kolab name anns is taken\. This sign-in only creates/) });
+  // Free: made.
+  const fresh = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir team:acme intent:create');
+  expect(await kolab.teamPlan(fresh.person, 'acme', 'create')).toStrictEqual({ kolab: 'acme', kind: 'make' });
+  expect(await kolab.consentPerson(fresh.binding, fresh.csrf, { team: 'acme', shown: 'make' })).toMatchObject({ kolab: 'acme', made: true });
+  expect(await kolab.kolabRow('acme')).toMatchObject({ owner: 'bob', visibility: 'private' });
+});
+
+test('a person removes their own agent from the kolab: its grant goes, its sign-ins there are revoked and its sessions end; never someone else\'s, never by an agent', async () => {
+  const { kolab, session } = await anns();
+  const { actor: bob } = await kolab.signInWith(github('22', 'bob'));
+  await kolab.grant('anns', bob, 'read');
+  const bobIn = await kolab.openSession(bob, 'product', { kolab: 'anns' });
+  const annAgent = await kolab.addOwnAgent('ann', 'claude');
+  const annOther = await kolab.addOwnAgent('ann', 'helper');
+  const bobAgent = await kolab.addOwnAgent(bob, 'claude');
+  for (const a of [annAgent, annOther, bobAgent]) await kolab.grant('anns', a, 'read');
+  await kolab.makeOwnKolab('ann', 'elsewhere', 'Elsewhere');
+  await kolab.grant('elsewhere', annAgent, 'read');
+  const agentIn = await kolab.openSession(annAgent, 'product', { kolab: 'anns' });
+  const bobAgentIn = await kolab.openSession(bobAgent, 'product', { kolab: 'anns' });
+  // Two sign-ins of the agent's: one to this kolab, one to another.
+  await kolab.db.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, expires_at) values
+    ($2, 'c', $1, 'ann', 'konjir kolab:anns role:product', now() + interval '1 day'),
+    ($3, 'c', $1, 'ann', 'konjir kolab:elsewhere role:product', now() + interval '1 day')`, [annAgent, 'g'.repeat(22), 'h'.repeat(22)]);
+
+  // Never someone else's (refused as no agent of theirs), never by an agent, never a name that is none.
+  expect(await rejection(kolab.removeOwnAgent(session, 'bob-claude'))).toMatch(/AccessError: you have no agent bob-claude/);
+  expect(await rejection(kolab.removeOwnAgent(session, 'bob/claude'))).toMatch(/AccessError: you have no agent bob\/claude/);
+  expect(await rejection(kolab.removeOwnAgent(bobIn, 'ann-claude'))).toMatch(/AccessError: you have no agent ann-claude/);
+  expect(await rejection(kolab.removeOwnAgent(agentIn, 'claude'))).toMatch(/AccessError: ann-claude is an agent: only a person removes their agents/);
+  expect(await rejection(kolab.removeOwnAgent(session, 'nobody'))).toMatch(/AccessError: you have no agent nobody/);
+  expect(await kolab.access(bobAgent, 'anns')).toMatchObject({ level: 'read' });
+
+  // By its label: its grant here goes, its sign-in here is revoked, and its session here ends.
+  expect(await kolab.removeOwnAgent(session, 'claude')).toStrictEqual({ kolab: 'anns', removed: 'ann-claude', label: 'claude', revoked: 1, ended: 1 });
+  expect(await kolab.access(annAgent, 'anns')).toMatchObject({ level: null });
+  expect(await kolab.sessionOpen(agentIn)).toBe(false);
+  expect((await kolab.db.query(`select id, revoked_at is not null as revoked, revoked_by from oauth_grant order by id`)).rows)
+    .toStrictEqual([{ id: 'g'.repeat(22), revoked: true, revoked_by: 'ann' }, { id: 'h'.repeat(22), revoked: false, revoked_by: null }]);
+  // Elsewhere it keeps what it had; the person, the other agents, and Bob's agent are untouched.
+  expect(await kolab.access(annAgent, 'elsewhere')).toMatchObject({ level: 'read' });
+  await kolab.endSession(await kolab.openSession(annAgent, 'product', { kolab: 'elsewhere' }));
+  expect(await kolab.sessionOpen(session)).toBe(true);
+  expect(await kolab.sessionOpen(bobAgentIn)).toBe(true);
+  expect(await kolab.access(annOther, 'anns')).toMatchObject({ level: 'read' });
+  expect((await kolab.auditLog({ kolab: 'anns' })).filter((e) => e.action === 'grant.removed').map((e) => [e.subject, e.by])).toStrictEqual([['ann-claude', 'ann']]);
+  // Removed already: nothing to remove.
+  expect(await rejection(kolab.removeOwnAgent(session, 'claude'))).toMatch(/TenancyError: ann-claude holds no grant in kolab anns, so nothing was removed/);
+  // By its whole name, or <owner>/<label>; and it can be given access here again.
+  expect(await kolab.removeOwnAgent(session, 'ann/helper')).toMatchObject({ removed: 'ann-helper', label: 'helper', revoked: 0, ended: 0 });
+  await kolab.grant('anns', annAgent, 'read');
+  expect(await kolab.access(annAgent, 'anns')).toMatchObject({ level: 'read' });
+  expect(await kolab.removeOwnAgent(session, 'ann-claude')).toMatchObject({ removed: 'ann-claude', ended: 0 });
+});
+
+test('a person who joins by accepting an invitation, or by an invite link, starts unread at their joining', async () => {
+  const { kolab, session } = await anns();
+  await kolab.sendChannelMessage(session, 'general', 'before anyone');
+  const { invited: [inv] } = await kolab.inviteAccounts(session, ['bob'], lookup());
+  const bob = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir choose:kolab');
+  await kolab.consentPerson(bob.binding, bob.csrf, { accept: inv.id });
+  const bobIn = await kolab.openSession('bob', 'product', { kolab: 'anns' });
+  expect(await kolab.unreadChannels(bobIn)).toStrictEqual([]);
+  expect((await kolab.channelMessagesPage(bobIn, 'general')).items.map((m) => m.message)).toStrictEqual(['before anyone']);
+
+  const { token } = await kolab.createInvite(session, { level: 'read' });
+  const { actor: cy } = await kolab.signInWith(github('33', 'cy'));
+  await kolab.acceptInvite(token, cy);
+  const cyIn = await kolab.openSession(cy, 'product', { kolab: 'anns' });
+  expect(await kolab.unreadChannels(cyIn)).toStrictEqual([]);
+  const now = await kolab.sendChannelMessage(session, 'general', 'after both');
+  for (const s of [bobIn, cyIn]) expect((await kolab.unreadChannels(s)).map((c) => c.items.map((m) => m.id))).toStrictEqual([[now.id]]);
+});

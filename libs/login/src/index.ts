@@ -707,13 +707,22 @@ export const CHOOSE_SCOPE = 'konjir choose:kolab';
 const KOLAB_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 /**
+ * What a person's own sign-in to a named team asks of Kolab's page beside the name: `join`, only
+ * sign in to a team they are a member of, and refuse a free name as no such team; `create`, only
+ * make a new team, and refuse a taken name, suggesting a free one. Without it, the name decides.
+ */
+export type TeamIntent = 'join' | 'create';
+
+/**
  * The scope of a person's own make-or-switch sign-in to the kolab `name` (konnect's `team <name>`):
  * Kolab's page offers to make it, private and theirs, with no agent, if the name is free; signs them
- * in to it if they are a member; and refuses, suggesting a free name, if it is anyone else's.
+ * in to it if they are a member; and refuses, suggesting a free name, if it is anyone else's. With
+ * `intent`, an `intent:join` or `intent:create` word, which only narrows that (TeamIntent).
  */
-export function teamScope(name: string): string {
+export function teamScope(name: string, intent?: TeamIntent): string {
   if (!KOLAB_NAME.test(name)) throw new Error(`${JSON.stringify(name)} isn't a team's name: up to 40 lowercase letters, digits and '-', starting with a letter or digit`);
-  return `konjir team:${name}`;
+  if (intent !== undefined && intent !== 'join' && intent !== 'create') throw new Error(`${JSON.stringify(intent)} isn't an intent: join or create`);
+  return intent ? `konjir team:${name} intent:${intent}` : `konjir team:${name}`;
 }
 
 /** A person's own sign-in, kept: the kolab it works in (the one chosen or made on Kolab's page), who it is, its role, and where its credentials are kept. */
@@ -774,10 +783,13 @@ export function signInChoosing(url: string, opts: { path?: string; clientName?: 
  * Signs the person in as themselves to the kolab `name` (konnect's `team <name>`), making it,
  * private and theirs with no agent, when the name is free: Kolab's page says which, and the person
  * allows it there. Refused, when the name is someone else's, with SignInRefused, whose `suggest` is
- * a free name Kolab offered. Kept as signInChoosing keeps it.
+ * a free name Kolab offered. With `intent`, only that: `join` refuses a free name (no such team) and
+ * never makes one; `create` refuses a taken name, even the person's own team, with `suggest` set.
+ * Kept as signInChoosing keeps it.
  */
-export function signInToTeam(url: string, name: string, opts: { path?: string; clientName?: string; yieldTo?: string } & Omit<BrowserOpts, 'scope'> = {}): Promise<PersonSignIn> {
-  return signInAsPerson(url, teamScope(name), opts, name);
+export function signInToTeam(url: string, name: string, opts: { path?: string; clientName?: string; yieldTo?: string; intent?: TeamIntent } & Omit<BrowserOpts, 'scope'> = {}): Promise<PersonSignIn> {
+  const { intent, ...rest } = opts;
+  return signInAsPerson(url, teamScope(name, intent), rest, name);
 }
 
 /**

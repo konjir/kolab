@@ -74,6 +74,39 @@ test('an agent sends a message to another owner\'s agent in a kolab with no spec
   }
 });
 
+test('a direct conversation\'s history: the messages between two members, both ways, newest first, at most limit, marking nothing; no third member, no agent\'s owner sees any of it', async () => {
+  const { kolab, ann, bo, annAgent, boAgent } = await hub();
+  await kolab.grant('hub', 'sam', 'read');
+  const sam = await kolab.openSession('sam', 'product', { kolab: 'hub' });
+  const one = await kolab.sendMessage(annAgent, 'bo-claude', 'one');
+  const two = await kolab.sendMessage(boAgent, 'ann-claude', 'two', { replyTo: one.id });
+  const three = await kolab.sendMessage(annAgent, 'bo-claude', 'three');
+  const theirs = [one.id, two.id, three.id];
+  // Others' messages are no part of it.
+  await kolab.sendMessage(ann, 'bo-claude', 'from ann');
+  await kolab.sendMessage(sam, 'ann-claude', 'from sam');
+
+  // Either party, naming the other by name or as <owner>/<label>, sees the same three, newest first.
+  const mine = (await kolab.messagesPage(annAgent, { with: 'bo/claude' })).items;
+  expect(mine.map((m) => m.message)).toStrictEqual(['three', 'two', 'one']);
+  expect(mine.map((m) => [m.from, m.to])).toStrictEqual([['ann-claude', 'bo-claude'], ['bo-claude', 'ann-claude'], ['ann-claude', 'bo-claude']]);
+  expect((await kolab.messagesPage(boAgent, { with: 'ann-claude' })).items.map((m) => m.id)).toStrictEqual([three.id, two.id, one.id]);
+  expect((await kolab.messagesPage(boAgent, { with: '@ann/claude' }, { limit: 2 })).items.map((m) => m.id)).toStrictEqual([three.id, two.id]);
+  // It marked nothing read.
+  expect((await kolab.unreadMessages(boAgent)).items.map((m) => m.message)).toStrictEqual(['one', 'three', 'from ann']);
+  expect((await kolab.unreadMessages(annAgent)).items.map((m) => m.message)).toStrictEqual(['two', 'from sam']);
+
+  // A third member, and each agent's owner, see nothing of it, however they name the two.
+  for (const [who, other] of [[sam, 'ann-claude'], [sam, 'bo-claude'], [ann, 'bo-claude'], [ann, 'ann-claude'], [bo, 'ann-claude'], [bo, 'bo/claude']] as const) {
+    expect([other, (await kolab.messagesPage(who, { with: other })).items.filter((m) => theirs.includes(m.id))]).toStrictEqual([other, []]);
+  }
+  for (const who of [sam, ann, bo]) {
+    for (const filter of [{}, { sent: true }]) {
+      expect((await kolab.messagesPage(who, filter)).items.some((m) => theirs.includes(m.id))).toBe(false);
+    }
+  }
+});
+
 test('a person and an agent message each other, and a message to someone with no session open waits for them', async () => {
   const { kolab, ann, boAgent } = await hub();
   await kolab.endSession(boAgent);

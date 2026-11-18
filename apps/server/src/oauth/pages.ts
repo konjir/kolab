@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
-import { setupDigest, type SetupPlan, type TeamPlan } from '@konjir/engine';
+import { setupDigest, type SetupPlan, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
 import type { Access, InvitePreview, PendingInvitation, Role } from '@konjir/types';
 
@@ -315,6 +315,8 @@ export interface ChooseView extends PersonView {
 /** A `team:<name>` sign-in's page: what allowing it does (TeamPlan). */
 export interface TeamView extends PersonView {
   plan?: TeamPlan;
+  /** What the app asked for beside the name (personScope): only to join, or only to create. */
+  intent?: TeamIntent;
 }
 
 const personHidden = (v: PersonView) => `<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
@@ -384,6 +386,10 @@ ${personIntro(v)}
 <form class="card" method="post" action="/oauth/consent">
 ${personAsks(v)}
 ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+<p><strong>${made
+    ? `Allowing it creates a new kolab, <code>${esc(plan.kolab)}</code>, and joins no existing one.`
+    : `Allowing it joins <code>${esc(plan.kolab)}</code>, a kolab you are already a member of, and creates nothing.`}</strong>${v.intent
+    ? ` ${esc(v.client)} asked only to ${v.intent === 'join' ? 'join an existing kolab' : 'create a new kolab'}.` : ''}</p>
 <dl class="locked">
 <dt>Kolab</dt><dd><code>${esc(plan.kolab)}</code>${plan.kind === 'member' && plan.title !== plan.kolab ? ` ${esc(plan.title)}` : ''}<small>${made ? 'New: made now, private, yours. No agent is made.' : `You are a member: you hold ${esc(describe(plan.access))}`}</small></dd>
 <dt>Works as</dt><dd><code>${esc(v.person)}</code><small>You yourself, not an agent</small></dd>

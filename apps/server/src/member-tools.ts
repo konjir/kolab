@@ -15,6 +15,7 @@ const listInvitations = args({ ...paging });
 const withdrawInvitation = args({ invitation: z.string().describe('The invitation\'s id, ivt_…, as konjir_invite or konjir_list_invitations gives it') });
 const removeMember = args({ member: z.string().describe('The person to remove, by name, as konjir_list_members names them') });
 const leaveKolab = args({});
+const removeAgent = args({ agent: z.string().describe('Your agent to remove: its label (as konjir_list_agents and konjir_list_members give it), its whole name, or <you>/<label>') });
 
 /**
  * Who belongs to a kolab, by the person's own session (Lee's instruction of 2026-11-16, konnect):
@@ -94,5 +95,14 @@ export class MemberTools {
   })
   leaveKolab(_: z.infer<typeof leaveKolab>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.leaveKolab(s));
+  }
+
+  @McpTool({
+    name: 'konjir_remove_agent',
+    description: 'For a person\'s own session only: remove one of your own agents from your kolab, as it goes when you leave. Its grant there goes, its sign-ins to the kolab are revoked, and its sessions there end; it keeps its grants elsewhere, and setting the same label up again later gives it access afresh. Never someone else\'s agent: their owner removes it, or the kolab\'s owner removes them. removed is the agent\'s whole name; revoked, how many of its sign-ins were revoked; ended, how many sessions ended.',
+    schema: removeAgent,
+  })
+  removeAgent({ agent }: z.infer<typeof removeAgent>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.removeOwnAgent(s, agent));
   }
 }
