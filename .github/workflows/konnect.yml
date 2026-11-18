@@ -104,8 +104,8 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           env -u KONNECT_URL node "$GITHUB_WORKSPACE/apps/konnect/dist-npm/konnect.mjs" help | grep -F 'https://kolab.konjir.com/mcp'
-          if out=$(env -u KONNECT_URL KONNECT_CONFIG_DIR="$RUNNER_TEMP/none" node "$GITHUB_WORKSPACE/apps/konnect/dist-npm/konnect.mjs" who 2>&1); then echo "::error::konnect who succeeded with nothing signed in"; exit 1; fi
-          echo "$out" | grep -F "you aren't signed in to a team: run konnect team <name>"
+          if out=$(env -u KONNECT_URL KONNECT_CONFIG_DIR="$RUNNER_TEMP/none" node "$GITHUB_WORKSPACE/apps/konnect/dist-npm/konnect.mjs" status 2>&1); then echo "::error::konnect status succeeded with nothing logged in"; exit 1; fi
+          echo "$out" | grep -F "you aren't logged in to a team: run konnect login, or konnect team create <name>"
 
       - name: konnect against a local Kolab, as the bundle and as the installed package
         timeout-minutes: 5
