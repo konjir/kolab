@@ -231,6 +231,8 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
         if (await works(a.name)) continue;
         if (a.login === undefined) { r.needs_login.push(a.name); continue; }
         const f = agentFileReady(team, a.name, ctx.env);
+        // What was kept here before is touched only once the login sent has been opened and read.
+        let replaced = false;
         try {
           const o = JSON.parse(unseal(kept, a.login, bound(team, name, a.name))) as { client?: Record<string, unknown>; tokens?: Record<string, unknown> };
           const t = o?.tokens;
@@ -238,12 +240,15 @@ export async function host(ctx: Ctx, verb: string | undefined, rest: string[]) {
           // What is kept is the login alone, for this machine's own service: where to renew it is found
           // out here, never taken from the request.
           const tokens = Object.fromEntries(Object.entries({ access_token: t.access_token, refresh_token: t.refresh_token, token_type: typeof t.token_type === 'string' ? t.token_type : 'Bearer', expires_in: typeof t.expires_in === 'number' ? t.expires_in : undefined, scope: typeof t.scope === 'string' ? t.scope : undefined, issuer: typeof t.issuer === 'string' ? t.issuer : undefined }).filter(([, v]) => v !== undefined));
+          replaced = true;
           await keepSignIn(ctx.url, f, { client: o.client as never, tokens: tokens as never });
           if (!await works(a.name)) throw new Error('not that agent\'s');
           r.kept.push(a.name);
         } catch {
-          await logout(ctx.url, { path: f, forget: true }).catch(() => undefined);
-          dropIfEmpty(f);
+          if (replaced) {
+            await logout(ctx.url, { path: f, forget: true }).catch(() => undefined);
+            dropIfEmpty(f);
+          }
           r.failed.push({ name: a.name, why: 'the login sent for it couldn\'t be used there' });
         }
       }
