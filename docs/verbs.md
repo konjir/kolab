@@ -37,6 +37,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`answer_host`](#answer_host) | For a person's own session only, never an agent's, and only for your own machines: the host's answer to a request it took from konjir_serve_host, once. |
 | [`answer_query`](#answer_query) | Answer an open question, or reply to a note, that your layer owns. |
 | [`archive_agent`](#archive_agent) | For a person's own session only: archive an agent of yours, <you>-<label> by label=<label>, or by agent=<name> one of yours whose name doesn't start <you>- (konjir_list_agents gives each one's archive_with). |
+| [`archive_kolab`](#archive_kolab) | For the owner of your kolab only, from a person's own session: archive it, named. |
 | [`archive_repository`](#archive_repository) | For a person with Maintain or Admin in your kolab, never an agent: archive a repository (by URL or id). |
 | [`ask`](#ask) | Ask a question about an address. |
 | [`ask_host`](#ask_host) | For a person's own session only, never an agent's, and only for your own machines: ask your host to start or stop one of your agents there, or to end; a hello asks the machine for a fresh word that the next request must carry, so a request kept and sent again later does nothing. |
@@ -49,6 +50,7 @@ Every verb, as `konjir <verb> key=value …` takes it from a shell and as the MC
 | [`end_host`](#end_host) | For a person's own session only, never an agent's, and only for your own machines: end your host of that name in this kolab, with every request to it. |
 | [`end_job`](#end_job) | End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. |
 | [`end_session`](#end_session) | For a person's own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. |
+| [`erase_kolab`](#erase_kolab) | For the owner of your kolab only, from a person's own session: erase it, named, for good, when it holds no documents (a kolab of messages, such as a konnect team). |
 | [`follow_channel`](#follow_channel) | Follow a channel of your kolab: its unread messages are in your answers, and each new one there signals you. |
 | [`import`](#import) | For a person's own session only, never an agent's or a job's (konjir import <file.json> sends it): import from one file what your session's role may write, into your session's kolab, as you: as product, the spec and the rulings on it; as engineer, the binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), the rulings on it and the repository. |
 | [`instructions`](#instructions) | Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. |
@@ -542,6 +544,18 @@ For a person's own session only: archive an agent of yours, <you>-<label> by lab
 | `label` | `string` | no | The agent's label: archives <you>-<label>. |
 | `agent` | `string` | no | The agent's whole name, for an agent of yours whose name doesn't start <you>- (konjir_list_agents gives each one's archive_with). Give label or agent, not both. |
 
+## archive_kolab
+
+```
+konjir archive_kolab kolab=<string>
+```
+
+For the owner of your kolab only, from a person's own session: archive it, named. As an admin's archive does, it disappears from listings and can't be used: every session there ends, this one too. Nothing is deleted, its name stays reserved, and a Konjir admin can unarchive it. ended, how many sessions ended.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kolab` | `string` | yes | Your kolab's name, the one this session is in: named, so nobody does this to the wrong one |
+
 ## archive_repository
 
 ```
@@ -702,6 +716,18 @@ For a person's own session only: end one of your open sessions, named by its id 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `session` | `string` | yes | The session's id as konjir_list_sessions gives it, or at least its first 8 characters |
+
+## erase_kolab
+
+```
+konjir erase_kolab kolab=<string>
+```
+
+For the owner of your kolab only, from a person's own session: erase it, named, for good, when it holds no documents (a kolab of messages, such as a konnect team). Its messages and channels, members, invitations, leases and hosts go, every session there ends, this one too, every sign-in to it is revoked, and its name is free again. A kolab with documents is refused: archive it instead. It can't be undone. ended, how many sessions ended; revoked, how many sign-ins were revoked; messages, how many messages went.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kolab` | `string` | yes | Your kolab's name, the one this session is in: named, so nobody does this to the wrong one |
 
 ## follow_channel
 
