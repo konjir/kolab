@@ -2,6 +2,7 @@ import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
+import type { Logger } from '@konjir/log';
 import { JsonNestLogger, serverErrors } from './json-logger.js';
 import { MAX_REQUEST_BYTES, MAX_SMALL_REQUEST_BYTES, REFRESH_HEADER } from '@konjir/types';
 import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
@@ -51,6 +52,8 @@ export async function startServer(opts: {
   worker?: boolean;
   /** The clock agents' states are judged by (konjir_say_state), in ms: Date.now by default; tests move it instead of sleeping. */
   agentStateClock?: () => number;
+  /** Where each MCP client that connects is logged (event mcp_client): `konjir serve` gives Kolab's logger; none by default. */
+  clientLog?: Logger;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
@@ -64,7 +67,7 @@ export async function startServer(opts: {
     KolabServerModule.register({
       kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
       identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
-      cliNpmSpec: opts.cliNpmSpec, agentStateClock: opts.agentStateClock,
+      cliNpmSpec: opts.cliNpmSpec, agentStateClock: opts.agentStateClock, clientLog: opts.clientLog,
     }),
     // Nest's lines, and the server's own Loggers', as Kolab's JSON lines, warn and error only.
     { logger: new JsonNestLogger(), bodyParser: false },
