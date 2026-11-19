@@ -6,15 +6,21 @@ name: konnect compat
 # the sign-in could break people who never update. Nothing is published, and nothing reaches the
 # hosted Kolab or GitHub.
 #
+# It runs on every pull request into main and every push to main, so its last check can be required:
+# - "Relevant changes" decides whether the change touches what the server is built from (the
+#   pattern in RELEVANT below), against the pull request's base or the push's previous head. With
+#   nothing to compare with (a new branch, a run by hand), it counts as relevant.
 # - "Published versions" lists the releases to test, from npm as the run starts
 #   (apps/konnect/scripts/compat.mjs --versions: every release from its MIN_VERSION on), so a new
-#   release is covered with no change here.
+#   release is covered with no change here. Only for a relevant change, as is the next.
 # - "konnect <version>" installs that release from npm outside the workspace, as npx installs it,
 #   and runs apps/konnect/scripts/compat.mjs against a local Kolab from the checkout (on PGlite, the
 #   stub identity in GitHub's place, as konnect.yml's e2e has it): a team made, a teammate invited
 #   who joins, both talking in #general, status; and konnect still recognising a message to someone
-#   not in the team, an owner's action by someone else, and a revoked login.
-# - "konnect compat" passes only if every version passed: the one check to require.
+#   not in the team, an owner's action by someone else, and a revoked login. It runs code from npm,
+#   so it keeps no npm cache, which a later run would restore.
+# - "konnect compat" passes when the change isn't relevant, and otherwise only if every release
+#   passed: the one check to require.
 #
 # Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
 # dependencies installed without install scripts.
@@ -22,21 +28,8 @@ name: konnect compat
 on:
   pull_request:
     branches: [main]
-    paths: &paths
-      - apps/server/**
-      - libs/engine/**
-      - libs/login/**
-      - libs/db/**
-      - libs/types/**
-      - libs/log/**
-      - libs/address/**
-      - apps/konnect/scripts/**
-      - package.json
-      - package-lock.json
-      - .github/workflows/konnect-compat.yml
   push:
     branches: [main]
-    paths: *paths
   workflow_dispatch:
 
 concurrency:
@@ -50,8 +43,53 @@ env:
   NX_NO_CLOUD: 'true'
 
 jobs:
+  changes:
+    name: Relevant changes
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      relevant: ${{ steps.diff.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compare with the base
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          # What the server konnect talks to is built from, and what runs it here.
+          RELEVANT: '^(apps/server/|libs/(engine|login|db|types|log|address|brand)/|apps/konnect/scripts/|package\.json$|package-lock\.json$|tsconfig[^/]*\.json$|\.github/workflows/konnect-compat\.yml$)'
+        run: |
+          case "$EVENT" in
+            pull_request) from="$PR_BASE" ;;
+            push) from="$PUSH_BEFORE" ;;
+            *) from="" ;;
+          esac
+          if [[ ! "$from" =~ ^[0-9a-f]{40}$ || "$from" =~ ^0+$ ]] || ! git cat-file -e "$from^{commit}" 2>/dev/null; then
+            echo "nothing to compare with ($EVENT): every release runs"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          matched=$(git diff --name-only "$from" HEAD | grep -E "$RELEVANT" || true)
+          if [[ -n "$matched" ]]; then
+            echo "relevant changes since ${from:0:12}:"
+            echo "$matched"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "nothing the server is built from changed since ${from:0:12}: no release runs"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
   versions:
     name: Published versions
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
@@ -98,10 +136,11 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # No npm cache: this job runs a package from npm, which could change ~/.npm before a cache
+      # of it was saved for later runs.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ steps.node.outputs.version }}
-          cache: npm
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
@@ -120,16 +159,20 @@ jobs:
 
   result:
     name: konnect compat
-    needs: [versions, compat]
+    needs: [changes, versions, compat]
     if: always()
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 2
     permissions: {}
     steps:
-      - name: Every published version passed
+      - name: Every published version passed, or nothing relevant changed
         env:
+          CHANGES: ${{ needs.changes.result }}
+          RELEVANT: ${{ needs.changes.outputs.relevant }}
           VERSIONS: ${{ needs.versions.result }}
           COMPAT: ${{ needs.compat.result }}
         run: |
-          echo "versions: $VERSIONS, compat: $COMPAT"
-          test "$VERSIONS" = success && test "$COMPAT" = success
+          echo "changes: $CHANGES (relevant: $RELEVANT), versions: $VERSIONS, compat: $COMPAT"
+          test "$CHANGES" = success || exit 1
+          if [[ "$RELEVANT" == false ]]; then echo "nothing relevant changed"; exit 0; fi
+          test "$RELEVANT" = true && test "$VERSIONS" = success && test "$COMPAT" = success
