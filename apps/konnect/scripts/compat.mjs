@@ -89,6 +89,8 @@ function surfaceOf(help) {
       // What a person runs that needs the login: konnect status.
       afterRevoked: (m) => konnect(m, ['status']),
       relogin: `run konnect login ${TEAM}`,
+      // Said only once Kolab has revoked the login; else "…here; the service couldn't be told…".
+      loggedOut: `Logged out of team ${TEAM}.`,
     };
   }
   if (/konnect team <name>/.test(help) && /konnect recruit/.test(help) && /konnect read/.test(help)) {
@@ -113,6 +115,8 @@ function surfaceOf(help) {
       // Bare konnect says a login has ended and still exits 0: konnect who needs it, and fails.
       afterRevoked: (m) => konnect(m, ['who']),
       relogin: `run konnect team ${TEAM}`,
+      // Said only once Kolab has revoked the sign-in; else "…here; Kolab couldn't be told…".
+      loggedOut: `Signed out of team ${TEAM}.`,
     };
   }
   return undefined;
@@ -172,7 +176,7 @@ async function main() {
   const kept = `${h.tmp}/peer-before-logout`;
   cpSync(peer.home, kept, { recursive: true });
   const out = await konnect(peer, ['logout']);
-  check(out.code === 0, `peer's logout: ${said(out)}`);
+  check(out.code === 0 && out.out.trim() === k.loggedOut, `peer's logout didn't say "${k.loggedOut}", so Kolab didn't revoke the login: ${said(out)}`);
   rmSync(peer.home, { recursive: true, force: true });
   cpSync(kept, peer.home, { recursive: true });
   const revoked = await k.afterRevoked(peer);

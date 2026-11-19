@@ -9,7 +9,8 @@ name: Release konnect
 #    newest konnect@* tag, or apps/konnect/package.json's before the first release), refuses a
 #    version npm or a tag already has, builds and packs the npm tarball, checks it carries LICENSE
 #    (Apache-2.0) and the third-party notices, runs it against a Kolab started from the checkout
-#    (apps/konnect/scripts/e2e.mjs), runs npm publish --dry-run on it, and uploads it as an
+#    (apps/konnect/scripts/e2e.mjs, and compat.mjs, konnect-compat.yml's checks), runs npm publish
+#    --dry-run on it, and uploads it as an
 #    artifact. It is the only job that installs dependencies or runs Bun.
 # 2. "Draft GitHub release" (contents, attestations): attests the tarball's build provenance and
 #    creates the release as a draft, with the tarball and generated notes. A draft has no tag yet.
@@ -155,6 +156,12 @@ jobs:
           node apps/konnect/scripts/e2e.mjs --konnect apps/konnect/dist-npm/konnect.mjs
           npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/release/konjir-konnect-*.tgz
           node apps/konnect/scripts/e2e.mjs --konnect "$RUNNER_TEMP/installed/node_modules/.bin/konnect"
+
+      # Held to konnect-compat.yml's checks before it is published: once it is, every change to
+      # the server runs them with it.
+      - name: konnect-compat's checks, on the installed package
+        timeout-minutes: 5
+        run: node apps/konnect/scripts/compat.mjs --konnect "$RUNNER_TEMP/installed/node_modules/.bin/konnect"
 
       - name: npm publish --dry-run
         run: npm publish --dry-run --access public "$RUNNER_TEMP"/release/konjir-konnect-*.tgz

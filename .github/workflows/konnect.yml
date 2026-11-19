@@ -13,6 +13,8 @@ name: konnect
 #   PGlite, with the stub identity in GitHub's place): a team made, a teammate recruited who joins by
 #   the choosing sign-in, both talking in #general, and an agent set up with konnect claude
 #   --no-start whose entry, started as Claude Code starts it, is woken by a mention.
+# - The installed package runs apps/konnect/scripts/compat.mjs too, the checks konnect-compat.yml
+#   runs every published release through, so a release is one that check can drive.
 #
 # Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
 # dependencies installed without install scripts.
@@ -113,6 +115,13 @@ jobs:
           node apps/konnect/scripts/e2e.mjs --konnect apps/konnect/dist-npm/konnect.mjs
           npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/pack/konjir-konnect-*.tgz
           node apps/konnect/scripts/e2e.mjs --konnect "$RUNNER_TEMP/installed/node_modules/.bin/konnect"
+
+      # The checks konnect-compat.yml holds the server to with every published release, held to
+      # this build before it can be one: a rewording here that compat.mjs can't follow fails now,
+      # not on the next server change after it ships.
+      - name: konnect-compat's checks, on the installed package
+        timeout-minutes: 5
+        run: node apps/konnect/scripts/compat.mjs --konnect "$RUNNER_TEMP/installed/node_modules/.bin/konnect"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
