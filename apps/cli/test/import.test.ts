@@ -83,11 +83,11 @@ test('in a shell: kolab import in two sign-ins writes the file as the person; re
     kolab: 'test', by: 'lee', role: 'product', complete: false, differs: [], failed: [], waiting: [],
     created: ['node kj:test/shop', 'version kj:test/shop', 'ruling D3'],
     other_pass: ['node kj:test/shop-binding', 'repository https://github.com/acme/shop', 'version kj:test/shop-binding', 'links kj:test/shop-binding (relies_on)'],
-    next: 'konjir login --kolab test --role engineer, then konjir import again',
+    next: 'kolab login --kolab test --role engineer, then kolab import again',
   });
   expect(first.err).toMatch(/^Import into kolab test, as lee, the product pass:$/m);
-  expect(first.err).toMatch(/other_pass +repository https:\/\/github\.com\/acme\/shop: for the engineer pass: konjir login --kolab test --role engineer/);
-  expect(first.err).toMatch(/Not complete: 4 left for the other pass \(konjir login --kolab test --role engineer, then konjir import again\)\./);
+  expect(first.err).toMatch(/other_pass +repository https:\/\/github\.com\/acme\/shop: for the engineer pass: kolab login --kolab test --role engineer/);
+  expect(first.err).toMatch(/Not complete: 4 left for the other pass \(kolab login --kolab test --role engineer, then kolab import again\)\./);
   expect(process.exitCode ?? 0).toBe(0);
 
   const lee = await signIn('lee', 'engineer');
@@ -126,7 +126,7 @@ test('in a shell: kolab import in two sign-ins writes the file as the person; re
 test('kolab import --dry-run writes nothing and says what it would; an engineer pass before the spec exits 0 saying what waits; a difference exits 1 (W6.3)', async () => {
   const { kolab, server, signIn } = await leesKolab();
   const early = await konjir(server, (await signIn('lee', 'engineer')).token, ['import', fileOf(FILE)]);
-  expect(JSON.parse(early.out)).toMatchObject({ role: 'engineer', complete: false, created: [], failed: [], next: 'konjir login --kolab test --role product, then konjir import again' });
+  expect(JSON.parse(early.out)).toMatchObject({ role: 'engineer', complete: false, created: [], failed: [], next: 'kolab login --kolab test --role product, then kolab import again' });
   expect(early.err).toMatch(/waiting +node kj:test\/shop-binding: it binds shop, which isn't made: the product pass writes the spec/);
   expect(process.exitCode ?? 0).toBe(0);
   const lee = await signIn('lee', 'product');

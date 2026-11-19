@@ -31,6 +31,11 @@ export interface BridgeOptions {
   login?: StoredLogin;
   /** With no sign-in kept yet: another channel's browser sign-in is under way, which this one will use. */
   awaiting?: 'another-channel';
+  /**
+   * What this bridge tells Kolab it is, at MCP's initialize: `konjir-channel-bridge` and its version
+   * by default, as konnect's bridges say; the kolab CLI's channel says `kolab` (words.ts, KOLAB_CLIENT).
+   */
+  clientInfo?: { name: string; version: string };
   /** The command that signs this bridge's sign-in in again, as the session is told it; `kolab login --url <url>` by default. */
   loginCommand?: string;
   /** KONJIR_AGENT: the actor this bridge's sign-in must work as. Any other, and it serves and hears nothing. */
@@ -480,7 +485,7 @@ export class KolabBridge {
 
   private newClient() {
     // 'auto' talks 2026-07-28 to Kolab, which subscriptions/listen needs.
-    return new Client({ name: 'konjir-channel-bridge', version: VERSION }, { versionNegotiation: { mode: 'auto' } });
+    return new Client(this.opts.clientInfo ?? { name: 'konjir-channel-bridge', version: VERSION }, { versionNegotiation: { mode: 'auto' } });
   }
 
   private transport() {

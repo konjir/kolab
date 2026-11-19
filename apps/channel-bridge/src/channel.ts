@@ -20,6 +20,7 @@ import { listChangedNotification, servePassthrough, type BridgeHolder } from './
 import { bridgeAuth, mask } from './sign-in.js';
 import type { ChannelMessage } from './messages.js';
 import { VERSION } from './version.js';
+import { KOLAB_CLIENT, kolabWords } from './words.js';
 
 export { VERSION };
 
@@ -87,10 +88,12 @@ export async function main(env: NodeJS.ProcessEnv = process.env) {
   let closing = false;
   // Signing in may wait on the person's browser: Claude Code's side is served meanwhile, and a
   // shutdown during it needs no bridge to stop.
-  void bridgeAuth(url, env, { forward, log: (line) => logger.log(line) }).then((auth) => {
+  // The channel's log in kolab's words: what @konjir/login and Kolab say still names `konjir login` (words.ts).
+  const log = (line: string) => logger.log(kolabWords(line));
+  void bridgeAuth(url, env, { forward, log }).then((auth) => {
     if (closing) return;
     const { awaiting, ...credential } = auth;
-    bridge = new KolabBridge({ url, ...credential, awaiting, forward, log: (line) => logger.log(line), backoff: backoffFrom(env) });
+    bridge = new KolabBridge({ url, ...credential, awaiting, forward, log, backoff: backoffFrom(env), clientInfo: KOLAB_CLIENT });
     // A list of Kolab's that changed, or became known after Claude Code first asked: Claude Code lists it again.
     bridge.onListChanged = (kind) => {
       void stdio.whenConnected().then(() => stdio.sendNotification(listChangedNotification(kind))).catch(() => undefined);
@@ -100,7 +103,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env) {
     bridge.start();
   }, (e: unknown) => {
     // The detail goes to the log, masked; the session gets fixed words.
-    logger.error(`the channel can't start: ${mask(String((e as Error).message ?? e))}`);
+    logger.error(kolabWords(`the channel can't start: ${mask(String((e as Error).message ?? e))}`));
     void forward({ content: 'The Konjir channel can\'t start: its log says why (KONJIR_URL, KONJIR_AGENT, KONJIR_CHANNEL_SIGN_IN or the credentials file). Tell the user.', meta: { kind: 'bridge', status: 'misconfigured' } }).catch(() => undefined);
   });
 

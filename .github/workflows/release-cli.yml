@@ -27,7 +27,8 @@ name: Release CLI
 # Set up once (README, "Releasing the CLI"): a GitHub environment named npm-release whose
 # deployment branches are main only, and npm trusted publishing for @konjir/kolab (this
 # repository, this workflow, that environment), which `npm run release:trust` (tools/npm-trust.sh)
-# sets up once @konjir/kolab is on npm: its first version is published by hand.
+# sets up once @konjir/kolab is on npm: a placeholder, 0.0.1, published by hand (README), so this
+# workflow publishes 0.9.0, the first real version, with provenance.
 #
 # Recovery: a run that stops before job 3 has published nothing; delete its draft release, if
 # any, and run again. If job 3 published and job 4 failed, re-run job 4 ("Re-run failed jobs"),

@@ -59,6 +59,7 @@ import { guardHook } from './guard.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 import { gitIgnored, startClaude } from './claude.js';
 import { toolsListing, verbHelp } from './verbs.js';
+import { KOLAB_CLIENT, kolabHints, kolabWords } from '@konjir/channel-bridge/words';
 import { importKolab } from './import.js';
 import { findProject, sameKolab, shown, trustedProjectUrl } from './project.js';
 
@@ -113,7 +114,8 @@ const toolName = (verb: string) => (verb.startsWith('konjir_') ? verb : `konjir_
  */
 export async function connect(url: string, auth: string | OAuthClientProvider): Promise<Client> {
   // 'auto' talks 2026-07-28 to a Kolab server that offers it (needed for subscriptions/listen) and 2025 to an older one.
-  const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
+  // It says it is kolab, and its version: the server words its texts for kolab only for a client that says so (1b).
+  const client = new Client({ ...KOLAB_CLIENT }, { versionNegotiation: { mode: 'auto' } });
   // A 403 insufficient_scope is Kolab refusing an admin verb to a session that isn't an admin's own:
   // signing in again for a wider scope never helps (W2.22), so the client throws it
   // (InsufficientScopeError, said plainly by call) and keeps the sign-in.
@@ -821,8 +823,9 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
   // The verb's own form takes file=… or --json; anything else, a path with '=' in it too, is a file to read.
   if (cmd === 'import' && !rest.some((a) => a === '--json' || a.startsWith('file='))) {
     try {
-      const r = await importKolab((verb, a) => call(client, verb, a), rest, { log: (l) => console.error(l) });
-      console.log(JSON.stringify(r.report, null, 2));
+      // Kolab's report and its lines, in kolab's words (words.ts): its next steps name the command.
+      const r = await importKolab((verb, a) => call(client, verb, a), rest, { log: (l) => console.error(kolabWords(l)) });
+      console.log(JSON.stringify(kolabHints(r.report), null, 2));
       process.exitCode = r.exitCode;
     } finally {
       stored?.releaseLock();
@@ -863,7 +866,7 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
           const opts = { run, commit: flag(args, 'commit'), title: flag(args, 'title'), repo: flag(args, 'repo'), dryRun: on('dry-run') };
           const work = args[0] !== undefined && !args[0].startsWith('-') ? args.shift() : undefined;
           if (args.length) throw new Error(`kolab work deliver <work> --release <run URL> [--commit <rev>] [--title <text>] [--repo <url>] [--dry-run] [-C <dir>]: unknown ${args.join(' ')}`);
-          console.log(JSON.stringify(await releaseDelivered(callIt, git, { work, ...opts }), null, 2));
+          console.log(JSON.stringify(kolabHints(await releaseDelivered(callIt, git, { work, ...opts })), null, 2));
           return;
         }
         const tests: string[] = [];
@@ -875,7 +878,7 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
         if (args.length) throw new Error(`kolab work deliver [<work>] [--submit] [--pr <url>] [--test <url|summary>]… [--check <spec address>=passed|failed]… [--note <text>] [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]: unknown ${args.join(' ')}`);
         result = await deliverWork(callIt, git, { work, ...opts });
       }
-      console.log(JSON.stringify(result, null, 2));
+      console.log(JSON.stringify(kolabHints(result), null, 2));
     } finally {
       stored?.releaseLock();
       await client.close();
@@ -901,7 +904,8 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
       case 'instructions': {
         if (rest[0] !== undefined && rest[0] !== 'reviewer') throw new Error(`kolab instructions [reviewer]: no instructions "${rest[0]}"`);
         const p = await client.getPrompt({ name: rest[0] === 'reviewer' ? 'konjir_reviewer_instructions' : 'konjir_operating_instructions' });
-        result = p.messages.map((m) => (m.content.type === 'text' ? m.content.text : '')).join('\n'); break;
+        // Kolab's instructions name the command a shell runs: said as kolab says it (words.ts).
+        result = kolabWords(p.messages.map((m) => (m.content.type === 'text' ? m.content.text : '')).join('\n')); break;
       }
       case 'resolve': result = await call(client, 'resolve', { address: rest[0] }); break;
       case 'read': result = await call(client, 'read_node', { node: rest[0], ...(rest[1] ? { version: Number(rest[1]) } : {}) }); break;
@@ -910,9 +914,12 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
       default: {
         const verb = { stale: 'list_stale', queries: 'list_queries', read: 'read_node' }[cmd] ?? cmd;
         result = await call(client, verb, parseKv(rest));
+        // Kolab's instructions and playbooks, however asked for, name the command as kolab says it (words.ts).
+        if (verb === 'instructions' && typeof result === 'string') result = kolabWords(result);
       }
     }
-    console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
+    // A verb's next step, as Kolab says it, in kolab's words (words.ts); the rest is the kolab's own content.
+    console.log(typeof result === 'string' ? result : JSON.stringify(kolabHints(result), null, 2));
   } finally {
     stored?.releaseLock();
     await client.close();
