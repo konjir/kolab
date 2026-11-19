@@ -51,6 +51,16 @@ export const REMOVE_AGENT_TOOL = 'konjir_remove_agent';
 /** The client's name on Kolab's sign-in page. */
 export const CLIENT_NAME = 'konnect';
 
+// The published build (scripts/bundle.mjs) defines this as the package's version.
+declare const KONNECT_VERSION: string | undefined;
+
+/**
+ * Who konnect says it is as it connects (MCP's clientInfo), which Kolab logs (event mcp_client):
+ * its own version, so how many still run each one can be counted. Up to 0.8.0 it always said
+ * 0.1.0. Its name stays `konnect`.
+ */
+export const CLIENT_INFO = { name: CLIENT_NAME, version: typeof KONNECT_VERSION === 'string' ? KONNECT_VERSION : '0.0.0-source' };
+
 /** At most this many pages, or rounds of unread messages, in one command. */
 const MAX_ROUNDS = 50;
 /** Kolab's read tools read at most this many at a time (MESSAGES_AT_ONCE). */
@@ -102,7 +112,7 @@ export class TeamClient {
     if (!login.signedIn) {
       throw new SignInError(as.kind === 'person' ? `you aren't logged in to team ${team}: run konnect login ${team}` : `agent ${as.label} has no login to team ${team} on this machine: ${renewAdvice(team, as)}`);
     }
-    const mcp = new Client({ name: 'konnect', version: '0.1.0' }, { versionNegotiation: { mode: 'auto' } });
+    const mcp = new Client(CLIENT_INFO,{ versionNegotiation: { mode: 'auto' } });
     try {
       await mcp.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: login, fetch: login.fetch, onInsufficientScope: 'throw' }));
     } catch (e) {
