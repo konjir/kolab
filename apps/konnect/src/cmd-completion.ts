@@ -21,7 +21,7 @@ import { agentFile, configDir, teamsAt } from './teams.js';
 const TOP = ['status', 'send', 'receive', 'history', 'watch', 'login', 'logout', 'channel', 'team', 'agent', 'lease', 'host', 'doctor', 'completion'];
 const VERBS: Record<string, string[]> = {
   channel: ['list', 'create', 'follow', 'unfollow'],
-  team: ['list', 'create', 'invite', 'remove', 'leave'],
+  team: ['list', 'create', 'invite', 'remove', 'leave', 'archive', 'delete'],
   agent: ['list', 'add', 'run', 'attach', 'stop', 'remove'],
   lease: ['list', 'claim', 'release', 'break', 'run'],
   host: ['list', 'run', 'pair', 'stop'],
@@ -129,6 +129,7 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
       : cmd === 'agent' && verb === 'run' ? ['--act-for', '--wake-on', '--system-prompt', '--background', '--count', '--on']
       : cmd === 'agent' && verb === 'stop' ? ['--on']
       : cmd === 'host' && verb === 'run' ? ['--background', '--new-code']
+      : cmd === 'team' && verb === 'delete' ? ['--yes']
       : cmd === 'agent' && verb === 'add' ? ['--act-for', '--wake-on', '--system-prompt']
       : cmd === 'lease' && (verb === 'claim' || verb === 'run') ? ['--for', '--wait'] : [];
     return [...own, ...GLOBAL];
@@ -137,7 +138,7 @@ export async function candidates(ctx: Ctx, words: string[]): Promise<string[]> {
   if (VERBS[cmd] && pos.length === 1) return VERBS[cmd];
   if (cmd === 'completion' && pos.length === 1) return Object.keys(SCRIPTS);
   if ((cmd === 'login' || cmd === 'logout') && pos.length === 1) return teamsAt(ctx.url, ctx.env);
-  if (cmd === 'team' && verb === 'leave' && pos.length === 2) return teamsAt(ctx.url, ctx.env);
+  if (cmd === 'team' && ['leave', 'archive', 'delete'].includes(verb) && pos.length === 2) return teamsAt(ctx.url, ctx.env);
   if (cmd === 'agent' && ['run', 'attach', 'stop', 'remove', 'add'].includes(verb) && pos.length === 2) return agentsHere(ctx);
   if (cmd === 'agent' && verb === 'run' && pos.length === 3) return [...HARNESSES];
   if (['send', 'receive', 'history', 'watch'].includes(cmd) && pos.length === 1) {

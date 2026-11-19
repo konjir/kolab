@@ -157,6 +157,8 @@ export const AUDIT_ACTIONS = [
   'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
   // A host ended by its owner (migration 0055): its row and requests go, and this says so.
   'host.ended',
+  // A kolab erased by its owner (migration 0056): this row, and its grants' grant.removed rows, still name it.
+  'kolab.erased',
 ] as const;
 export type AuditAction = typeof AUDIT_ACTIONS[number];
 /** One row of the audit log: what was done, in which kolab if any, to whom, by whom and when. */

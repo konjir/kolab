@@ -31,6 +31,8 @@ export interface Args {
   newCode: boolean;
   /** --on: agent run and agent stop, on another machine of the person's that is hosting. */
   on?: string;
+  /** --yes: team delete, which can't be undone. */
+  yes: boolean;
   /** Plumbing: konnect logout --forget. */
   forget: boolean;
   /** Names from 0.1.0, still read for one release (aliases in konnect.ts). */
@@ -45,10 +47,10 @@ export function duration(given: string, option = '--wait'): number {
 }
 
 /** konnect's own options, as written. */
-const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--background', '--count', '--on', '--new-code', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
+const OPTIONS = new Set(['--json', '--help', '-h', '--version', '-V', '--team', '--agent', '--limit', '-n', '--wait', '--for', '--wake-on', '--act-for', '--system-prompt', '--background', '--count', '--on', '--new-code', '--yes', '--forget', '--history', '--list', '--no-start', '--withdraw', '--listen', '--reply']);
 
 export function parseArgs(argv: string[]): Args {
-  const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], background: false, newCode: false, forget: false };
+  const a: Args = { words: [], json: false, help: false, version: false, wakeOn: [], background: false, newCode: false, yes: false, forget: false };
   const value = (i: number, what: string) => {
     const v = argv[i + 1];
     if (v === undefined || v.startsWith('--')) throw new UsageError(`${argv[i]} needs ${what}`);
@@ -102,6 +104,7 @@ export function parseArgs(argv: string[]): Args {
     }
     if (w === '--on') { a.on = value(i, 'the name of a machine of yours that is hosting'); i++; continue; }
     if (w === '--new-code') { a.newCode = true; continue; }
+    if (w === '--yes') { a.yes = true; continue; }
     if (w === '--forget') { a.forget = true; continue; }
     // 0.1.0's options.
     if (w === '--history') { a.history = true; continue; }

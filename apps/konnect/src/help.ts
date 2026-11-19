@@ -28,7 +28,11 @@ const TEAM = `  konnect team list                 the people, each one's agents,
                                     invite people by GitHub username (the team's owner)
   konnect team remove <person>      take a person and their agents off the team, or withdraw their
                                     invitation (the team's owner)
-  konnect team leave <team>         leave the team named, and your agents with you`;
+  konnect team leave <team>         leave the team named, and your agents with you
+  konnect team archive <team>       close the team named for everyone, keeping all of it; a Konjir
+                                    admin can reopen it (the team's owner)
+  konnect team delete <team> --yes  delete the team named and everything in it, for everyone, for
+                                    good (the team's owner)`;
 
 const AGENT = `  konnect agent list                your agents in the team, what each is doing, which are set up here
   konnect agent add <name>...       add agents of yours, and print each one's entry for the harness it runs in

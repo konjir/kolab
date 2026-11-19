@@ -14,7 +14,7 @@ import { exitOf, fails, machine } from './team.js';
 
 const NOWHERE = 'http://127.0.0.1:9/mcp';
 /** parseArgs's answer when nothing but `words` was given. */
-const none = { json: false, help: false, version: false, wakeOn: [], background: false, newCode: false, forget: false };
+const none = { json: false, help: false, version: false, wakeOn: [], background: false, newCode: false, yes: false, forget: false };
 
 test('options may go anywhere, and -- ends them; after `send <to>` every word is the message as written', () => {
   expect(parseArgs(['--json', 'send', '--team', 'hub', '@ann', 'hi'])).toStrictEqual({ ...none, json: true, team: 'hub', words: ['send', '@ann', 'hi'] });
@@ -95,7 +95,7 @@ test('help, asked for, is printed and exits 0: konnect --help, help <noun>, <com
   expect(await m.run(['status', '--help'])).toMatch(/^ {2}konnect status {20}what is unread for you; changes nothing\n\n {2}--team/);
   for (const line of ['konnect status', 'konnect send <to> [<message>]', 'konnect receive [<from>]', 'konnect history <of>', 'konnect login [<team>]', 'konnect logout [<team>]',
     'konnect channel list', 'konnect channel create <name>', 'konnect channel follow <name>', 'konnect channel unfollow <name>',
-    'konnect team list', 'konnect team create <name>', 'konnect team invite <github-user>...', 'konnect team remove <person>', 'konnect team leave <team>',
+    'konnect team list', 'konnect team create <name>', 'konnect team invite <github-user>...', 'konnect team remove <person>', 'konnect team leave <team>', 'konnect team archive <team>', 'konnect team delete <team> --yes',
     'konnect agent list', 'konnect agent add <name>', 'konnect agent run <name> <harness> [<argument>...]', 'konnect agent remove <name>',
     '--wake-on <channel>', '--system-prompt <text>', '--agent <name>', '-V, --version',
     'Exit status: 0 done, 1 failed, 2 the command line was wrong, 3 not logged in, 4 refused,\n5 --wait ran out.']) expect(USAGE).toContain(line);
@@ -113,7 +113,7 @@ test('an unknown command, verb or option, or one an option doesn\'t belong to, i
   expect(await usage(['channel', 'new2'])).toBe('konnect channel has no new2: it is list, create, follow or unfollow');
   expect(await usage(['agent', 'start', 'x'])).toBe('konnect agent has no start: it is list, add, run, attach, stop or remove');
   // 0.1.0's `konnect team <name>` is gone: konnect says which of the two it meant.
-  expect(await usage(['team', 'hub'])).toBe('konnect team has no hub: it is list, create, invite, remove or leave. To log in to a team: konnect login hub. To create one: konnect team create hub');
+  expect(await usage(['team', 'hub'])).toBe('konnect team has no hub: it is list, create, invite, remove, leave, archive or delete. To log in to a team: konnect login hub. To create one: konnect team create hub');
   expect(await usage(['status', 'now'])).toBe('konnect status: unknown now');
   expect(await usage(['mcp', 'serve'])).toBe('konnect mcp: unknown serve');
   expect(await usage(['status', '-n', '5'])).toBe('konnect status takes no -n: konnect receive and konnect history do');

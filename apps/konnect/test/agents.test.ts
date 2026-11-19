@@ -79,8 +79,47 @@ test('the owner invites by GitHub username; the teammate runs konnect login with
   expect(await fails(bo.run(['status']))).toBe('you aren\'t logged in to a team: run konnect login, or konnect team create <name>');
   expect(await ann.run(['team', 'list'])).not.toMatch(/@bo/);
   // The owner can't leave.
-  expect(await fails(ann.run(['team', 'leave', 'hub']))).toBe('you own team hub, so you can\'t leave it');
+  expect(await fails(ann.run(['team', 'leave', 'hub']))).toBe('you own team hub, so you can\'t leave it: konnect team archive hub closes it, or konnect team delete hub deletes it');
   expect(await exitOf(ann.run(['team', 'leave', 'hub']))).toBe(4);
+});
+
+test('the owner deletes a team, named and with --yes: everything in it goes, everyone is logged out of it, and its name is free; nobody else can', async () => {
+  const { server, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  expect(await bo.run(['send', '#general', 'hello'])).toBe('Sent to #general.');
+  expect(await ann.run(['send', '#general', 'hi bo'])).toBe('Sent to #general.');
+
+  expect(await fails(ann.run(['team', 'delete']))).toBe('konnect team delete <team>: name the team to delete');
+  const asked = await fails(ann.run(['team', 'delete', 'hub']));
+  expect(asked).toMatch(/^konnect team delete hub deletes team hub and everything in it, for everyone, and it can't be undone: /);
+  expect(asked).toContain('\nTo delete it: konnect team delete hub --yes\nTo close it and keep everything instead: konnect team archive hub');
+  expect(await exitOf(ann.run(['team', 'delete', 'hub']))).toBe(2);
+  expect(await fails(ann.run(['team', 'list', '--yes']))).toBe('konnect team list takes no --yes: only konnect team delete does');
+  expect(await fails(bo.run(['team', 'delete', 'hub', '--yes']))).toBe('only team hub\'s owner can delete it');
+  expect(await fails(bo.run(['team', 'archive', 'hub']))).toBe('only team hub\'s owner can archive it');
+  expect(await fails(bo.run(['--agent', 'x', 'team', 'delete', 'hub', '--yes']))).toMatch(/team delete/);
+  // Refused, and bo is still there and still logged in.
+  expect(await bo.run(['receive', '#general'])).toMatch(/hi bo$/);
+
+  expect(await ann.run(['team', 'delete', 'hub', '--yes'])).toMatch(/^Deleted team hub and everything in it \(\d+ messages?\)\. \d+ sessions? ended, and its name is free again\. konnect dropped its logins to it here\.$/);
+  expect(await fails(ann.run(['status']))).toBe('you aren\'t logged in to a team: run konnect login, or konnect team create <name>');
+  // Bo's login to it is revoked with it.
+  expect(await exitOf(bo.run(['receive', '#general']))).toBe(3);
+});
+
+test('the owner archives a team, named: everyone is logged out of it, and it is kept', async () => {
+  const { server, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  expect(await fails(ann.run(['team', 'archive']))).toBe('konnect team archive <team>: name the team to archive');
+  expect(await ann.run(['team', 'archive', 'hub', '--json'])).toMatch(/"archived": true/);
+  expect(await fails(ann.run(['status']))).toBe('you aren\'t logged in to a team: run konnect login, or konnect team create <name>');
+  expect(await exitOf(bo.run(['receive', '#general']))).toBe(3);
 });
 
 test('konnect agent run <name> claude: the agent added and logged in on Kolab\'s setup page, its .mcp.json entry with no token and with its system prompt\'s parts, and Claude Code started as the agent', async () => {

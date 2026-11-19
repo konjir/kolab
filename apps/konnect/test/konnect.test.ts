@@ -273,7 +273,7 @@ test('the names 0.1.0 used still work for one release, each saying its new name 
   expect(await exitOf(bo.run(['leave']))).toBe(2);
   expect(await bo.run(['team', 'list'])).toMatch(/^@bo \(you\)/m);
   // konnect team <name> isn't kept: it says the two commands it could have meant (2).
-  expect(await fails(ann.run(['team', 'hub']))).toBe('konnect team has no hub: it is list, create, invite, remove or leave. To log in to a team: konnect login hub. To create one: konnect team create hub');
+  expect(await fails(ann.run(['team', 'hub']))).toBe('konnect team has no hub: it is list, create, invite, remove, leave, archive or delete. To log in to a team: konnect login hub. To create one: konnect team create hub');
   expect(ann.err).toStrictEqual([]);
 });
 

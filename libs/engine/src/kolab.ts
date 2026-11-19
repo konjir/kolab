@@ -447,6 +447,17 @@ const TEAM_NAME = /^[a-z0-9][a-z0-9-]*$/;
  * open on access that a concurrent change is taking away without that change ending it.
  */
 const ACCESS_LOCK = 0x4b4a0006;
+/**
+ * What erasing a kolab removes besides its grants, oauth codes and sessions (eraseOwnKolab,
+ * migration 0056), each by kolab_id, in this order: each before what it refers to. A host's
+ * requests go with it (on delete cascade).
+ */
+const ERASED_WITH_KOLAB = [
+  'kolab_host', 'kolab_lease', 'kolab_invitation', 'kolab_invite',
+  'channel_mention', 'channel_read', 'channel_follow', 'channel_message', 'channel',
+  'message_run', 'message_receipt', 'message', 'kolab_chat_agent', 'kolab_chat',
+  'kolab_policy', 'node_name', 'outbox',
+] as const;
 
 /** An actor id: letters, digits, '.', '_', '-' and '@', starting with a letter or digit (actor_id_check). */
 const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
@@ -3639,6 +3650,80 @@ export class Kolab {
       }
     });
     return { left: s.kolab, agents: dropped.agents, ended: r.ended + dropped.ended };
+  }
+
+  /**
+   * The session's person, when they own the session's kolab and name it as `named`: a kolab is
+   * archived or erased only by naming it, never by where its owner happens to stand.
+   */
+  private async ownKolabSession(sessionId: string, named: unknown, what: 'archive' | 'erase') {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a kolab's owner can ${what} it, from their own session`);
+    if (typeof named !== 'string' || named !== s.kolab) throw new TenancyError(`name the kolab to ${what}: this session is in kolab ${s.kolab}, and it can ${what} only that one`);
+    if (!(await ownsKolab(this.db, s.actor_id, s.kolab))) throw new AccessError(`only the owner of kolab ${s.kolab} can ${what} it`);
+    return s;
+  }
+
+  /**
+   * The owner archives their own kolab (konjir_archive_kolab), named, from a person's session there:
+   * as an admin's archive does (D52), its sessions end, this one too, and its data is kept; an
+   * admin can unarchive it.
+   */
+  async archiveOwnKolab(sessionId: string, named: string): Promise<{ archived: string; ended: number }> {
+    const s = await this.ownKolabSession(sessionId, named, 'archive');
+    const r = await this.setArchived({ kolab: s.kolab }, true, s.actor_id);
+    return { archived: s.kolab, ended: r.ended };
+  }
+
+  /**
+   * The owner erases their own kolab (konjir_erase_kolab), named, from a person's session there,
+   * when it holds no documents (migration 0056): its messages and channels, its members' grants,
+   * invitations, leases and hosts, and its sessions go, for good, and its name is free again. In one
+   * transaction, under the access lock and the kolab's row: every session there ends, their
+   * streams told (D41); every sign-in scoped to it is revoked; each grant's removal and the erase
+   * itself are audited. A kolab holding anything else (its foreign keys say so) is refused, and
+   * nothing changes.
+   */
+  async eraseOwnKolab(sessionId: string, named: string): Promise<{ erased: string; ended: number; revoked: number; messages: number }> {
+    const s = await this.ownKolabSession(sessionId, named, 'erase');
+    const k = s.kolab;
+    const by = s.actor_id;
+    const keep = `kolab ${k} holds documents, so it can't be erased: archive it instead, which keeps them`;
+    return this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      // Its row first: a write into the kolab that comes after waits on it, then finds it gone.
+      if (!(await tx.query(`select 1 from kolab where id = $1 and archived_at is null for update`, [k])).rows.length) {
+        throw new TenancyError(`kolab ${k} is archived, so it can't be erased here`);
+      }
+      if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
+        throw new RoleError('no open session for that token');
+      }
+      if (!(await ownsKolab(tx, by, k))) throw new AccessError(`only the owner of kolab ${k} can erase it`);
+      if ((await tx.query(`select 1 from node where kolab_id = $1 limit 1`, [k])).rows.length) throw new TenancyError(keep);
+      await tx.query(`select set_config('kj.erasing', $1, true)`, [k]);
+      const ended = await tx.query<{ id: string }>(
+        `update session set ended_at = now(), ended_by = $2 where kolab_id = $1 and ended_at is null returning id`, [k, by]);
+      for (const { id } of ended.rows) await signal({ session: 'ended', id });
+      const revoked = (await tx.query(
+        `update oauth_grant set revoked_at = now(), revoked_by = $2
+          where revoked_at is null and position($1 in ' ' || scope || ' ') > 0 returning id`, [` kolab:${k} `, by])).rows.length;
+      const grants = await tx.query<{ subject: string }>(`select coalesce(user_id, agent_id, team_id) as subject from kolab_grant where kolab_id = $1`, [k]);
+      for (const g of grants.rows) await audit(tx, by, 'grant.removed', { kolab: k, subject: g.subject, detail: { erased: true } });
+      await tx.query(`delete from kolab_grant where kolab_id = $1`, [k]);
+      const messages = Number((await tx.query<{ n: string }>(
+        `select (select count(*) from message where kolab_id = $1) + (select count(*) from channel_message where kolab_id = $1) as n`, [k])).rows[0].n);
+      for (const t of ERASED_WITH_KOLAB) await tx.query(`delete from ${t} where kolab_id = $1`, [k]);
+      await tx.query(`delete from oauth_code where kolab = $1`, [k]);
+      await tx.query(`delete from session where kolab_id = $1`, [k]);
+      await audit(tx, by, 'kolab.erased', { kolab: k, subject: k, detail: { messages, sessions: ended.rows.length, grants: grants.rows.length } });
+      await tx.query(`delete from kolab where id = $1`, [k]);
+      log.info(`kolab ${k} erased by ${by}`, { event: 'erased', target: 'kolab', name: k, actor: by, kolab: k });
+      return { erased: k, ended: ended.rows.length, revoked, messages };
+    }).catch((e: unknown) => {
+      // Something the erase doesn't remove still refers to the kolab: it holds more than messages.
+      if ((e as { code?: string })?.code === '23503') throw new TenancyError(keep);
+      throw e;
+    });
   }
 
   /**

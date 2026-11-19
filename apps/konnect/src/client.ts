@@ -334,6 +334,12 @@ export class TeamClient {
   /** konjir_end_host: forgets a machine of the person's; with `instance`, only while it is still that one. */
   endHost(name: string, instance?: string) { return this.newer<{ ended: boolean }>('konjir_end_host', { name, ...(instance ? { instance } : {}) }, 'start agents on another machine'); }
 
+  /** konjir_archive_kolab: the owner archives the team, named: everything is kept, and a Konjir admin can unarchive it. */
+  archiveTeam(team: string) { return this.newer<{ archived: string; ended: number }>('konjir_archive_kolab', { kolab: team }, 'archive a team'); }
+
+  /** konjir_erase_kolab: the owner deletes the team, named, and everything in it, for good. */
+  deleteTeam(team: string) { return this.newer<{ erased: string; ended: number; revoked: number; messages: number }>('konjir_erase_kolab', { kolab: team }, 'delete a team'); }
+
   /** konjir_leave_kolab: the person leaves the team, and their agents with them. */
   leave() { return this.call<{ left: string; agents: string[]; ended: number }>('konjir_leave_kolab'); }
 }
