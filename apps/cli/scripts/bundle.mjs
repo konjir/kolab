@@ -1,16 +1,16 @@
-// Bundles the published konjir into one file, konjir.mjs (package.mjs runs this with the pinned Bun):
+// Bundles the published kolab into one file, kolab.mjs (package.mjs runs this with the pinned Bun):
 //
-//   bun scripts/bundle.mjs <out dir> <version>   -> <out dir>/konjir.mjs and <out dir>/.metafile.json
+//   bun scripts/bundle.mjs <out dir> <version>   -> <out dir>/kolab.mjs and <out dir>/.metafile.json
 //
 // The npm package ships that file, and each binary is compiled from it, so both carry the same code.
 //
 // The bundle resolves nothing when it runs. A binary resolves what its bundle leaves out from the
-// folder it is run in, and Claude Code starts `konjir bridge` in the project: a repository that
+// folder it is run in, and Claude Code starts `kolab bridge` in the project: a repository that
 // committed node_modules/@nestjs/websockets, or an @nestjs/core/package.json that is a folder of
 // code, would run its own code as the person, with the agent's sign-in in reach (W9.5; the reviews
 // of #144). So:
 //
-// - Packages the published konjir doesn't carry are bundled as ABSENT: a module that throws, as a
+// - Packages the published kolab doesn't carry are bundled as ABSENT: a module that throws, as a
 //   missing one does.
 // - The bundle's own `require`, which Bun leaves for what it couldn't inline (Node's built-ins, and
 //   any name computed as it runs, such as @onivoro/server-mcp's look for @nestjs/core/package.json
@@ -18,8 +18,8 @@
 // - load-esm, NestJS's way to `import()` a name computed as it runs, is bundled as one that refuses.
 // - The build fails if the finished file still has a require of its own or a computed import().
 //
-//   @konjir/server                 Kolab itself, with the database: only `konjir serve` loads it,
-//                                  and the published konjir has no serve (the CLI says so)
+//   @konjir/server                 Kolab itself, with the database: only `kolab serve` loads it,
+//                                  and the published kolab has no serve (the CLI says so)
 //   @nestjs/microservices, @nestjs/websockets, class-transformer, class-validator
 //                                  NestJS loads each only if it is installed, and passes over one
 //                                  that isn't; none is installed here and the bridge wants none
@@ -32,7 +32,7 @@ const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const [out, version] = process.argv.slice(2);
 if (!out || !version) throw new Error('usage: bun scripts/bundle.mjs <out dir> <version>');
 /**
- * The hosted Kolab, a published konjir's default (API25): src/cli.ts's HOSTED_URL. The build defines
+ * The hosted Kolab, a published kolab's default (API25): src/cli.ts's HOSTED_URL. The build defines
  * KONJIR_DEFAULT_URL as it, so the npm package and the binaries talk to it with no --url, KONJIR_URL
  * or project file, where a checkout, which can serve, talks to the local Kolab.
  */
@@ -46,19 +46,19 @@ const absent = {
     // Node's own words and codes for a missing package, which the CLI's `serve` and NestJS each read.
     build.onLoad({ filter: /.*/, namespace: 'absent' }, (args) => ({
       loader: 'js',
-      contents: `throw Object.assign(new Error(${JSON.stringify(`Cannot find package '${args.path}': the published konjir doesn't carry it`)}), { code: ${JSON.stringify(args.path.startsWith('@konjir/') ? 'ERR_MODULE_NOT_FOUND' : 'MODULE_NOT_FOUND')} });`,
+      contents: `throw Object.assign(new Error(${JSON.stringify(`Cannot find package '${args.path}': the published kolab doesn't carry it`)}), { code: ${JSON.stringify(args.path.startsWith('@konjir/') ? 'ERR_MODULE_NOT_FOUND' : 'MODULE_NOT_FOUND')} });`,
     }));
   },
 };
 
-/** NestJS's `loadEsm(name)`, an import() of a name computed as it runs: the published konjir imports none. */
+/** NestJS's `loadEsm(name)`, an import() of a name computed as it runs: the published kolab imports none. */
 const noImport = {
   name: 'no-import',
   setup(build) {
     build.onResolve({ filter: /^load-esm$/ }, (args) => ({ path: args.path, namespace: 'no-import' }));
     build.onLoad({ filter: /.*/, namespace: 'no-import' }, () => ({
       loader: 'js',
-      contents: 'exports.loadEsm = (name) => Promise.reject(Object.assign(new Error(`Cannot find package \'${name}\': the published konjir doesn\'t carry it`), { code: \'ERR_MODULE_NOT_FOUND\' }));',
+      contents: 'exports.loadEsm = (name) => Promise.reject(Object.assign(new Error(`Cannot find package \'${name}\': the published kolab doesn\'t carry it`), { code: \'ERR_MODULE_NOT_FOUND\' }));',
     }));
   },
 };
@@ -70,7 +70,7 @@ const built = await Bun.build({
   entrypoints: [join(app, 'src/main.ts')],
   root: app,
   outdir: out,
-  naming: 'konjir.mjs',
+  naming: 'kolab.mjs',
   target: 'node',
   format: 'esm',
   conditions: ['@konjir/source'],
@@ -81,7 +81,7 @@ const built = await Bun.build({
 });
 for (const log of built.logs) console.error(String(log));
 if (!built.success || built.outputs.length !== 1) throw new Error(`the bundle is not one file: ${built.outputs.map((o) => o.path).join(', ') || 'nothing was written'}`);
-const file = join(out, 'konjir.mjs');
+const file = join(out, 'kolab.mjs');
 // Its require loads Node's built-ins alone, and it imports no name computed as it runs (tools/npm-bundle.mjs).
-writeFileSync(file, guardBundle(readFileSync(file, 'utf8'), 'konjir'));
+writeFileSync(file, guardBundle(readFileSync(file, 'utf8'), 'kolab'));
 writeFileSync(join(out, '.metafile.json'), JSON.stringify(built.metafile));

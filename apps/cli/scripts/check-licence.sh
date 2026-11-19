@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Checks that a packed konjir carries its licence, and only Apache-2.0 code of this repository:
-# konjir is Apache-2.0 (D63), and the rest of the repository is FSL-1.1-ALv2 (D64).
+# Checks that a packed kolab carries its licence, and only Apache-2.0 code of this repository:
+# kolab is Apache-2.0 (D63), and the rest of the repository is FSL-1.1-ALv2 (D64).
 #
 #   apps/cli/scripts/check-licence.sh <konjir-x.y.z.tgz> [<binaries dir>]
 #
@@ -8,7 +8,7 @@
 # THIRD-PARTY-NOTICES.md, and its package.json must declare "license": "Apache-2.0". The binaries
 # directory, if given, must hold the same LICENSE and a THIRD-PARTY-NOTICES.md beside them.
 #
-# The only first-party sources konjir may bundle are apps/cli's, libs/login's, libs/brand's and
+# The only first-party sources kolab may bundle are apps/cli's, libs/login's, libs/brand's and
 # apps/channel-bridge's (W9.5), the four Apache-2.0 packages; package.mjs fails the build on any
 # other. Here, each must still declare Apache-2.0, the other three must carry apps/cli's LICENSE,
 # and the notices (every package the bundle
@@ -34,7 +34,7 @@ for pkg in apps/cli libs/login libs/brand apps/channel-bridge; do
   [ "$(declared <"$repo/$pkg/package.json")" = Apache-2.0 ] || fail "$pkg/package.json doesn't declare Apache-2.0"
 done
 files=$(tar -tzf "$tarball")
-for f in package/LICENSE package/THIRD-PARTY-NOTICES.md package/package.json package/konjir.mjs; do
+for f in package/LICENSE package/THIRD-PARTY-NOTICES.md package/package.json package/kolab.mjs; do
   grep -qx "$f" <<<"$files" || fail "$tarball has no $f"
 done
 tar -xOzf "$tarball" package/LICENSE | cmp -s - "$licence" || fail "$tarball's LICENSE isn't apps/cli/LICENSE"

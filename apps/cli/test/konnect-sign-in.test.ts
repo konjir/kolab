@@ -208,7 +208,7 @@ test('signInToTeam with an intent: join never makes a team, create never joins o
   expect(await kolab.access(agent, 'acme')).toMatchObject({ level: null });
 }, 120_000);
 
-test('konjir_invite needs GitHub sign-in on the Kolab; konjir login is as it was', async () => {
+test('konjir_invite needs GitHub sign-in on the Kolab; kolab login is as it was', async () => {
   const kolab = await openKolab();
   const server = await startServer({ adminToken: 'admin', kolab, webRoot: null });
   closeAtEnd(server);

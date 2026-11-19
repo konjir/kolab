@@ -1,4 +1,4 @@
-// The review settings W1.7 retired (REV5): konjir serve refuses one that asks for a model reviewer,
+// The review settings W1.7 retired (REV5): kolab serve refuses one that asks for a model reviewer,
 // and still starts with what the deployed boot script writes.
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

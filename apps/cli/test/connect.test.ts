@@ -1,4 +1,4 @@
-// `konjir connect` (W3.7, D59): one command connects a harness to a kolab, one agent per entry.
+// `kolab connect` (W3.7, D59): one command connects a harness to a kolab, one agent per entry.
 // The config writing for both harnesses (merging, refusing to overwrite, --force, the diff,
 // OpenCode's JSON with comments, and no token anywhere), and the done-when scenario: two OpenCode
 // entries, product and engineer, each signing in as its own agent against a local Kolab with the
@@ -29,7 +29,7 @@ const jsonc = { parse: (text: string) => { const errors: ParseError[] = []; cons
 const ours = (text: string) => valueOf(parseTree(text));
 const scratch = () => mkdtempSync(join(tmpdir(), 'konjir-connect-'));
 
-// ---- the agents konjir connect is asked for ----
+// ---- the agents kolab connect is asked for ----
 
 test('--agent <label>[:<role>]: by default product and engineer; a role\'s name is its own role; anything else says its role', () => {
   expect(parseAgents([])).toStrictEqual([{ label: 'product', role: 'product' }, { label: 'engineer', role: 'engineer' }]);
@@ -97,11 +97,11 @@ test('OpenCode: merged into a file with comments, trailing commas, tabs and othe
 test('OpenCode: an entry already there is refused without --force, and replaced in place with it; a file OpenCode couldn\'t read is never touched', () => {
   const before = '{\n  "mcp": {\n    "konjir-product": { "type": "remote", "url": "https://old.example/mcp" },\n    "other": { "type": "local", "command": ["x"] }\n  }\n}\n';
   expect(() => mergeOpencode('opencode.json', before, [entry('product', 'product'), entry('engineer', 'engineer')], false))
-    .toThrow(/opencode.json already has konjir-product. konjir connect won't overwrite it: pass --force to replace it/);
+    .toThrow(/opencode.json already has konjir-product. kolab connect won't overwrite it: pass --force to replace it/);
   const forced = jsonc.parse(mergeOpencode('opencode.json', before, [entry('product', 'product')], true)) as { mcp: Record<string, { url: string }> };
   expect(forced.mcp['konjir-product'].url).toBe(URL_);
   expect(Object.keys(forced.mcp)).toStrictEqual(['konjir-product', 'other']);
-  expect(() => mergeOpencode('opencode.json', '{ "mcp": { ', [entry('product', 'product')], false)).toThrow(/isn't JSON that OpenCode reads \(.+ on line 1\), so konjir connect won't touch it/);
+  expect(() => mergeOpencode('opencode.json', '{ "mcp": { ', [entry('product', 'product')], false)).toThrow(/isn't JSON that OpenCode reads \(.+ on line 1\), so kolab connect won't touch it/);
   expect(() => mergeOpencode('opencode.json', '[1]', [entry('product', 'product')], false)).toThrow(/not a JSON object/);
   expect(() => mergeOpencode('opencode.json', '{ "mcp": [] }', [entry('product', 'product')], false)).toThrow(/its "mcp" is not an object/);
 });
@@ -189,8 +189,8 @@ test('Claude Code: .mcp.json exactly as `claude mcp add --scope project --transp
   const merged = JSON.parse(mergeClaude('.mcp.json', before, [entry('engineer', 'engineer')], false));
   expect(Object.keys(merged.mcpServers)).toStrictEqual(['sentry', 'konjir-engineer']);
   expect(merged.other).toBe(1);
-  expect(() => mergeClaude('.mcp.json', fresh, [entry('product', 'engineer')], false)).toThrow(/already has konjir-product. konjir connect won't overwrite it/);
-  // An entry that already says exactly this (konjir connect run again) isn't replaced: it passes, unchanged.
+  expect(() => mergeClaude('.mcp.json', fresh, [entry('product', 'engineer')], false)).toThrow(/already has konjir-product. kolab connect won't overwrite it/);
+  // An entry that already says exactly this (kolab connect run again) isn't replaced: it passes, unchanged.
   expect(mergeClaude('.mcp.json', fresh, [entry('product', 'product')], false)).toBe(fresh);
   expect(JSON.parse(mergeClaude('.mcp.json', fresh, [entry('product', 'engineer')], true)).mcpServers['konjir-product'].oauth.scopes).toBe('konjir kolab:anns role:engineer agent:ann-product');
   expect(() => mergeClaude('.mcp.json', '{ // no', [entry('product', 'product')], false)).toThrow(/isn't JSON/);
@@ -317,7 +317,7 @@ async function local() {
 }
 
 /**
- * konjir connect's world: the harnesses as `run`, and the setup through the real @konjir/login
+ * kolab connect's world: the harnesses as `run`, and the setup through the real @konjir/login
  * setup(), with Ann's browser: she signs in, and on Kolab's setup page clicks `decision` (Allow by
  * default). `pages` gets each setup page as it arrived, and `opened` each URL the browser was sent to.
  */
@@ -360,7 +360,7 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
     return signIn(cwd, args[2]);
   }, { pages: setups });
 
-  // konjir connect opencode --kolab anns: Ann, new to Kolab, on one page; nothing to choose there.
+  // kolab connect opencode --kolab anns: Ann, new to Kolab, on one page; nothing to choose there.
   const entries = await connectHarness(options(server, project), io);
   expect(setups).toHaveLength(1);
   expect(setups[0]).not.toContain('type="radio"');
@@ -370,7 +370,7 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   expect(entries.map((e) => [e.name, e.agent, e.role, e.kolab])).toStrictEqual([['konjir-product', 'ann-product', 'product', 'anns'], ['konjir-engineer', 'ann-engineer', 'engineer', 'anns']]);
   // The plan came first, with the diff, and asked nothing in the terminal.
   const said = io.lines.join('\n');
-  expect(said).toContain('konjir connect opencode: kolab anns at');
+  expect(said).toContain('kolab connect opencode: kolab anns at');
   expect(said).toContain('  konjir-product  as <you>-product, product');
   // A new file in one line, not its whole diff; then the browser, said once.
   expect(said).not.toContain('--- /dev/null');
@@ -427,11 +427,11 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   // An entry that says something else is refused without --force, before any browser opens.
   writeFileSync(join(project, 'opencode.json'), text.replace('role:product agent:ann-product', 'role:engineer agent:ann-product'));
   const opened: URL[] = [];
-  expect(await rejection(connectHarness(options(server, project), world(server, idp, async () => 0, { opened })))).toMatch(/already has konjir-product. konjir connect won't overwrite it: pass --force/);
+  expect(await rejection(connectHarness(options(server, project), world(server, idp, async () => 0, { opened })))).toMatch(/already has konjir-product. kolab connect won't overwrite it: pass --force/);
   expect(opened).toStrictEqual([]);
 });
 
-test('W3.8: konjir connect claude, five agents in one go: one page, each agent signed in in its own file, as the bridge keeps it, and the claude command last', async () => {
+test('W3.8: kolab connect claude, five agents in one go: one page, each agent signed in in its own file, as the bridge keeps it, and the claude command last', async () => {
   const { kolab, idp, server } = await local();
   const project = scratch();
   const start = bridgeCommand()!;
@@ -485,8 +485,8 @@ test('W3.8: konjir connect claude, five agents in one go: one page, each agent s
   writer.releaseIdleLock();
   expect(existsSync(process.env.KONJIR_CREDENTIALS!)).toBe(false);   // the CLI's own sign-in: none, as before
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where person_id = 'ann' and actor_id = 'ann'`)).rows[0]).toStrictEqual({ n: 0 });
-  // The last lines are one konjir claude command per agent (W9.1, API24), not one session for them all.
-  expect(io.lines.slice(-entries.length - 1)).toStrictEqual([`Start each agent's own Claude Code session, one terminal each, from ${project}:`, ...entries.map((e) => `konjir claude ${e.label}`)]);
+  // The last lines are one kolab claude command per agent (W9.1, API24), not one session for them all.
+  expect(io.lines.slice(-entries.length - 1)).toStrictEqual([`Start each agent's own Claude Code session, one terminal each, from ${project}:`, ...entries.map((e) => `kolab claude ${e.label}`)]);
   expect(io.lines.join('\n')).not.toContain('claude --dangerously-load-development-channels');
   // Each starts claude with that agent's entry alone, its channel and its system prompt.
   for (const e of entries) {
@@ -521,13 +521,13 @@ test('W3.8: konjir connect claude, five agents in one go: one page, each agent s
   expect(ran).toStrictEqual([['claude', 'mcp', 'add-json', '--scope', 'user', 'konjir-writer', JSON.stringify({ type: 'stdio', command: start, args: [], env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:m5-check role:product agent:ann-writer' } })]]);
   expect(g.lines.join('\n')).toContain('Each entry signs in by itself in your browser when Claude Code first starts it');
 
-  // A konjir that is neither a checkout's nor the published one has no bridge to name: --http still works.
+  // A kolab that is neither a checkout's nor the published one has no bridge to name: --http still works.
   expect(await rejection(connectHarness(options(server, scratch(), { harness: 'claude', bridge: '' }), world(server, idp, async () => 0))))
-    .toMatch(/which the published konjir carries and a checkout of github.com\/konjir\/kolab runs from its own source, and this konjir is neither.*or pass --http/);
+    .toMatch(/which the published kolab carries and a checkout of github.com\/konjir\/kolab runs from its own source, and this kolab is neither.*or pass --http/);
   expect(await rejection(connectHarness(options(server, scratch(), { http: true }), world(server, idp, async () => 0)))).toMatch(/--http is for Claude Code/);
 });
 
-test('a kolab someone else holds: the page says so with Deny alone, and konjir connect fails saying why; nothing made or written. Denied, the same', async () => {
+test('a kolab someone else holds: the page says so with Deny alone, and kolab connect fails saying why; nothing made or written. Denied, the same', async () => {
   const { kolab, idp, server } = await local();
   await kolab.addActor('rae', { by: 'kolab' });
   await kolab.createKolab('raes', { owner: 'rae', by: 'kolab' });
@@ -552,14 +552,14 @@ test('a failure after the setup revokes the sign-ins it issued: entries that nam
   const { kolab, idp, server } = await local();
   const project = scratch();
   const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
-  // .mcp.json as konjir connect wrote it for Bob: the plan reads him from it, so nothing is refused before the browser.
+  // .mcp.json as kolab connect wrote it for Bob: the plan reads him from it, so nothing is refused before the browser.
   const bob: Entry = { name: 'konjir-pm', agent: 'bob-pm', label: 'pm', role: 'product', kolab: 'anns', url: server.url };
   const before = mergeClaude('.mcp.json', '', [bob], false, (e) => claudeBridgeEntry(e, bridgeCommand()!));
   writeFileSync(join(project, '.mcp.json'), before);
   const io = world(server, idp, async () => 0);
   // Ann signs in: her plan differs from Bob's entry, which isn't replaced without --force.
   const err = await rejection(connectHarness(options(server, project, { harness: 'claude', agents: parseAgents(['pm:product']), env }), io));
-  expect(err).toBe(`Error: ${join(project, '.mcp.json')} already has konjir-pm. konjir connect won't overwrite it: pass --force to replace it, or choose other labels with --agent. The agent's new sign-in was revoked. Run konjir connect again`);
+  expect(err).toBe(`Error: ${join(project, '.mcp.json')} already has konjir-pm. kolab connect won't overwrite it: pass --force to replace it, or choose other labels with --agent. The agent's new sign-in was revoked. Run kolab connect again`);
   expect(io.lines).toContain('  konjir-pm  as bob-pm, product');
   expect(readFileSync(join(project, '.mcp.json'), 'utf8')).toBe(before);
   expect(existsSync(agentCredentialsPath('ann-pm', env))).toBe(false);
@@ -568,17 +568,17 @@ test('a failure after the setup revokes the sign-ins it issued: entries that nam
   // --global: the files are kept, then Claude Code's own command fails. Said as it is.
   const failing = world(server, idp, async () => 1);
   const late = await rejection(connectHarness(options(server, scratch(), { harness: 'claude', global: true, agents: parseAgents(['pm:product', 'dev:engineer']), env: { ...env, HOME: scratch() } }), failing));
-  expect(late).toBe('Error: claude mcp add-json didn\'t succeed (is Claude Code installed, and claude on your PATH?). The agents\' 2 new sign-ins were revoked; 2 agents\' credentials files were written before it failed, and hold a sign-in that no longer works. Run konjir connect again');
+  expect(late).toBe('Error: claude mcp add-json didn\'t succeed (is Claude Code installed, and claude on your PATH?). The agents\' 2 new sign-ins were revoked; 2 agents\' credentials files were written before it failed, and hold a sign-in that no longer works. Run kolab connect again');
   expect(late).not.toMatch(/nothing (is )?written/);
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where actor_id in ('ann-pm', 'ann-dev') and revoked_at is null`)).rows[0]).toStrictEqual({ n: 0 });
 });
 
-test('konjir connect refuses what it can before any browser opens: no --kolab, a name no kolab can have, a config it won\'t touch; --dry-run prints the plan and stops', async () => {
+test('kolab connect refuses what it can before any browser opens: no --kolab, a name no kolab can have, a config it won\'t touch; --dry-run prints the plan and stops', async () => {
   const { kolab, idp, server } = await local();
   const project = scratch();
   const opened: URL[] = [];
   const io = () => world(server, idp, async () => 0, { opened });
-  expect(await rejection(connectHarness(options(server, project, { kolab: undefined }), io()))).toMatch(/konjir connect needs --kolab <name>/);
+  expect(await rejection(connectHarness(options(server, project, { kolab: undefined }), io()))).toMatch(/kolab connect needs --kolab <name>/);
   for (const bad of ['Anns', 'a_b', '-a', 'a b', 'x'.repeat(101)]) {
     expect(await rejection(connectHarness(options(server, project, { kolab: bad }), io()))).toMatch(/a kolab's name is lowercase letters, digits and '-'/);
   }
@@ -594,7 +594,7 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
   expect(opened).toStrictEqual([]);
   expect(existsSync(join(plain, '.mcp.json'))).toBe(false);
   // The dry run's plan names the project's file, and writes none.
-  expect(dry.lines).toContain(`Will write ${join(plain, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
+  expect(dry.lines).toContain(`Will write ${join(plain, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later kolab commands here need no --kolab or --url, and it may be committed.`);
   expect(existsSync(join(plain, '.konjir.json'))).toBe(false);
   expect(await kolab.listActors({ owner: 'ann' })).toStrictEqual([]);
   // A link in .konjir.json's place is refused before it is read or any browser opens, wherever it
@@ -605,19 +605,19 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
     rmSync(join(linked, '.konjir.json'), { force: true });
     symlinkSync(to, join(linked, '.konjir.json'));
     for (const more of [{}, { forcePath: true }, { dryRun: true }]) {
-      expect(await rejection(connectHarness(options(server, linked, more), io()))).toMatch(/\.konjir\.json is a link; konjir connect won't write the project's file through it/);
+      expect(await rejection(connectHarness(options(server, linked, more), io()))).toMatch(/\.konjir\.json is a link; kolab connect won't write the project's file through it/);
     }
     expect(readlinkSync(join(linked, '.konjir.json'))).toBe(to);
   }
   expect(readFileSync(join(linked, 'elsewhere.json'), 'utf8')).toBe('{"kolab": "theirs"}');
   expect(existsSync(join(linked, 'opencode.json'))).toBe(false);
   expect(opened).toStrictEqual([]);
-  // A .konjir.json konjir couldn't have written is replaced, and the plan shows what it replaces.
+  // A .konjir.json kolab couldn't have written is replaced, and the plan shows what it replaces.
   const broken = scratch();
   writeFileSync(join(broken, '.konjir.json'), '{"kolab": 1}');
   const replacing = io();
   await connectHarness(options(server, broken, { dryRun: true }), replacing);
-  expect(replacing.lines).toContain(`Will replace ${join(broken, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
+  expect(replacing.lines).toContain(`Will replace ${join(broken, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later kolab commands here need no --kolab or --url, and it may be committed.`);
   expect(replacing.lines.join('\n')).toContain(`--- ${join(broken, '.konjir.json')}\n+++ ${join(broken, '.konjir.json')}\n`);
   expect(replacing.lines.join('\n')).toContain(`-{"kolab": 1}\n+{\n+  "kolab": "anns",\n+  "url": "${server.url}"\n+}`);
   expect(readFileSync(join(broken, '.konjir.json'), 'utf8')).toBe('{"kolab": 1}');
@@ -629,11 +629,11 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
     const text = JSON.stringify(names);
     writeFileSync(join(pointed, '.konjir.json'), text);
     for (const dryRun of [false, true]) {
-      expect(await rejection(connectHarness(options(server, pointed, { dryRun }), io()))).toBe(`Error: ${join(pointed, '.konjir.json')} already names ${was}, and this would make it kolab anns at ${server.url}. konjir connect won't repoint the project: pass --force to, or --kolab and --url as the file has them, or --global to leave the project as it is`);
+      expect(await rejection(connectHarness(options(server, pointed, { dryRun }), io()))).toBe(`Error: ${join(pointed, '.konjir.json')} already names ${was}, and this would make it kolab anns at ${server.url}. kolab connect won't repoint the project: pass --force to, or --kolab and --url as the file has them, or --global to leave the project as it is`);
     }
     const forced = io();
     await connectHarness(options(server, pointed, { force: true, dryRun: true }), forced);
-    expect(forced.lines).toContain(`Will update ${join(pointed, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
+    expect(forced.lines).toContain(`Will update ${join(pointed, '.konjir.json')}: kolab anns at ${server.url}, and no token, so later kolab commands here need no --kolab or --url, and it may be committed.`);
     expect(forced.lines.join('\n')).toContain(`-${text}\n+{\n`);
     expect(forced.lines.join('\n')).toContain(`+  "url": "${server.url}"`);
     expect(readFileSync(join(pointed, '.konjir.json'), 'utf8')).toBe(text);
@@ -661,7 +661,7 @@ test('konjir connect refuses what it can before any browser opens: no --kolab, a
   expect(out.join('\n')).toContain(`${join(set, '.konjir.json')} already names kolab anns at ${server.url}.`);
   expect(out.join('\n')).not.toContain('kolab.konjir.com');
   process.chdir(plain);
-  expect(await rejection(main(['connect', 'codex']))).toMatch(/konjir connect opencode\|claude --kolab <k>/);
+  expect(await rejection(main(['connect', 'codex']))).toMatch(/kolab connect opencode\|claude --kolab <k>/);
   expect(await rejection(main(['connect', 'claude', '--kolab', 'Bad']))).toMatch(/--kolab Bad: a kolab's name is/);
   expect(() => mcpUrl('https://ann:secret@kolab.example.com')).toThrow(/without a user name or password/);
   expect(() => mcpUrl('https://kolab.example.com/?token=x')).toThrow(/without a query or fragment/);
@@ -679,8 +679,8 @@ test('Claude Code with --http: the project\'s .mcp.json, then the /mcp steps to 
   const said = io.lines.join('\n');
   expect(said).toContain('in it, type /mcp, choose the entry, then Authenticate.');
   expect(said).toContain('konjir-pm: Kolab\'s page is for ann-pm alone, in kolab anns as product: check it, then Allow.');
-  expect(io.lines.at(-1)).toBe('konjir claude pm');
-  // konjir claude starts it with that entry alone, and no channel: an HTTP entry has none.
+  expect(io.lines.at(-1)).toBe('kolab claude pm');
+  // kolab claude starts it with that entry alone, and no channel: an HTTP entry has none.
   const s = claudeSession('pm', [], { cwd: project, env: { HOME: scratch() } });
   expect(s.args).toStrictEqual(['--strict-mcp-config', '--mcp-config', join(project, '.claude', 'konjir-pm.json'), '--append-system-prompt', systemPrompt({ agent: 'ann-pm', role: 'product', kolab: 'anns' }, 'konjir-pm')]);
 
@@ -713,7 +713,7 @@ function failingRevoke(on: () => boolean) {
   });
 }
 
-test('konjir login --agent: a wrong sign-in that couldn\'t be revoked stops it at once, its error naming every try (D97)', async () => {
+test('kolab login --agent: a wrong sign-in that couldn\'t be revoked stops it at once, its error naming every try (D97)', async () => {
   const { kolab, idp, server } = await local();
   const { actor: ann } = await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
   await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
@@ -727,14 +727,14 @@ test('konjir login --agent: a wrong sign-in that couldn\'t be revoked stops it a
     open: (u) => { tries++; idp.next({ subject: '41', login: 'ann' }); void consentAt(unlocked(u), { as: 'self' }, true); },
   }));
   expect(tries).toBe(2);
-  expect(err).toMatch(/you signed in as ann, not ann-cli, and that sign-in couldn't be revoked: it is forgotten, not revoked, .*so konjir login doesn't ask again \(try 1: ann, revoked; try 2: ann, forgotten, not revoked\)\. Nothing is kept/);
+  expect(err).toMatch(/you signed in as ann, not ann-cli, and that sign-in couldn't be revoked: it is forgotten, not revoked, .*so kolab login doesn't ask again \(try 1: ann, revoked; try 2: ann, forgotten, not revoked\)\. Nothing is kept/);
   const asked = said.filter((l) => l.startsWith('You signed in'));
   expect(asked).toHaveLength(1);
   expect(asked[0]).toContain('so that sign-in was revoked and nothing is kept. Asking again for ann-cli, try 2 of 3');
   expect(new StoredLogin(server.url, { path }).signedIn).toBe(false);
 });
 
-test('konjir login --agent: a sign-in that comes back as anyone else is revoked, never kept, and asked again for the same agent, at most twice (D97)', async () => {
+test('kolab login --agent: a sign-in that comes back as anyone else is revoked, never kept, and asked again for the same agent, at most twice (D97)', async () => {
   const { kolab, idp, server } = await local();
   const { actor: ann } = await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
   await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
@@ -771,65 +771,65 @@ test('konjir login --agent: a sign-in that comes back as anyone else is revoked,
   expect(tries).toBe(1);
 });
 
-test('W3.8: the bridge is found only in the checkout this konjir runs from; a konjir installed in a project that ships channel-bridge/scripts/start.sh finds none', () => {
+test('W3.8: the bridge is found only in the checkout this kolab runs from; a kolab installed in a project that ships channel-bridge/scripts/start.sh finds none', () => {
   expect(bridgeCommand()).toBe(realpathSync(join(import.meta.dirname, '..', '..', 'channel-bridge', 'scripts', 'start.sh')));
-  // A hostile project: konjir installed under node_modules (the published bundle), beside a start.sh of its own.
+  // A hostile project: kolab installed under node_modules (the published bundle), beside a start.sh of its own.
   const hostile = scratch();
   mkdirSync(join(hostile, 'channel-bridge', 'scripts'), { recursive: true });
   writeFileSync(join(hostile, 'channel-bridge', 'scripts', 'start.sh'), '#!/bin/sh\necho pwned\n', { mode: 0o755 });
   writeFileSync(join(hostile, 'package.json'), JSON.stringify({ name: 'kolab', workspaces: ['apps/*'] }));
-  mkdirSync(join(hostile, 'node_modules', 'konjir'), { recursive: true });
-  writeFileSync(join(hostile, 'node_modules', 'konjir', 'konjir.mjs'), '');
-  expect(bridgeCommand(pathToFileURL(join(hostile, 'node_modules', 'konjir', 'konjir.mjs')).href)).toBeUndefined();
+  mkdirSync(join(hostile, 'node_modules', '@konjir', 'kolab'), { recursive: true });
+  writeFileSync(join(hostile, 'node_modules', '@konjir', 'kolab', 'kolab.mjs'), '');
+  expect(bridgeCommand(pathToFileURL(join(hostile, 'node_modules', '@konjir', 'kolab', 'kolab.mjs')).href)).toBeUndefined();
   // Installed globally, or run as a binary: none either.
-  mkdirSync(join(hostile, 'lib', 'node_modules', 'konjir', 'dist'), { recursive: true });
-  writeFileSync(join(hostile, 'lib', 'node_modules', 'konjir', 'dist', 'konjir.mjs'), '');
-  expect(bridgeCommand(pathToFileURL(join(hostile, 'lib', 'node_modules', 'konjir', 'dist', 'konjir.mjs')).href)).toBeUndefined();
-  expect(bridgeCommand('file:///$bunfs/root/konjir')).toBeUndefined();
+  mkdirSync(join(hostile, 'lib', 'node_modules', '@konjir', 'kolab', 'dist'), { recursive: true });
+  writeFileSync(join(hostile, 'lib', 'node_modules', '@konjir', 'kolab', 'dist', 'kolab.mjs'), '');
+  expect(bridgeCommand(pathToFileURL(join(hostile, 'lib', 'node_modules', '@konjir', 'kolab', 'dist', 'kolab.mjs')).href)).toBeUndefined();
+  expect(bridgeCommand('file:///$bunfs/root/kolab')).toBeUndefined();
 });
 
-test('W9.5: the published konjir names the bridge it carries, konjir bridge: a binary by its own path, an installed package by its konjir.mjs, and one run by npx or a dlx by a copy konjir keeps', () => {
-  // A checkout's build defines no version: it isn't the published konjir, and runs its own bridge.
+test('W9.5: the published kolab names the bridge it carries, kolab bridge: a binary by its own path, an installed package by its kolab.mjs, and one run by npx or a dlx by a copy kolab keeps', () => {
+  // A checkout's build defines no version: it isn't the published kolab, and runs its own bridge.
   expect(publishedKonjir()).toBeUndefined();
-  expect(publishedKonjir({ execPath: '/usr/bin/node', script: '/x/konjir.mjs' })).toBeUndefined();
+  expect(publishedKonjir({ execPath: '/usr/bin/node', script: '/x/kolab.mjs' })).toBeUndefined();
   // A binary: its script is inside the executable.
-  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/local/bin/konjir', script: '/$bunfs/root/konjir' }))
-    .toStrictEqual({ bridge: { command: '/usr/local/bin/konjir', args: ['bridge'] }, self: 'konjir' });
-  expect(publishedKonjir({ version: '0.7.0', execPath: 'C:\\tools\\konjir.exe', script: 'B:\\~BUN\\root\\konjir.exe' }))
-    .toStrictEqual({ bridge: { command: 'C:\\tools\\konjir.exe', args: ['bridge'] }, self: 'konjir' });
-  // Installed from npm: this node, and konjir.mjs where it really is, whatever link started it.
+  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/local/bin/kolab', script: '/$bunfs/root/kolab' }))
+    .toStrictEqual({ bridge: { command: '/usr/local/bin/kolab', args: ['bridge'] }, self: 'kolab' });
+  expect(publishedKonjir({ version: '0.7.0', execPath: 'C:\\tools\\kolab.exe', script: 'B:\\~BUN\\root\\kolab.exe' }))
+    .toStrictEqual({ bridge: { command: 'C:\\tools\\kolab.exe', args: ['bridge'] }, self: 'kolab' });
+  // Installed from npm: this node, and kolab.mjs where it really is, whatever link started it.
   const prefix = realpathSync(scratch());
-  mkdirSync(join(prefix, 'lib', 'node_modules', 'konjir'), { recursive: true });
+  mkdirSync(join(prefix, 'lib', 'node_modules', '@konjir', 'kolab'), { recursive: true });
   mkdirSync(join(prefix, 'bin'));
-  const installed = join(prefix, 'lib', 'node_modules', 'konjir', 'konjir.mjs');
+  const installed = join(prefix, 'lib', 'node_modules', '@konjir', 'kolab', 'kolab.mjs');
   writeFileSync(installed, '');
-  symlinkSync(installed, join(prefix, 'bin', 'konjir'));
-  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, 'bin', 'konjir') }))
-    .toStrictEqual({ bridge: { command: '/usr/bin/node', args: [installed, 'bridge'] }, self: 'konjir' });
+  symlinkSync(installed, join(prefix, 'bin', 'kolab'));
+  expect(publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, 'bin', 'kolab') }))
+    .toStrictEqual({ bridge: { command: '/usr/bin/node', args: [installed, 'bridge'] }, self: 'kolab' });
 
   // Run by npx, pnpm dlx, yarn dlx or bunx: the runner clears its cache, so the entry names a copy
-  // konjir keeps beside its credentials, never the cache, and never `npx konjir`, which would run a
-  // konjir the project's own node_modules held.
+  // kolab keeps beside its credentials, never the cache, and never `npx kolab`, which would run a
+  // kolab the project's own node_modules held.
   const config = realpathSync(scratch());
   const env = { KONJIR_CREDENTIALS: join(config, 'credentials.json') };
-  const kept = join(config, 'bridge', 'konjir-0.7.0.mjs');
+  const kept = join(config, 'bridge', 'kolab-0.7.0.mjs');
   for (const cache of [['.npm', '_npx', '0a1b2c'], ['Library', 'Caches', 'pnpm', 'dlx', 'abc', '19d'], ['xfs-1f', 'dlx-4242'], ['bunx-501-konjir@0.7.0']]) {
-    const dir = join(prefix, ...cache, 'node_modules', 'konjir');
+    const dir = join(prefix, ...cache, 'node_modules', '@konjir', 'kolab');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'konjir.mjs'), '// konjir 0.7.0\n');
-    const p = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(dir, 'konjir.mjs') }, env);
+    writeFileSync(join(dir, 'kolab.mjs'), '// kolab 0.7.0\n');
+    const p = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(dir, 'kolab.mjs') }, env);
     // It is run again from that copy too.
-    expect(p).toStrictEqual({ bridge: { command: '/usr/bin/node', args: [kept, 'bridge'] }, self: `/usr/bin/node ${kept}`, keep: { from: join(dir, 'konjir.mjs'), to: kept } });
+    expect(p).toStrictEqual({ bridge: { command: '/usr/bin/node', args: [kept, 'bridge'] }, self: `/usr/bin/node ${kept}`, keep: { from: join(dir, 'kolab.mjs'), to: kept } });
     expect(JSON.stringify([p!.bridge, p!.self])).not.toMatch(/npx|dlx/);
   }
   // A KONJIR_CREDENTIALS that isn't absolute still gives an absolute copy: Claude Code starts the entry in the project.
-  const rel = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir', 'konjir.mjs') }, { KONJIR_CREDENTIALS: 'creds.json' })!;
-  expect(rel.bridge.args[0]).toBe(join(process.cwd(), 'bridge', 'konjir-0.7.0.mjs'));
-  // The copy: made in a folder of konjir's own, 0700; the same bytes again are left; others replace it.
-  const from = join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', 'konjir', 'konjir.mjs');
+  const rel = publishedKonjir({ version: '0.7.0', execPath: '/usr/bin/node', script: join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', '@konjir', 'kolab', 'kolab.mjs') }, { KONJIR_CREDENTIALS: 'creds.json' })!;
+  expect(rel.bridge.args[0]).toBe(join(process.cwd(), 'bridge', 'kolab-0.7.0.mjs'));
+  // The copy: made in a folder of kolab's own, 0700; the same bytes again are left; others replace it.
+  const from = join(prefix, '.npm', '_npx', '0a1b2c', 'node_modules', '@konjir', 'kolab', 'kolab.mjs');
   expect(existsSync(kept)).toBe(false);
   keepKonjir({ from, to: kept });
-  expect(readFileSync(kept, 'utf8')).toBe('// konjir 0.7.0\n');
+  expect(readFileSync(kept, 'utf8')).toBe('// kolab 0.7.0\n');
   expect(statSync(dirname(kept)).mode & 0o777).toBe(0o700);
   expect(statSync(kept).mode & 0o777).toBe(0o755);
   const first = statSync(kept).ino;
@@ -837,17 +837,17 @@ test('W9.5: the published konjir names the bridge it carries, konjir bridge: a b
   expect(statSync(kept).ino).toBe(first);
   writeFileSync(kept, 'tampered');
   keepKonjir({ from, to: kept });
-  expect(readFileSync(kept, 'utf8')).toBe('// konjir 0.7.0\n');
+  expect(readFileSync(kept, 'utf8')).toBe('// kolab 0.7.0\n');
   // Never through a link: not one in the file's place, nor a linked folder.
   rmSync(kept);
   const elsewhere = join(scratch(), 'elsewhere.mjs');
-  writeFileSync(elsewhere, '// konjir 0.7.0\n');
+  writeFileSync(elsewhere, '// kolab 0.7.0\n');
   symlinkSync(elsewhere, kept);
   keepKonjir({ from, to: kept });
   expect(lstatSync(kept).isSymbolicLink()).toBe(false);
   const linked = realpathSync(scratch());
   symlinkSync(scratch(), join(linked, 'bridge'));
-  expect(() => keepKonjir({ from, to: join(linked, 'bridge', 'konjir-0.7.0.mjs') })).toThrow(/isn't a folder of konjir's/);
+  expect(() => keepKonjir({ from, to: join(linked, 'bridge', 'kolab-0.7.0.mjs') })).toThrow(/isn't a folder of kolab's/);
 
   // The entry Claude Code is given names that command and its arguments.
   const e: Entry = { name: 'konjir-pm', agent: 'ann-pm', label: 'pm', role: 'product', kolab: 'anns', url: 'https://kolab.example.com/mcp' };
@@ -857,12 +857,12 @@ test('W9.5: the published konjir names the bridge it carries, konjir bridge: a b
   });
 });
 
-test('W9.5: from the published konjir, konjir connect claude writes entries that run konjir bridge, and ends with how to run it again; --subagents writes one subagent per agent with only its entry\'s tools', async () => {
+test('W9.5: from the published kolab, kolab connect claude writes entries that run kolab bridge, and ends with how to run it again; --subagents writes one subagent per agent with only its entry\'s tools', async () => {
   const { idp, server } = await local();
   const project = realpathSync(scratch());
   const env = { KONJIR_CREDENTIALS: join(scratch(), 'credentials.json'), HOME: scratch() };
-  const bridge = { command: '/usr/bin/node', args: ['/opt/konjir/konjir.mjs', 'bridge'] };
-  const opts = (over: Partial<ConnectOptions> = {}) => options(server, project, { harness: 'claude', bridge, self: 'npx konjir@0.7.0', subagents: true, agents: parseAgents(['writer:product', 'builder:engineer']), env, ...over });
+  const bridge = { command: '/usr/bin/node', args: ['/opt/konjir/kolab.mjs', 'bridge'] };
+  const opts = (over: Partial<ConnectOptions> = {}) => options(server, project, { harness: 'claude', bridge, self: 'npx @konjir/kolab@0.7.0', subagents: true, agents: parseAgents(['writer:product', 'builder:engineer']), env, ...over });
 
   // The plan names the subagents before any browser opens; a dry run writes none.
   const dry = world(server, idp, async () => 0);
@@ -873,14 +873,14 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   const io = world(server, idp, async () => 0);
   await connectHarness(opts(), io);
   const servers = JSON.parse(readFileSync(join(project, '.mcp.json'), 'utf8')).mcpServers;
-  expect(servers['konjir-writer']).toStrictEqual({ type: 'stdio', command: '/usr/bin/node', args: ['/opt/konjir/konjir.mjs', 'bridge'],
+  expect(servers['konjir-writer']).toStrictEqual({ type: 'stdio', command: '/usr/bin/node', args: ['/opt/konjir/kolab.mjs', 'bridge'],
     env: { KONJIR_URL: server.url, KONJIR_TOKEN: '', KONJIR_AGENT: 'ann-writer', KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-writer' } });
-  expect(servers['konjir-builder'].args).toStrictEqual(['/opt/konjir/konjir.mjs', 'bridge']);
-  // The entries name this machine's paths, and the last lines say how to run this konjir again.
+  expect(servers['konjir-builder'].args).toStrictEqual(['/opt/konjir/kolab.mjs', 'bridge']);
+  // The entries name this machine's paths, and the last lines say how to run this kolab again.
   expect(io.lines.join('\n')).toContain('name this machine\'s paths');
-  expect(io.lines.slice(-2)).toStrictEqual(['npx konjir@0.7.0 claude writer', 'npx konjir@0.7.0 claude builder']);
+  expect(io.lines.slice(-2)).toStrictEqual(['npx @konjir/kolab@0.7.0 claude writer', 'npx @konjir/kolab@0.7.0 claude builder']);
 
-  // One subagent per agent: its name the label, its tools its own entry's alone, its prompt konjir claude's.
+  // One subagent per agent: its name the label, its tools its own entry's alone, its prompt kolab claude's.
   const writer = readFileSync(join(project, '.claude', 'agents', 'writer.md'), 'utf8');
   expect(writer).toBe([
     '---', 'name: writer',
@@ -900,7 +900,7 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   writeFileSync(join(project, '.claude', 'agents', 'builder.md'), 'mine\n');
   const opened: URL[] = [];
   expect(await rejection(connectHarness(opts(), world(server, idp, async () => 0, { opened }))))
-    .toBe(`Error: ${join(project, '.claude', 'agents', 'builder.md')} is already there and says something else. konjir connect won't overwrite it: pass --force to replace it, or choose other labels with --agent`);
+    .toBe(`Error: ${join(project, '.claude', 'agents', 'builder.md')} is already there and says something else. kolab connect won't overwrite it: pass --force to replace it, or choose other labels with --agent`);
   expect(opened).toHaveLength(0);
   // --force replaces it, and the plan shows what goes: the person's own subagent may bear that name.
   const forced = world(server, idp, async () => 0);
@@ -910,7 +910,7 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   // A link in a subagent's place is never written through.
   rmSync(join(project, '.claude', 'agents', 'writer.md'));
   symlinkSync(join(scratch(), 'elsewhere.md'), join(project, '.claude', 'agents', 'writer.md'));
-  expect(await rejection(connectHarness(opts({ force: true }), world(server, idp, async () => 0)))).toMatch(/writer\.md is a link; konjir connect won't write a subagent through it/);
+  expect(await rejection(connectHarness(opts({ force: true }), world(server, idp, async () => 0)))).toMatch(/writer\.md is a link; kolab connect won't write a subagent through it/);
   // Nor into a folder that leads out of the project: refused with the plan, before the browser, with
   // nothing read, made or written out there, and .mcp.json untouched. A dry run reads nothing either.
   for (const which of ['.claude', join('.claude', 'agents')]) {
@@ -922,7 +922,7 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
     for (const dryRun of [false, true]) {
       const seen: URL[] = [];
       const w = world(server, idp, async () => 0, { opened: seen });
-      expect(await rejection(connectHarness(opts({ cwd: away, dryRun }), w))).toMatch(/leads to .*, outside .*; konjir connect won't write a subagent there/);
+      expect(await rejection(connectHarness(opts({ cwd: away, dryRun }), w))).toMatch(/leads to .*, outside .*; kolab connect won't write a subagent there/);
       expect(seen).toHaveLength(0);
       expect(w.lines.join('\n')).not.toContain('a secret');
     }
@@ -934,7 +934,7 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
     mkdirSync(dirname(join(dangling, which)), { recursive: true });
     symlinkSync(nowhere, join(dangling, which));
     const seen: URL[] = [];
-    expect(await rejection(connectHarness(opts({ cwd: dangling }), world(server, idp, async () => 0, { opened: seen })))).toMatch(/can't be read \(a link to nothing, perhaps\), so konjir connect won't write a subagent there/);
+    expect(await rejection(connectHarness(opts({ cwd: dangling }), world(server, idp, async () => 0, { opened: seen })))).toMatch(/can't be read \(a link to nothing, perhaps\), so kolab connect won't write a subagent there/);
     expect(seen).toHaveLength(0);
     expect(existsSync(nowhere)).toBe(false);
     expect(existsSync(join(dangling, '.mcp.json'))).toBe(false);
@@ -958,11 +958,11 @@ test('W9.5: from the published konjir, konjir connect claude writes entries that
   expect(await rejection(connectHarness(options(server, scratch(), { subagents: true }), world(server, idp, async () => 0)))).toMatch(/--subagents is for Claude Code/);
 });
 
-test('konjir connect never touches the CLI\'s own sign-in: a konjir login kept, as an agent or as the person, stays exactly as it was, and still works', async () => {
+test('kolab connect never touches the CLI\'s own sign-in: a kolab login kept, as an agent or as the person, stays exactly as it was, and still works', async () => {
   const { kolab, idp, server } = await local();
   await kolab.signInWith({ provider: 'stub', subject: '41', login: 'ann' });
   await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
-  // konjir login, choosing a new agent of hers, as it offers by default.
+  // kolab login, choosing a new agent of hers, as it offers by default.
   await login(server.url, { log: () => undefined, open: (u) => { idp.next({ subject: '41', login: 'ann' }); void consentAt(u, { as: 'new-agent', agent_label: 'cli', kolab: 'kolab:anns' }, true); } });
   const kept = readFileSync(process.env.KONJIR_CREDENTIALS!, 'utf8');
   const env = { KONJIR_CREDENTIALS: process.env.KONJIR_CREDENTIALS };
@@ -985,11 +985,11 @@ test('a config file that is a link: written where it leads inside the project; r
   symlinkSync(join(elsewhere, 'settings.json'), join(project, 'opencode.json'));
   const io = world(server, idp, async () => 0);
   expect(await rejection(connectHarness(options(server, project, { auth: false }), io)))
-    .toMatch(/opencode.json is a link to .*settings.json, outside .*; konjir connect won't write there. Pass --force-path/);
+    .toMatch(/opencode.json is a link to .*settings.json, outside .*; kolab connect won't write there. Pass --force-path/);
   expect(readFileSync(join(elsewhere, 'settings.json'), 'utf8')).toBe('{\n  "keep": true\n}\n');
   const forced = world(server, idp, async () => 0);
   await connectHarness(options(server, project, { auth: false, forcePath: true }), forced);
-  expect(forced.lines.join('\n')).toContain(`is a link to ${realpathSync(join(elsewhere, 'settings.json'))}, which konjir connect would change`);
+  expect(forced.lines.join('\n')).toContain(`is a link to ${realpathSync(join(elsewhere, 'settings.json'))}, which kolab connect would change`);
   expect(Object.keys(JSON.parse(readFileSync(join(elsewhere, 'settings.json'), 'utf8')).mcp)).toStrictEqual(['konjir-product', 'konjir-engineer']);
   expect(lstatSync(join(project, 'opencode.json')).isSymbolicLink()).toBe(true);
   // Inside the project, a link is followed, and said.
@@ -1003,7 +1003,7 @@ test('a config file that is a link: written where it leads inside the project; r
   const dangling = scratch();
   symlinkSync(join(dangling, 'gone.json'), join(dangling, 'opencode.json'));
   expect(await rejection(connectHarness(options(server, dangling, { auth: false, force: true, forcePath: true }), world(server, idp, async () => 0))))
-    .toMatch(/is a link to .*gone.json, which isn't there; konjir connect won't write through it/);
+    .toMatch(/is a link to .*gone.json, which isn't there; kolab connect won't write through it/);
   expect(lstatSync(join(dangling, 'opencode.json')).isSymbolicLink()).toBe(true);
 });
 
@@ -1015,18 +1015,18 @@ test('Claude Code: an existing .mcp.json is edited in place, keeping its own for
   expect(JSON.parse(after).mcpServers['konjir-pm']).toStrictEqual({ type: 'http', url: URL_, oauth: { scopes: 'konjir kolab:anns role:product agent:ann-pm' } });
 });
 
-test('konjir connect reads only a regular config file of at most 1 MiB, and refuses an "mcp" or "mcpServers" that is null', async () => {
+test('kolab connect reads only a regular config file of at most 1 MiB, and refuses an "mcp" or "mcpServers" that is null', async () => {
   const { idp, server } = await local();
   const fifo = scratch();
   execFileSync('mkfifo', [join(fifo, 'opencode.json')]);
-  expect(await rejection(connectHarness(options(server, fifo, { auth: false }), world(server, idp, async () => 0)))).toMatch(/opencode.json isn't a regular file, so konjir connect won't read or write it/);
+  expect(await rejection(connectHarness(options(server, fifo, { auth: false }), world(server, idp, async () => 0)))).toMatch(/opencode.json isn't a regular file, so kolab connect won't read or write it/);
   const dir = scratch();
   mkdirSync(join(dir, 'opencode.json'));
   expect(await rejection(connectHarness(options(server, dir, { auth: false }), world(server, idp, async () => 0)))).toMatch(/isn't a regular file/);
   const big = scratch();
   writeFileSync(join(big, 'opencode.json'), `{"a": "${'x'.repeat(MAX_CONFIG_BYTES)}"}`);
   expect(await rejection(connectHarness(options(server, big, { auth: false }), world(server, idp, async () => 0)))).toMatch(/is over 1 MiB/);
-  expect(() => mergeClaude('.mcp.json', '{"mcpServers": null}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is null, so konjir connect won't touch it: make it \{\} or remove it/);
+  expect(() => mergeClaude('.mcp.json', '{"mcpServers": null}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is null, so kolab connect won't touch it: make it \{\} or remove it/);
   expect(() => mergeClaude('.mcp.json', '{"mcpServers": 3}', [entry('p', 'product')], false)).toThrow(/its "mcpServers" is not an object/);
   expect(() => mergeOpencode('opencode.json', '{"mcp": null}', [entry('p', 'product')], false)).toThrow(/its "mcp" is null/);
 });

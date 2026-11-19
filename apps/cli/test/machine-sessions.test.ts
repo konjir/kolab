@@ -1,5 +1,5 @@
 // W6.1's done-when, end to end (D103, ENF4, DEL7): a person signed in as themselves on two
-// machines (two konjir installs, each with its own credentials file and so its own registered
+// machines (two kolab installs, each with its own credentials file and so its own registered
 // client) and in a browser keeps all three sessions working at once, calls and listen streams
 // alike; signing in again on one ends only that one, and closes only its streams; the person lists
 // the three, from the CLI and the web page, and revoking one ends it and closes its streams while
@@ -104,7 +104,7 @@ test('a person signed in on two machines and in a browser keeps all three; signi
   closeAtEnd(server);
   const base = new URL(server.url).origin;
 
-  // Two machines: two konjir installs, each its own credentials file, each signing in as Ana herself.
+  // Two machines: two kolab installs, each its own credentials file, each signing in as Ana herself.
   const machine = (name: string) => join(mkdtempSync(join(tmpdir(), `konjir-${name}-`)), 'credentials.json');
   const signIn = async (path: string) => {
     idp.next({ subject: '61', login: 'ana' });

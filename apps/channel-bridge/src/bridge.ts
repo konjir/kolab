@@ -5,7 +5,7 @@
  * It reconnects, with backoff, whenever Kolab goes away or stops answering.
  *
  * It reaches Kolab with a hand-issued session token (KONJIR_TOKEN), or with a
- * sign-in kept by @konjir/login (W3.5, D55), the one `konjir login` keeps for
+ * sign-in kept by @konjir/login (W3.5, D55), the one `kolab login` keeps for
  * the same MCP URL. A sign-in's access token lasts 15 minutes, and Kolab closes
  * a listen stream when its token expires or a refresh rotates it (API4): the
  * bridge then connects again, the MCP client refreshing the token under the
@@ -31,7 +31,7 @@ export interface BridgeOptions {
   login?: StoredLogin;
   /** With no sign-in kept yet: another channel's browser sign-in is under way, which this one will use. */
   awaiting?: 'another-channel';
-  /** The command that signs this bridge's sign-in in again, as the session is told it; `konjir login --url <url>` by default. */
+  /** The command that signs this bridge's sign-in in again, as the session is told it; `kolab login --url <url>` by default. */
   loginCommand?: string;
   /** KONJIR_AGENT: the actor this bridge's sign-in must work as. Any other, and it serves and hears nothing. */
   agent?: string;
@@ -134,10 +134,10 @@ export class KolabBridge {
   private get channel() { return this.opts.channelName ?? 'Konjir channel'; }
 
   /** The command the session is told signs this bridge in again. */
-  private get loginCommand() { return this.opts.loginCommand ?? `konjir login --url ${safeUrl(this.opts.url)}`; }
+  private get loginCommand() { return this.opts.loginCommand ?? `kolab login --url ${safeUrl(this.opts.url)}`; }
 
   /** What the bridge reaches Kolab with, as the person knows it. */
-  private get credential() { return this.opts.login ? `the sign-in konjir login keeps for ${safeUrl(this.opts.url)}` : 'KONJIR_TOKEN'; }
+  private get credential() { return this.opts.login ? `the sign-in kolab login keeps for ${safeUrl(this.opts.url)}` : 'KONJIR_TOKEN'; }
 
   start() {
     this.running ??= this.run();
@@ -267,10 +267,10 @@ export class KolabBridge {
         const msg = messageOf(e);
         const login = this.opts.login;
         this.down = this.reasonDown(e, msg);
-        if (login && (e instanceof SignedOut || /has ended or was revoked: run konjir login/.test(msg))) {
+        if (login && (e instanceof SignedOut || /has ended or was revoked: run (?:konjir|kolab) login/.test(msg))) {
           // No sign-in, or it ended (revoked, lapsed, or replaced by a newer one as the same actor, ENF4).
           // The bridge never opens the browser again by itself: it waits, re-reading the credentials
-          // file, for konjir login to sign in again, and goes on with no restart.
+          // file, for kolab login to sign in again, and goes on with no restart.
           delay = maxMs;
           // A bridge that has listened with a sign-in and now has none was signed out (the MCP client forgets refused tokens).
           const none = e instanceof SignedOut && !this.hadSignIn;
@@ -305,7 +305,7 @@ export class KolabBridge {
         } else if (e instanceof NotAnAgentToken) {
           delay = maxMs;
           await this.problem('not-agent', `KONJIR_TOKEN is not an agent session token: ${msg}. Retrying every ${Math.round(maxMs / 1000)}s`, {
-            content: `The ${this.channel}'s KONJIR_TOKEN is not an agent session token (it may be the admin token), so it has no inbox to listen to. Restart Claude Code with KONJIR_TOKEN set to this agent's session token from konjir admin_open_session. Tell the user.`,
+            content: `The ${this.channel}'s KONJIR_TOKEN is not an agent session token (it may be the admin token), so it has no inbox to listen to. Restart Claude Code with KONJIR_TOKEN set to this agent's session token from kolab admin_open_session. Tell the user.`,
             meta: { kind: 'bridge', status: 'misconfigured' },
           });
         } else if (isRefusal(e) || listenRefusal(e) === 'session_ended') {
@@ -325,7 +325,7 @@ export class KolabBridge {
         if (client) await this.retire(client, this.stopped);
         if (this.client === client) this.client = undefined;
         // A hold this connection leaked is let go, but never a refresh still in flight (its lock and its
-        // compare-and-swap protect the tokens another konjir saves meanwhile); the lock's maximum hold covers the rest.
+        // compare-and-swap protect the tokens another kolab process saves meanwhile); the lock's maximum hold covers the rest.
         this.opts.login?.releaseIdleLock();
       }
       if (this.stopped) break;
@@ -344,7 +344,7 @@ export class KolabBridge {
   /** Why there's no connection, in words for the session; no token in them. */
   private reasonDown(e: unknown, msg: string) {
     const url = safeUrl(this.opts.url);
-    if (e instanceof SignedOut || /has ended or was revoked: run konjir login/.test(msg)) {
+    if (e instanceof SignedOut || /has ended or was revoked: run (?:konjir|kolab) login/.test(msg)) {
       return `it has no sign-in to Kolab at ${url}: tell the user to run ${this.loginCommand} in a terminal, choosing the agent this session works as`;
     }
     if (e instanceof NotAnAgentToken) return 'its KONJIR_TOKEN is not an agent session token';
@@ -491,7 +491,7 @@ export class KolabBridge {
     });
     const login = this.opts.login;
     // With a sign-in, the MCP client refreshes the access token as it expires, under the credentials
-    // file's lock, and a request refused while another konjir refreshed is sent again with the new token.
+    // file's lock, and a request refused while another kolab process refreshed is sent again with the new token.
     return new StreamableHTTPClientTransport(new URL(this.opts.url), login
       ? { authProvider: login, fetch: login.fetchWith(aborting), onInsufficientScope: 'throw' }
       : { requestInit: { headers: { Authorization: `Bearer ${this.opts.token}` } }, fetch: aborting, onInsufficientScope: 'throw' });

@@ -1,10 +1,10 @@
-// `konjir connect opencode` from a real browser (W3.7, D59; one page, Lee's instruction of
+// `kolab connect opencode` from a real browser (W3.7, D59; one page, Lee's instruction of
 // 2026-11-01): Ann, new here, signs in on Kolab's setup page, which names her new kolab and two new
-// agents with nothing to choose, and clicks Allow; konjir connect writes opencode.json; then each
+// agents with nothing to choose, and clicks Allow; kolab connect writes opencode.json; then each
 // entry signs in as OpenCode's `opencode mcp auth` does (the MCP
 // SDK's auth(), the entry's oauth.scope as its client metadata's scope, a loopback listener for the
 // code), and Kolab's page arrives with that entry's agent, kolab and role chosen: she only clicks
-// Allow. Needs the konjir CLI built (`npx nx run konjir:build`), which this imports.
+// Allow. Needs the kolab CLI built (`npx nx run @konjir/kolab:build`), which this imports.
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -14,7 +14,7 @@ import { auth, type OAuthClientProvider, type StoredOAuthClientInformation, type
 import { expect, test, type Page } from '@playwright/test';
 import { SIGNIN_ANN } from '../playwright.config.js';
 
-// The konjir CLI, as it is built: loaded at run time, so the web project's type-check stays its own.
+// The kolab CLI, as it is built: loaded at run time, so the web project's type-check stays its own.
 interface Client { close(): Promise<void> }
 interface Cli {
   connectHarness(opts: Record<string, unknown>, io: Record<string, unknown>): Promise<unknown>;
@@ -23,7 +23,7 @@ interface Cli {
   connect(url: string, token: string): Promise<Client>;
   call(client: Client, verb: string, args?: Record<string, unknown>): Promise<unknown>;
 }
-const KONJIR: string = 'konjir';
+const KONJIR: string = '@konjir/kolab';
 const cli = () => import(KONJIR) as Promise<Cli>;
 
 /** A page locked to one agent (D97): its fixed fields, and no choices at all. */
@@ -80,7 +80,7 @@ async function opencodeAuth(page: Page, cwd: string, name: string, store: Map<st
   }
 }
 
-test('konjir connect opencode: Ann allows one setup page, which makes her kolab and two agents, and each entry then signs in as its own agent on a page locked to it', async ({ page }) => {
+test('kolab connect opencode: Ann allows one setup page, which makes her kolab and two agents, and each entry then signs in as its own agent on a page locked to it', async ({ page }) => {
   const { call, connect, connectHarness, parseAgents, setup } = await cli();
   process.env.KONJIR_CREDENTIALS = join(mkdtempSync(join(tmpdir(), 'konjir-e2e-')), 'credentials.json');
   const mcp = `${SIGNIN_ANN}/mcp`;

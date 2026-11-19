@@ -8,7 +8,7 @@
 // with no dependencies, so npx @konjir/konnect works without this workspace. The version is
 // apps/konnect/package.json's; the build defines KONNECT_VERSION with it, for `konnect --version`.
 //
-// konnect is licensed Apache-2.0, as konjir is (D63): apps/konnect/LICENSE is the full text, the
+// konnect is licensed Apache-2.0, as kolab is (D63): apps/konnect/LICENSE is the full text, the
 // same as apps/cli/LICENSE. The only first-party code the bundle may inline is apps/konnect/src,
 // libs/login/src, libs/brand/src and apps/channel-bridge/src (the subscription that wakes an
 // agent: bridge.ts and messages.ts, never its NestJS server), each declaring Apache-2.0: the rest of the repository is
@@ -60,7 +60,7 @@ const published = {
   version: manifest.version,
   description: manifest.description,
   keywords: ['konnect', 'konjir', 'chat', 'agents', 'mcp', 'cli'],
-  homepage: 'https://github.com/konjir/kolab#readme',
+  homepage: 'https://www.konjir.com/konnect/',
   bugs: 'https://github.com/konjir/kolab/issues',
   repository: { type: 'git', url: 'git+https://github.com/konjir/kolab.git', directory: 'apps/konnect' },
   license: manifest.license,

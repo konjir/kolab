@@ -1,6 +1,6 @@
-// `konjir claude <label>` (W9.1, API24): one agent's Claude Code session from one command, with
+// `kolab claude <label>` (W9.1, API24): one agent's Claude Code session from one command, with
 // only its konjir-<label> entry and channel and a system prompt naming it. Claude and git are stood
-// in for; konjir connect's own scenario (connect.test.ts) starts each agent it set up this way.
+// in for; kolab connect's own scenario (connect.test.ts) starts each agent it set up this way.
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -66,14 +66,14 @@ test('an --http entry has no channel to load; one in Claude Code\'s user setting
 test('a label with no konjir-<label> entry is refused, naming the entries there are; nothing is written and claude doesn\'t start', async () => {
   const p = project({ 'konjir-writer': bridge('writer', 'product'), 'konjir-builder': bridge('builder', 'engineer'), sentry: { type: 'http', url: 'https://mcp.sentry.dev/mcp' } });
   const w = io();
-  await expect(startClaude('reviewer', [], p, w.world)).rejects.toThrow(/There is no konjir-reviewer entry in .*\.mcp\.json or .*\.claude\.json\. The entries there are konjir-writer, konjir-builder: konjir claude writer \| builder$/);
+  await expect(startClaude('reviewer', [], p, w.world)).rejects.toThrow(/There is no konjir-reviewer entry in .*\.mcp\.json or .*\.claude\.json\. The entries there are konjir-writer, konjir-builder: kolab claude writer \| builder$/);
   expect(w.ran).toStrictEqual([]);
   expect(() => readFileSync(join(p.cwd, '.claude', 'konjir-reviewer.json'))).toThrow();
-  // None at all: says to run konjir connect claude.
+  // None at all: says to run kolab connect claude.
   const empty = { cwd: scratch(), env: { HOME: scratch() } };
-  expect(() => claudeSession('writer', [], empty)).toThrow(/There is no konjir-writer entry in .*, nor any konjir- entry: run konjir connect claude --kolab <k> --agent writer:<role> first/);
-  // A label konjir connect would never write, or none.
-  for (const bad of ['', 'Writer', '../x', 'a'.repeat(25)]) expect(() => claudeSession(bad, [], p)).toThrow(/konjir claude <label>/);
+  expect(() => claudeSession('writer', [], empty)).toThrow(/There is no konjir-writer entry in .*, nor any konjir- entry: run kolab connect claude --kolab <k> --agent writer:<role> first/);
+  // A label kolab connect would never write, or none.
+  for (const bad of ['', 'Writer', '../x', 'a'.repeat(25)]) expect(() => claudeSession(bad, [], p)).toThrow(/kolab claude <label>/);
   // An entry that doesn't say who it signs in as.
   const odd = project({ 'konjir-x': { type: 'stdio', command: 'x', args: [] } });
   expect(() => claudeSession('x', [], odd)).toThrow(/konjir-x doesn't say which agent, role and kolab it signs in as/);
@@ -85,7 +85,7 @@ test('git: a session file git doesn\'t ignore is warned of; claude not on the PA
   expect(gitIgnored(join(p.cwd, '.claude', 'konjir-writer.json'), p.cwd)).toBe(false);
   const w = io();
   await startClaude('writer', [], p, { ...w.world, ignored: gitIgnored });
-  expect(w.warned).toStrictEqual([`konjir claude: git doesn't ignore ${join(p.cwd, '.claude', 'konjir-writer.json')}, which names this machine's paths as .mcp.json does: add .claude/konjir-*.json to .gitignore`]);
+  expect(w.warned).toStrictEqual([`kolab claude: git doesn't ignore ${join(p.cwd, '.claude', 'konjir-writer.json')}, which names this machine's paths as .mcp.json does: add .claude/konjir-*.json to .gitignore`]);
   writeFileSync(join(p.cwd, '.gitignore'), '.mcp.json\n.claude/\n');
   expect(gitIgnored(join(p.cwd, '.claude', 'konjir-writer.json'), p.cwd)).toBe(true);
   const outside = scratch();
@@ -118,10 +118,10 @@ test('from a subfolder it finds the project\'s .mcp.json and writes beside it; a
   // A broken project file is refused, though Claude Code's settings hold an entry of that name.
   writeFileSync(join(p.cwd, '.mcp.json'), '{ "mcpServers": ');
   writeFileSync(join(p.env.HOME, '.claude.json'), JSON.stringify({ mcpServers: { 'konjir-writer': bridge('writer', 'engineer') } }));
-  expect(() => claudeSession('writer', [], { cwd: sub, env: p.env })).toThrow(/\.mcp\.json isn't valid JSON, so konjir claude can't read its entries/);
+  expect(() => claudeSession('writer', [], { cwd: sub, env: p.env })).toThrow(/\.mcp\.json isn't valid JSON, so kolab claude can't read its entries/);
 });
 
-test('a system prompt the person appends is joined to konjir\'s, not put in its place', () => {
+test('a system prompt the person appends is joined to kolab\'s, not put in its place', () => {
   const p = project({ 'konjir-writer': bridge('writer', 'product') });
   const prompt = systemPrompt({ agent: 'ann-writer', role: 'product', kolab: 'anns' }, 'konjir-writer');
   expect(claudeSession('writer', ['--append-system-prompt', 'Be brief.', '-p', 'hi'], p).args.slice(-4)).toStrictEqual(['--append-system-prompt', `${prompt}\n\nBe brief.`, '-p', 'hi']);

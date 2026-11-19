@@ -1,4 +1,4 @@
-// konjir repo register and konjir work deliver, against real git checkouts (W5.2a; KON7, PLN16, D98
+// kolab repo register and kolab work deliver, against real git checkouts (W5.2a; KON7, PLN16, D98
 // rulings 1 and 2): the CLI registers a checkout's repository as a person, pinned by its root
 // commit, with any credential in its remote dropped; it delivers the commits whose Konjir-Work trailer
 // names the package, with their subjects and files; it refuses a checkout with another root commit,
@@ -103,7 +103,7 @@ test('a remote\'s URL as a repository\'s identity: SSH and https alike, without 
   expect(canonicalRemote('C:\\repos\\orders')).toBeUndefined();
 });
 
-test('konjir repo register: a person with Maintain registers the checkout, its URL from origin without the token, pinned by its root commit; an agent is refused (D98 ruling 1)', async () => {
+test('kolab repo register: a person with Maintain registers the checkout, its URL from origin without the token, pinned by its root commit; an agent is refused (D98 ruling 1)', async () => {
   const { lee, bot } = await planned();
   const { dir, root } = checkout();
   expect(await rejection(registerRepository(bot.call, gitIn(dir), { binding: 'orders-pg' }))).toMatch(/lee-bot is an agent, and an agent registers no repository/);
@@ -117,7 +117,7 @@ test('konjir repo register: a person with Maintain registers the checkout, its U
   expect(await registerRepository(lee.call, gitIn(plain), { url: 'https://github.com/acme/other', root: 'a'.repeat(40) })).toMatchObject({ repository: { url: 'https://github.com/acme/other' } });
 }, 60_000);
 
-test('konjir work deliver: the commits carrying the package\'s trailer, with subjects and files; again, already counted; another checkout, a fork and a shallow clone refused; then submitted and confirmed (D98 rulings 1 and 2)', async () => {
+test('kolab work deliver: the commits carrying the package\'s trailer, with subjects and files; again, already counted; another checkout, a fork and a shallow clone refused; then submitted and confirmed (D98 rulings 1 and 2)', async () => {
   const { eng, eng2, lee } = await planned();
   const { dir, root, c1, c5 } = checkout();
   // Nothing registered: refused, nothing sent.
@@ -182,7 +182,7 @@ test('konjir work deliver: the commits carrying the package\'s trailer, with sub
   expect(await eng.call('list_repositories', {})).toMatchObject({ repositories: [{ confirmed: true, confirmed_by: 'eng2', confirmed_by_work: 'kj:orders-pg#W1' }] });
 }, 120_000);
 
-test('after a reopen, konjir work deliver sends only the new round\'s commits: the earlier round\'s are named, not sent again, and alone they are refused (W5.3, PLN10)', async () => {
+test('after a reopen, kolab work deliver sends only the new round\'s commits: the earlier round\'s are named, not sent again, and alone they are refused (W5.3, PLN10)', async () => {
   const { eng, eng2, lee } = await planned();
   const { dir, c1, c5 } = checkout();
   await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
@@ -202,7 +202,7 @@ test('after a reopen, konjir work deliver sends only the new round\'s commits: t
   expect(ev).toContain(c6);
 }, 120_000);
 
-test('konjir work deliver --check: the test run\'s acceptance checks go with it, a failed one is a finding its approval keeps, and one that doesn\'t resolve sends nothing (REV9, W8.4)', async () => {
+test('kolab work deliver --check: the test run\'s acceptance checks go with it, a failed one is a finding its approval keeps, and one that doesn\'t resolve sends nothing (REV9, W8.4)', async () => {
   const { eng, eng2, lee } = await planned();
   const { dir } = checkout();
   await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
@@ -226,7 +226,7 @@ test('konjir work deliver --check: the test run\'s acceptance checks go with it,
   expect(w.findings).toMatchObject([{ kind: 'acceptance_failed', element: 'kj:test/orders#R2', recorded_by: 'eng' }]);
 }, 120_000);
 
-test('konjir work deliver finds a package\'s commits by the trailer it had as a plan\'s package, before D104 (migration 0033), as by its own', async () => {
+test('kolab work deliver finds a package\'s commits by the trailer it had as a plan\'s package, before D104 (migration 0033), as by its own', async () => {
   const { kolab, eng, lee } = await planned();
   const { dir, c1 } = checkout();
   await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
@@ -243,7 +243,7 @@ test('konjir work deliver finds a package\'s commits by the trailer it had as a 
   expect(r.commits.map((c) => c.sha)).toStrictEqual([c1, expect.any(String), old]);
 }, 60_000);
 
-test('konjir work deliver --release records, after the deploy, the run and the commit it released (HEAD, or --commit), and a package that must be released, approved, is then Done (PLN16, W7.7)', async () => {
+test('kolab work deliver --release records, after the deploy, the run and the commit it released (HEAD, or --commit), and a package that must be released, approved, is then Done (PLN16, W7.7)', async () => {
   const { server, eng, eng2, lee } = await planned();
   const { dir, c1 } = checkout();
   await registerRepository(lee.call, gitIn(dir), { binding: 'orders-pg' });
@@ -279,7 +279,7 @@ test('konjir work deliver --release records, after the deploy, the run and the c
   await expect(main(['work', 'deliver', 'kj:orders-pg#W1', '--release', run, '--submit', '-C', dir])).rejects.toThrow(/unknown --submit/);
 }, 120_000);
 
-test('in a shell: konjir repo register and konjir work deliver, with -C, --dry-run and --since; a package with no tagged commit is refused (D98)', async () => {
+test('in a shell: kolab repo register and kolab work deliver, with -C, --dry-run and --since; a package with no tagged commit is refused (D98)', async () => {
   const { server, eng, lee } = await planned();
   const { dir, c4 } = checkout();
   const out: string[] = [];

@@ -1,5 +1,5 @@
 /**
- * konjir work guard (W6.4; JOB4): the check a job's harness runs before each shell command, as
+ * kolab work guard (W6.4; JOB4): the check a job's harness runs before each shell command, as
  * Claude Code's PreToolUse hook on Bash and Monitor. Claude Code's permission patterns are prefix
  * globs over the command as written, so quoting (`git push origin ':main'`), an option's
  * abbreviation (`--del`), a short option in a cluster (`-uf`), a wrapper (`env git push`,
@@ -480,15 +480,15 @@ export function guardHook(input: string, branch: string): { code: 0 | 2; message
   const denied = (why: string) => ({ code: 2 as const, message: `Denied in a Konjir job: ${why}. A job pushes its own branch (git push -u origin <branch>), never deletes, forces or merges; a person does that.` });
   try {
     let hook: { tool_name?: unknown; tool_input?: { command?: unknown }; cwd?: unknown };
-    try { hook = JSON.parse(input); } catch { return denied('konjir work guard couldn\'t read the command it was asked to check'); }
+    try { hook = JSON.parse(input); } catch { return denied('kolab work guard couldn\'t read the command it was asked to check'); }
     const command = hook?.tool_input?.command;
     if (command === undefined && !GUARDED_TOOLS.includes(String(hook?.tool_name))) return { code: 0 };
-    if (typeof command !== 'string') return denied('konjir work guard was given no command to check');
+    if (typeof command !== 'string') return denied('kolab work guard was given no command to check');
     const cwd = typeof hook.cwd === 'string' ? hook.cwd : undefined;
     let current: string | undefined | null = null;
     const why = lineDenial(command, { branch, current: () => (current === null ? (current = currentBranch(cwd)) : current) });
     return why ? denied(why) : { code: 0 };
   } catch (e) {
-    return denied(`konjir work guard failed checking it (${e instanceof Error ? e.message : String(e)})`);
+    return denied(`kolab work guard failed checking it (${e instanceof Error ? e.message : String(e)})`);
   }
 }

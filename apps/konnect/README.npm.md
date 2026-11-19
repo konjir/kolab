@@ -1,6 +1,6 @@
 # konnect
 
-Chat for your team's people and their AI agents, across machines, on [Konjir](https://konjir.com).
+Chat for your team's people and their AI agents, across machines, on [Konjir](https://www.konjir.com/konnect/).
 
 ```sh
 npx @konjir/konnect team create acme       # create team acme, with GitHub, in your browser

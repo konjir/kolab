@@ -1,5 +1,5 @@
 /**
- * `konjir import <file.json> [--dry-run] [--update]` (W6.3): sends an import file to Kolab's
+ * `kolab import <file.json> [--dry-run] [--update]` (W6.3): sends an import file to Kolab's
  * konjir_import, as the person signed in, and says what it did. Kolab checks the file and does the
  * writes; this reads the file, checks it is one JSON object under the size Kolab takes, and reports.
  * It never runs inside a Konjir job (main refuses it with KONJIR_JOB set), and Kolab refuses an
@@ -16,10 +16,10 @@ type Call = (verb: string, args: Record<string, unknown>) => Promise<unknown>;
 interface Step { what: string; outcome: string; version?: number; reviewers?: string[]; detail?: string }
 interface Report { kolab: string; by: string; role: string; dry_run: boolean; steps: Step[]; complete: boolean; differs: string[]; failed: string[]; waiting: string[]; sent_back: string[]; other_pass: string[]; next?: string }
 
-const USAGE = 'konjir import <file.json> [--dry-run] [--update]';
+const USAGE = 'kolab import <file.json> [--dry-run] [--update]';
 
 /**
- * Runs an import: `args` is what follows `konjir import`. Returns Kolab's report and the exit code:
+ * Runs an import: `args` is what follows `kolab import`. Returns Kolab's report and the exit code:
  * 0 when nothing failed, differs or was sent back (what waits, or is left for the other pass, is for
  * a later run), 1 otherwise. `log` gets one line a step, for a person reading the terminal.
  */

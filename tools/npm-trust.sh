@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Makes konjir on npm trust .github/workflows/release-cli.yml in konjir/kolab, run in the npm-release
+# Makes @konjir/kolab on npm trust .github/workflows/release-cli.yml in konjir/kolab, run in the npm-release
 # environment, so GitHub Actions can publish it with provenance and no npm token (W7.16). The environment's
 # deployment branches are main only, so only a run from main can publish. With the argument konnect, it does
 # the same for @konjir/konnect and .github/workflows/release-konnect.yml. A package must be on npm already
-# (one version, published by hand) before it can trust a workflow.
-# Then sets konjir to require two-factor authentication and disallow tokens (mfa=publish), so a leaked npm
+# (one version, published by hand) before it can trust a workflow. The CLI was published as konjir until 0.8.0;
+# that package is left as it is, and this script no longer touches it.
+# Then sets the package to require two-factor authentication and disallow tokens (mfa=publish), so a leaked npm
 # token can't publish it; trusted publishing still works.
-# Lee runs it once after `npm login` (npm run release:trust); if konjir already trusts the workflow, that is
-# skipped. Then it lists who can publish konjir, and your npm tokens, for you to review.
+# Lee runs it once after `npm login` (npm run release:trust); if the package already trusts the workflow, that is
+# skipped. Then it lists who can publish it, and your npm tokens, for you to review.
 #
 # A new trust expires unless a publish uses it within about 48 hours, and `npm trust list` doesn't show that
-# it expired (konjir's settings page on npmjs.com does). The release's publish job then fails with "OIDC token
-# exchange error - package not found". --renew replaces konjir's trust of the workflow with a new one; release
+# it expired (the package's settings page on npmjs.com does). The release's publish job then fails with "OIDC token
+# exchange error - package not found". --renew replaces its trust of the workflow with a new one; release
 # right after.
 #
 #   npm run release:trust                    # trust the workflow, set mfa=publish, list for review
@@ -24,7 +25,7 @@
 # per call. Other arguments starting with - go to npm.
 set -euo pipefail
 
-PACKAGE=konjir
+PACKAGE=@konjir/kolab
 REPO=konjir/kolab
 WORKFLOW=release-cli.yml
 ENVIRONMENT=npm-release
@@ -72,9 +73,9 @@ for arg in "$@"; do
     --renew) renew=true ;;
     --dry-run) dry_run=true; flags+=("$arg") ;;
     -*) flags+=("$arg") ;;
-    konjir) PACKAGE=konjir; WORKFLOW=release-cli.yml ;;
+    kolab) PACKAGE=@konjir/kolab; WORKFLOW=release-cli.yml ;;
     konnect) PACKAGE=@konjir/konnect; WORKFLOW=release-konnect.yml ;;
-    *) echo "ERROR: the packages are konjir (the default) and konnect; unexpected argument: $arg" >&2; exit 1 ;;
+    *) echo "ERROR: the packages are kolab (@konjir/kolab, the default) and konnect; unexpected argument: $arg" >&2; exit 1 ;;
   esac
 done
 

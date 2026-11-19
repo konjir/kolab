@@ -1,26 +1,26 @@
 /**
- * konjir work and konjir status (W5.4b; JOB4, JOB5, D103, D104): a person's machine set to work.
+ * kolab work and kolab status (W5.4b; JOB4, JOB5, D103, D104): a person's machine set to work.
  * Agents are jobs, not colleagues (D103): Kolab is the queue and the ledger, and this runner takes
  * items from it under a lease and runs one headless harness per item, which does that one item and
  * exits. A job runs on the model account of the person whose machine took it, and the machine keeps
  * nothing a job needs beyond the person's sign-in (DEL8).
  *
- *   konjir work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>]
- *   konjir status [--json]
+ *   kolab work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [--harness <cmd>] [--repo <url>] [-C <dir>]
+ *   kolab status [--json]
  *
- * `konjir work`, in a checkout of the kolab's registered repository (checked as `konjir work deliver`
+ * `kolab work`, in a checkout of the kolab's registered repository (checked as `kolab work deliver`
  * checks it), first checks it can work at all (it fetches the repository's remote, finds its default
  * branch and finds the harness on PATH), then takes jobs with konjir_take_job up to --jobs at once.
  * Each job gets a git worktree at the default branch's head, fetched once a round, outside the
  * checkout, and the harness (Claude Code, `claude -p`) run there with the item's instructions on its
  * stdin and Kolab as its one MCP server. The job's token reaches the harness in its MCP config
  * alone, read once from a FIFO that is then removed (W6.4), so it is in no argument, no file and,
- * but for a build job's, which `konjir work deliver` needs, no environment: what a review job runs,
+ * but for a build job's, which `kolab work deliver` needs, no environment: what a review job runs,
  * its tests among them, can't read it. It is redacted from the job's log and note. The environment
- * is an allowlist, and points konjir's credentials at a file that doesn't exist, so nothing in a job
+ * is an allowlist, and points kolab's credentials at a file that doesn't exist, so nothing in a job
  * reaches the person's own sign-in (the CLI refuses one anyway when KONJIR_JOB is set). PATH starts
- * with a directory of the job's own holding `konjir`, which runs the runner's own konjir, so a job's
- * `konjir work deliver` needs no approval (W7.8). A runner starting sweeps what a killed one left
+ * with a directory of the job's own holding `kolab`, which runs the runner's own kolab, so a job's
+ * `kolab work deliver` needs no approval (W7.8). A runner starting sweeps what a killed one left
  * there, but for jobs another runner on the machine still runs (sweepJobs, W7.12). Each shell
  * command the agent runs passes a guard hook first (guard.ts), which denies deleting, forcing or
  * mirroring a push, a push to the default branch, merging and the rest of deniedTools' list
@@ -96,7 +96,7 @@ export const gitShell: Shell = (dir, args) => new Promise((resolve, reject) => {
   execFile('git', ['--no-pager', ...args], { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (e, out, err) => {
     if (!e) return resolve(out);
     const code = (e as { code?: unknown }).code;
-    reject(new Error(code === 'ENOENT' ? 'git isn\'t installed, or isn\'t on PATH: konjir work runs each job in a git worktree' : `git ${args.join(' ')}: ${(err || e.message).trim()}`));
+    reject(new Error(code === 'ENOENT' ? 'git isn\'t installed, or isn\'t on PATH: kolab work runs each job in a git worktree' : `git ${args.join(' ')}: ${(err || e.message).trim()}`));
   });
 });
 
@@ -122,7 +122,7 @@ export interface WorkOptions {
   harness?: string;
   /** The registered repository this checkout is, when it doesn't track its URL. */
   repo?: string;
-  /** Kolab's MCP URL, which each job's harness and its konjir connect to. */
+  /** Kolab's MCP URL, which each job's harness and its kolab connect to. */
   url: string;
 }
 
@@ -148,11 +148,11 @@ export interface WorkDeps {
   heartbeatMs?: number; pollFirstMs?: number; pollLongestMs?: number;
   /** The environment a harness's is drawn from (through HARNESS_ENV), and where KONJIR_HARNESS is read. */
   env?: NodeJS.ProcessEnv;
-  /** How a job's konjir runs, on its PATH and as its guard hook: konjirCommand() by default. */
-  konjir?: string[];
+  /** How a job's kolab runs, on its PATH and as its guard hook: konjirCommand() by default. */
+  kolab?: string[];
 }
 
-/** How one job ended, as `konjir work` reports it. */
+/** How one job ended, as `kolab work` reports it. */
 export interface JobReport {
   job: string; kind: string; item: string; agent: string;
   /** How the harness ended, as the runner saw it: lost when the runner stopped it because Kolab had ended its job. */
@@ -162,15 +162,19 @@ export interface JobReport {
   exit?: number | null; worktree?: string; kept?: string;
 }
 
-/** Tools Claude Code may use without asking, beyond edits in its worktree (acceptEdits): git, npm, npx, gh and konjir, and Kolab's own tools (JOB4). */
+/**
+ * Tools Claude Code may use without asking, beyond edits in its worktree (acceptEdits): git, npm, npx, gh and kolab, and Kolab's own tools (JOB4).
+ * Bash(konjir *) too, for now: Kolab's playbooks and the hints its tools give a job still say `konjir work deliver`
+ * until the server's texts say kolab, and a job's `konjir` is its own kolab (writeKonjirShim). It goes with them.
+ */
 export const ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'TodoWrite',
-  'Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir'];
+  'Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(kolab *)', 'Bash(konjir *)', 'mcp__konjir'];
 
 /**
  * What a job is kept from trying, even with --allow-all, as Claude Code's permission patterns:
  * merging, `gh api` (which can merge, or change the repository's settings), pushing to the default
  * branch, forcing or deleting a push, a mirror, --all or --prune push, git pointed elsewhere or
- * reconfigured (`-c`, `-C`, `--git-dir`), terraform, and reading or writing the person's konjir
+ * reconfigured (`-c`, `-C`, `--git-dir`), terraform, and reading or writing the person's kolab
  * credentials. The patterns are prefix globs over the command as written, so quoting, abbreviations
  * and wrappers pass them, and a `:<branch>` delete refspec can't be written as one (a trailing `:*`
  * reads as their old prefix syntax): the guard hook (guardSettings, guard.ts) reads each command as
@@ -190,7 +194,7 @@ export function deniedTools(branch: string, credentialsDir: string, bin?: string
     `Bash(git push *:${b})`, `Bash(git push *:${b} *)`, `Bash(git push *:refs/heads/${b}*)`, `Bash(git push * ${b})`, `Bash(git push * ${b} *)`,
     // Edit(path) covers every tool that edits a file; Write(path) and MultiEdit(path) match nothing.
     `Read(${dir})`, `Edit(${dir})`,
-    // The job's own konjir, which its guard hook runs (W7.8): a job that rewrote it would turn the guard off.
+    // The job's own kolab, which its guard hook runs (W7.8): a job that rewrote it would turn the guard off.
     ...(bin ? [`Edit(/${bin.replace(/\/+$/, '')}/**)`] : []),
   ];
 }
@@ -227,9 +231,9 @@ const JOB_VERBS: Record<string, string> = { build: 'build', review: 'review', an
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
- * How this konjir runs itself: node, its own options and its script, or a compiled konjir alone
+ * How this kolab runs itself: node, its own options and its script, or a compiled kolab alone
  * (Bun's single-file executable, whose script is inside it). The options are what run the source
- * (W7.8): bin/konjir's tsx loads its loaders and the @konjir/source condition through them, and
+ * (W7.8): bin/kolab's tsx loads its loaders and the @konjir/source condition through them, and
  * node with the script alone can't load it.
  */
 export function konjirCommand(proc: Pick<NodeJS.Process, 'argv' | 'execArgv' | 'execPath'> = process): string[] {
@@ -238,22 +242,29 @@ export function konjirCommand(proc: Pick<NodeJS.Process, 'argv' | 'execArgv' | '
 }
 
 /**
- * Writes `konjir` into `dir` (W7.8): a shell script that runs `command`, konjir as this runner runs
- * it, with tsx's tsconfig when it is set (bin/konjir sets it). The runner puts `dir` first on a job's
- * PATH, so `konjir work deliver` runs in the job as written, under Bash(konjir *), which needs no
+ * Writes `kolab` into `dir` (W7.8): a shell script that runs `command`, kolab as this runner runs
+ * it, with tsx's tsconfig when it is set (bin/kolab sets it). The runner puts `dir` first on a job's
+ * PATH, so `kolab work deliver` runs in the job as written, under Bash(kolab *), which needs no
  * approval; and the job's guard hook runs it too. Returns its path.
+ *
+ * The same script is written as `konjir` beside it, for now: Kolab's playbooks and its tools' hints
+ * still tell a job to run `konjir work deliver` until the server's texts say kolab, and a job runs
+ * them as written. It is the job's own, not an alias anyone installs, and goes with those texts.
  */
 export function writeKonjirShim(dir: string, command: string[] = konjirCommand(), env: NodeJS.ProcessEnv = process.env): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
-  const path = join(dir, 'konjir');
   const tsconfig = env.TSX_TSCONFIG_PATH ? `TSX_TSCONFIG_PATH=${shellQuote(env.TSX_TSCONFIG_PATH)} ` : '';
-  rmSync(path, { force: true });
-  writeFileSync(path, `#!/bin/sh\n# konjir, as the konjir work that started this job runs it (W7.8).\n${tsconfig}exec ${command.map(shellQuote).join(' ')} "$@"\n`, { mode: 0o555 });
-  // Read and run only, and nothing added beside it: the guard hook runs it (removeKonjirShim undoes this).
-  chmodSync(path, 0o555);
+  const script = `#!/bin/sh\n# kolab, as the kolab work that started this job runs it (W7.8).\n${tsconfig}exec ${command.map(shellQuote).join(' ')} "$@"\n`;
+  for (const name of ['kolab', 'konjir']) {
+    const path = join(dir, name);
+    rmSync(path, { force: true });
+    writeFileSync(path, script, { mode: 0o555 });
+    // Read and run only, and nothing added beside it: the guard hook runs it (removeKonjirShim undoes this).
+    chmodSync(path, 0o555);
+  }
   chmodSync(dir, 0o500);
-  return path;
+  return join(dir, 'kolab');
 }
 
 /** `path`'s own lstat, never a link's target's, or undefined when nothing is there. */
@@ -279,8 +290,8 @@ function removeIn(dir: string, real: string, name: string, log: (line: string) =
   const path = join(dir, name);
   const st = lstatOf(path);
   if (!st) return true;
-  const leave = (why: string) => { log(`konjir work: left ${path}: ${why}`); return false; };
-  if (st.isSymbolicLink()) return leave('it is a link, which konjir work never follows');
+  const leave = (why: string) => { log(`kolab work: left ${path}: ${why}`); return false; };
+  if (st.isSymbolicLink()) return leave('it is a link, which kolab work never follows');
   let at: string;
   try { at = realpathSync(path); } catch (e) { return leave((e as Error).message); }
   if (at !== join(real, name)) return leave(`it is ${at}, outside ${real}`);
@@ -289,7 +300,7 @@ function removeIn(dir: string, real: string, name: string, log: (line: string) =
     try {
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
       const own = fstatSync(fd);
-      if (!own.isDirectory() || own.ino !== st.ino || own.dev !== st.dev) return leave('it changed as konjir work looked at it');
+      if (!own.isDirectory() || own.ino !== st.ino || own.dev !== st.dev) return leave('it changed as kolab work looked at it');
       if (own.uid !== process.getuid?.()) return leave('it is another user\'s');
       fchmodSync(fd, 0o700);
     } catch (e) {
@@ -303,7 +314,7 @@ function removeIn(dir: string, real: string, name: string, log: (line: string) =
 }
 
 /**
- * Removes a job's konjir and its directory (writeKonjirShim), whose modes forbid writing, as
+ * Removes a job's kolab and its directory (writeKonjirShim), whose modes forbid writing, as
  * removeIn does: only when it and the directory it is in are directories themselves, never links.
  */
 export function removeKonjirShim(dir: string, log: (line: string) => void = () => {}) {
@@ -315,7 +326,7 @@ function removeFile(path: string, log: (line: string) => void) {
   const parent = dirname(path);
   let real: string;
   try { real = realpathSync(parent); } catch { return; }
-  if (!realDir(parent, real)) { log(`konjir work: left ${path}: ${parent} isn't a directory itself`); return; }
+  if (!realDir(parent, real)) { log(`kolab work: left ${path}: ${parent} isn't a directory itself`); return; }
   removeIn(parent, real, basename(path), log);
 }
 
@@ -347,7 +358,7 @@ export const markerText = (pid: number, machine: Machine = thisMachine()) => `${
 const SWEPT = ['.bin', '.mcp', '.live'] as const;
 
 /**
- * Sweeps what killed runners left in `jobsDir` (W7.12): each job's konjir (.bin/<job>, its modes
+ * Sweeps what killed runners left in `jobsDir` (W7.12): each job's kolab (.bin/<job>, its modes
  * restored first, as removeKonjirShim does), its MCP config's FIFO (.mcp/<job>.json) and its marker
  * (.live/<job>). A runner writes a job's marker (markerText), naming its own process, machine and
  * boot, before anything else of the job and removes it last. A job is left alone while it may be
@@ -363,13 +374,13 @@ export function sweepJobs(jobsDir: string, opts: { alive?: (pid: number) => bool
   const log = opts.log ?? (() => {});
   let real: string;
   try { real = realpathSync(jobsDir); } catch { return []; }
-  if (!realDir(jobsDir, real)) { log(`konjir work: left ${jobsDir} as it is: it isn't a directory itself`); return []; }
+  if (!realDir(jobsDir, real)) { log(`kolab work: left ${jobsDir} as it is: it isn't a directory itself`); return []; }
   const dirs = new Map<string, string>();
   for (const sub of SWEPT) {
     const path = join(jobsDir, sub);
     const st = lstatOf(path);
     if (!st) continue;
-    if (!realDir(path, join(real, sub))) { log(`konjir work: left ${path} as it is: it isn't a directory itself, which konjir work never follows`); continue; }
+    if (!realDir(path, join(real, sub))) { log(`kolab work: left ${path} as it is: it isn't a directory itself, which kolab work never follows`); continue; }
     dirs.set(sub, path);
   }
   const list = (sub: string) => { const d = dirs.get(sub); if (!d) return []; try { return readdirSync(d); } catch { return []; } };
@@ -408,7 +419,7 @@ export function sweepJobs(jobsDir: string, opts: { alive?: (pid: number) => bool
 
 /**
  * The settings a job's Claude Code runs with beside its own (`--settings`, W6.4): a PreToolUse hook
- * on the tools that run shell commands (Bash, and Monitor, which runs one to watch), `konjir work guard --branch <default branch>`, which reads each command as the shell
+ * on the tools that run shell commands (Bash, and Monitor, which runs one to watch), `kolab work guard --branch <default branch>`, which reads each command as the shell
  * splits it and denies what deniedTools' patterns can't catch (guard.ts). Hooks run whatever the
  * permission mode, --dangerously-skip-permissions included, and a denial reaches the agent as why.
  * `disableAllHooks: false`: --settings outranks the repository's own settings, which Claude Code
@@ -416,7 +427,7 @@ export function sweepJobs(jobsDir: string, opts: { alive?: (pid: number) => bool
  * checks out, say) doesn't turn this one off; without it, it did (found running it).
  */
 export function guardSettings(guard: string[], branch: string): string {
-  // Claude Code blocks a command only when its hook exits 2; any other failure of the hook (its konjir
+  // Claude Code blocks a command only when its hook exits 2; any other failure of the hook (its kolab
   // gone, node missing, a crash) would let the command through, so each of those is a denial too.
   const command = `${[...guard, 'work', 'guard', '--branch', branch].map(shellQuote).join(' ')} || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }`;
   return JSON.stringify({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: GUARDED_TOOLS.join('|'), hooks: [{ type: 'command', command }] }] } });
@@ -427,7 +438,7 @@ export const FEED_DEADLINE_MS = 2 * 60_000;
 
 /**
  * The kinds of job whose agent's commands get the job's token as KONJIR_TOKEN: a build job's, for
- * `konjir work deliver`, which records its commits and submits its package. Every other kind works
+ * `kolab work deliver`, which records its commits and submits its package. Every other kind works
  * with Kolab over MCP alone, so what it runs (a review's tests of someone else's change among them)
  * finds no token in its environment or in any file (W6.4).
  */
@@ -444,8 +455,8 @@ export const TOKEN_KINDS: ReadonlySet<string> = new Set(['build']);
  * `allowAll` --dangerously-skip-permissions; deniedTools and the guard hook (guardSettings) either
  * way. The environment is HARNESS_ENV's, with KONJIR_URL, KONJIR_JOB, KONJIR_ITEM, KONJIR_JOB_KIND
  * and KONJIR_CREDENTIALS naming `credentials`, a file that doesn't exist; and for a build job
- * (TOKEN_KINDS), KONJIR_TOKEN, so `konjir work deliver` inside it works as the job's agent. With
- * `bin`, the directory of the job's konjir (writeKonjirShim), PATH has it first (W7.8).
+ * (TOKEN_KINDS), KONJIR_TOKEN, so `kolab work deliver` inside it works as the job's agent. With
+ * `bin`, the directory of the job's kolab (writeKonjirShim), PATH has it first (W7.8).
  */
 export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: boolean; harness?: string; worktree: string; branch: string; credentials: string; mcpConfig: string; guard?: string[]; bin?: string; personCredentials?: string; env?: NodeJS.ProcessEnv }) {
   const [command, ...pre] = (opts.harness?.trim() || 'claude').split(/\s+/);
@@ -461,7 +472,7 @@ export function harnessCommand(job: TakenJob, opts: { url: string; allowAll?: bo
   if (opts.bin) env.PATH = env.PATH ? `${opts.bin}${delimiter}${env.PATH}` : opts.bin;
   const prompt = [
     `Konjir job ${job.job}: ${JOB_VERBS[job.kind] ?? 'build'} ${job.item}, as ${job.agent}, in the worktree ${opts.worktree}.`,
-    ...(job.trailer ? [`Every commit for it carries the trailer "${job.trailer}" (git commit --trailer "${job.trailer}"); konjir work deliver records them.`] : []),
+    ...(job.trailer ? [`Every commit for it carries the trailer "${job.trailer}" (git commit --trailer "${job.trailer}"); kolab work deliver records them.`] : []),
     '', job.instructions,
   ].join('\n');
   return { command, args, env, prompt, mcp };
@@ -561,7 +572,7 @@ function remoteOf(git: Git, tracked: { remote: string; tracked: string | undefin
     try { u = canonicalRemote(git(['remote', 'get-url', name]).trim())?.toLowerCase(); } catch { /* none */ }
     if (u === url.toLowerCase()) return name;
   }
-  throw new Error(`no remote of this checkout is ${url}, so konjir work has nowhere to start a job from but a fork: add it (git remote add upstream ${url}) and run it again`);
+  throw new Error(`no remote of this checkout is ${url}, so kolab work has nowhere to start a job from but a fork: add it (git remote add upstream ${url}) and run it again`);
 }
 
 /** A job the runner is running. */
@@ -573,12 +584,12 @@ interface Live {
 }
 
 /**
- * `konjir work`: checks the session is a person's, the checkout is the kolab's registered repository
+ * `kolab work`: checks the session is a person's, the checkout is the kolab's registered repository
  * and a job could run here, then takes and runs jobs until stopped (or, with `once`, one job).
  * Returns how each job ended.
  */
 export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobReport[]> {
-  if (process.platform === 'win32') throw new Error('konjir work doesn\'t run on Windows yet: run it on macOS or Linux (or WSL)');
+  if (process.platform === 'win32') throw new Error('kolab work doesn\'t run on Windows yet: run it on macOS or Linux (or WSL)');
   const log = deps.log ?? ((l: string) => console.error(l));
   const shell = deps.shell ?? gitShell;
   const env = deps.env ?? process.env;
@@ -593,12 +604,12 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
   // What a killed runner left, first, as it needs no Kolab: jobs another runner here still runs are kept (W7.12).
   const swept = sweepJobs(jobsDir, { log });
-  if (swept.length) log(`konjir work: swept what ${swept.length === 1 ? 'a job' : `${swept.length} jobs`} no runner here still runs left in ${jobsDir} (${swept.join(', ')})`);
+  if (swept.length) log(`kolab work: swept what ${swept.length === 1 ? 'a job' : `${swept.length} jobs`} no runner here still runs left in ${jobsDir} (${swept.join(', ')})`);
 
   const me = await deps.call('whoami', {}) as { kind: string; actor: string; kolab: string };
   if (me.kind !== 'person') {
-    throw new Error(`this session is ${clean(me.actor)}, an agent: konjir work runs as a person, who sets their machine to work and whose pool agents do the jobs (D103). `
-      + 'Sign in as yourself, konjir login (on Kolab\'s page choose Yourself), with no KONJIR_TOKEN set.');
+    throw new Error(`this session is ${clean(me.actor)}, an agent: kolab work runs as a person, who sets their machine to work and whose pool agents do the jobs (D103). `
+      + 'Sign in as yourself, kolab login (on Kolab\'s page choose Yourself), with no KONJIR_TOKEN set.');
   }
   const { checkout, repo } = await checkoutRepository(deps.call, deps.git, opts.repo);
   const remote = remoteOf(deps.git, checkout, repo.url);
@@ -626,9 +637,9 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
   // Preflight: a job could start here, or nothing is taken.
   const [harnessCmd] = (harness?.trim() || 'claude').split(/\s+/);
   if (!runnable(harnessCmd, env.PATH)) throw new Error(`the harness ${harnessCmd} isn't on PATH (or isn't executable): install Claude Code, or name another with --harness`);
-  let round: Promise<{ base: string; branch: string }> = fetchBase().catch((e: Error) => { throw new Error(`konjir work couldn't fetch ${remote} (${repo.url}): ${e.message}`); });
+  let round: Promise<{ base: string; branch: string }> = fetchBase().catch((e: Error) => { throw new Error(`kolab work couldn't fetch ${remote} (${repo.url}): ${e.message}`); });
   await round;
-  log(`konjir work: ${clean(me.actor)} in kolab ${clean(me.kolab)}, on ${machine}, in ${checkout.top} (${repo.url}, from ${remote}); ${opts.once ? 'one job, then it exits (--once)' : `up to ${max} job${max === 1 ? '' : 's'} at once`}${opts.allowAll ? ', with every permission (--allow-all)' : ''}.`);
+  log(`kolab work: ${clean(me.actor)} in kolab ${clean(me.kolab)}, on ${machine}, in ${checkout.top} (${repo.url}, from ${remote}); ${opts.once ? 'one job, then it exits (--once)' : `up to ${max} job${max === 1 ? '' : 's'} at once`}${opts.allowAll ? ', with every permission (--allow-all)' : ''}.`);
 
   const live = new Map<string, Live>();
   const reports: JobReport[] = [];
@@ -768,7 +779,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
       let mcpConfig: string | undefined;
       let marker: string | undefined;
       try {
-        if (!JOB_ID.test(taken.job)) throw new Error(`Kolab gave the job id ${JSON.stringify(clean(taken.job).slice(0, 140))}, which konjir work won't make a directory of`);
+        if (!JOB_ID.test(taken.job)) throw new Error(`Kolab gave the job id ${JSON.stringify(clean(taken.job).slice(0, 140))}, which kolab work won't make a directory of`);
         const worktree = join(jobsDir, taken.job);
         const { base, branch } = await round;
         if (l.stopping || l.lost) { report.outcome = 'stopped'; report.ledger = await end(l, 'stopped', 'stopped before it started'); return report; }
@@ -787,10 +798,10 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         const fifo = mcpConfig = join(fifos, `${taken.job}.json`);
         rmSync(fifo, { force: true });
         await new Promise<void>((resolve, reject) => execFile('mkfifo', ['-m', '600', fifo], (e) => (e ? reject(new Error(`couldn't make the FIFO its MCP config goes through (mkfifo: ${e.message})`)) : resolve())));
-        // The job's konjir, first on its PATH, which its guard hook runs too (W7.8).
+        // The job's kolab, first on its PATH, which its guard hook runs too (W7.8).
         bin = join(jobsDir, '.bin', taken.job);
-        const konjir = writeKonjirShim(bin, deps.konjir ?? konjirCommand(), env);
-        const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env, mcpConfig, guard: [konjir], bin,
+        const shim = writeKonjirShim(bin, deps.kolab ?? konjirCommand(), env);
+        const h = harnessCommand(taken, { url: opts.url, allowAll: opts.allowAll, harness, worktree, branch, env, mcpConfig, guard: [shim], bin,
           credentials: join(jobsDir, '.no-credentials', taken.job, 'credentials.json') });
         log(`job ${taken.job}: ${clean(taken.kind)} ${clean(taken.item)} as ${clean(taken.agent)}, in ${worktree}`);
         const out = createWriteStream(join(jobsDir, `${taken.job}.log`), { flags: 'a', mode: 0o600 });
@@ -824,14 +835,14 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
         report.exit = exit;
         report.outcome = l.lost ? 'lost' : l.stopping ? 'stopped' : exit === 0 ? 'done' : 'failed';
         if (!started) setupFailed(`${h.command} didn't start`);
-        report.ledger = await end(l, report.outcome === 'lost' ? 'failed' : report.outcome, l.lost ? `konjir work stopped it: Kolab ${l.lost === 'refused' ? 'ended it' : 'couldn\'t be reached to renew it'}\n${l.tail.trim()}` : l.tail.trim());
+        report.ledger = await end(l, report.outcome === 'lost' ? 'failed' : report.outcome, l.lost ? `kolab work stopped it: Kolab ${l.lost === 'refused' ? 'ended it' : 'couldn\'t be reached to renew it'}\n${l.tail.trim()}` : l.tail.trim());
       } catch (e) {
         l.finished = true;
         clearTimeout(l.beat);
         const msg = clean((e as Error).message);
         report.outcome = l.stopping ? 'stopped' : 'failed';
         if (!l.stopping) setupFailed(msg);
-        report.ledger = await end(l, report.outcome, `konjir work couldn't start it: ${msg}`);
+        report.ledger = await end(l, report.outcome, `kolab work couldn't start it: ${msg}`);
         log(`job ${clean(taken.job)}: couldn't start it: ${msg}`);
       }
       if (bin) removeKonjirShim(bin, log);
@@ -857,7 +868,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
     for (;;) {
       if (stopped) break;
       if (setupFailures >= SETUP_FAILURES) {
-        failure = new Error(`konjir work stopped taking jobs: ${setupFailures} in a row couldn't start (the last: ${lastSetupFailure})`);
+        failure = new Error(`kolab work stopped taking jobs: ${setupFailures} in a row couldn't start (the last: ${lastSetupFailure})`);
         log(failure.message);
         break;
       }
@@ -897,7 +908,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
       }
       if (opts.once) {
         if (!took && why) log(`nothing taken: ${why}`);
-        if (!took && unreachable) failure = new Error(`konjir work ${why}`);
+        if (!took && unreachable) failure = new Error(`kolab work ${why}`);
         break;
       }
       // Full: wait for a job to end. Otherwise wait, from the first wait again if this round took
@@ -929,7 +940,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
 /** A job as konjir_list_jobs gives it (JOB5). */
 interface ListedJob { job: string; person: string; machine: string; agent: string; kind: string; item: string; started_at: string; lease_until: string; ended_at?: string | null; outcome?: string | null }
 
-/** `konjir status`: the kolab's queue by kind, its live jobs and the caller's room under the caps, from konjir_list_jobs (JOB5). */
+/** `kolab status`: the kolab's queue by kind, its live jobs and the caller's room under the caps, from konjir_list_jobs (JOB5). */
 export async function workStatus(call: Call) {
   const jobs: ListedJob[] = [];
   let first: { queue: Record<string, number>; caps: Caps } | undefined;
@@ -950,7 +961,7 @@ function ago(since: string, now: number) {
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86_400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86_400)}d`;
 }
 
-/** `konjir status` for a person to read, every string from Kolab cleaned of control characters. */
+/** `kolab status` for a person to read, every string from Kolab cleaned of control characters. */
 export function formatStatus(s: Awaited<ReturnType<typeof workStatus>>, now = Date.now()): string {
   const room = (c: { live: number; max: number }) => `${Number(c.live)} of ${Number(c.max)} live, room for ${Math.max(0, c.max - c.live)}`;
   const lines = [

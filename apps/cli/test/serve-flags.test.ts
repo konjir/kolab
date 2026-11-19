@@ -1,4 +1,4 @@
-// `konjir serve --no-migrate --no-worker` (W2.24): a restore's smoke check opens a database without
+// `kolab serve --no-migrate --no-worker` (W2.24): a restore's smoke check opens a database without
 // migrating it or running its outbox, and says so at warn; a database that needs a migration is refused.
 import { expect, test } from '@jest/globals';
 import { spawn } from 'node:child_process';
@@ -10,7 +10,7 @@ import { openKolab, persistentStore, type Store } from '@konjir/engine/testing';
 
 const root = resolve(import.meta.dirname, '../../..');
 
-/** Runs `konjir serve` on the store with `flags` until it listens or exits, then stops it; resolves with what it printed and how it ended. */
+/** Runs `kolab serve` on the store with `flags` until it listens or exits, then stops it; resolves with what it printed and how it ended. */
 function serve(store: Store, flags: string[]): Promise<{ outcome: 'listening' | 'exited'; output: string }> {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const where = store.databaseUrl ? ['--database-url', store.databaseUrl] : ['--data', store.dataDir!];

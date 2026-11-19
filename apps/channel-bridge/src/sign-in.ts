@@ -1,16 +1,16 @@
 /**
  * How the bridge signs in to Kolab (W3.5, D55): with KONJIR_TOKEN when it is set (a hand-issued
- * session token, which overrides any sign-in), or else with the sign-in `konjir login` keeps for
- * the same MCP URL, in the same credentials file, shared with the konjir CLI (@konjir/login). With
- * no sign-in kept, the bridge signs in by itself on first start, as `konjir login` does: it opens
+ * session token, which overrides any sign-in), or else with the sign-in `kolab login` keeps for
+ * the same MCP URL, in the same credentials file, shared with the kolab CLI (@konjir/login). With
+ * no sign-in kept, the bridge signs in by itself on first start, as `kolab login` does: it opens
  * the person's browser at Kolab's own sign-in page and tells the session so in fixed words, with
  * the link only in its log. That sign-in is kept for the CLI too. KONJIR_CHANNEL_SIGN_IN=off turns
  * that off, and so does a machine with no browser to open (CI, an SSH session, no display): the
- * bridge then waits for `konjir login`.
+ * bridge then waits for `kolab login`.
  *
  * One bridge signs in at a time: a marker lock beside the credentials file (`.signing-in`), under
  * which the bridge checks again, under the credentials lock, that nothing was kept meanwhile. A
- * sign-in that finishes after a `konjir login` kept one yields: the other is kept, and the
+ * sign-in that finishes after a `kolab login` kept one yields: the other is kept, and the
  * bridge's own grant is revoked.
  */
 import { FileLock, SIGN_IN_WAIT_MS, StoredLogin, agentCredentials, checkKolabUrl, login, logout, openBrowser, safeUrl } from '@konjir/login';
@@ -23,7 +23,7 @@ export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefine
 
 /**
  * KONJIR_SCOPE, as the bridge's own browser sign-in asks for it: what Kolab's consent page
- * preselects (`konjir kolab:<k> role:<r> agent:<id>`, which `konjir connect claude` writes). Never
+ * preselects (`konjir kolab:<k> role:<r> agent:<id>`, which `kolab connect claude` writes). Never
  * `as:self`: no app preselects acting as the person (D60). Anything but those words is dropped, and
  * with KONJIR_AGENT, so is any `agent:` but that agent's.
  */
@@ -69,7 +69,7 @@ export function browserAvailable(env: NodeJS.ProcessEnv, platform: NodeJS.Platfo
 /**
  * The bridge's credential for `url`. With no KONJIR_TOKEN and no sign-in kept, and a sign-in of
  * its own allowed, it runs the browser sign-in first and resolves once that is done, or has
- * failed (then the bridge waits for `konjir login`). `open` sends the person's browser (tests
+ * failed (then the bridge waits for `kolab login`). `open` sends the person's browser (tests
  * stand one in); with it given, a browser is taken to be there.
  */
 export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
@@ -79,8 +79,8 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   timeoutMs?: number;
 }): Promise<BridgeAuth> {
   // An empty or blank KONJIR_TOKEN is unset: the plugin's .mcp.json passes ${KONJIR_TOKEN:-}, and
-  // konjir connect claude writes KONJIR_TOKEN: "".
-  // KONJIR_AGENT: this entry's agent keeps its own sign-in, apart from the CLI's (konjir connect claude, W3.8).
+  // kolab connect claude writes KONJIR_TOKEN: "".
+  // KONJIR_AGENT: this entry's agent keeps its own sign-in, apart from the CLI's (kolab connect claude, W3.8).
   // With KONJIR_TOKEN too, the token must work as that agent, or the bridge serves nothing.
   const agent = env.KONJIR_AGENT?.trim() || undefined;
   const token = env.KONJIR_TOKEN?.trim() || undefined;
@@ -89,15 +89,15 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
   const shown = safeUrl(url);
   const path = agent ? agentCredentials(agent, env) : undefined;
   const scope = scopeFrom(env);
-  // It preselects the agent, and konjir login refuses a sign-in as anyone else.
-  const loginCommand = path ? `KONJIR_CREDENTIALS=${shellWord(path)} konjir login --url ${shown} --agent ${agent}` : undefined;
+  // It preselects the agent, and kolab login refuses a sign-in as anyone else.
+  const loginCommand = path ? `KONJIR_CREDENTIALS=${shellWord(path)} kolab login --url ${shown} --agent ${agent}` : undefined;
   const kept = () => new StoredLogin(url, { clientName: CLIENT_NAME, path });
   const stored = kept();
   if (stored.signedIn) {
-    io.log(agent ? `using the sign-in kept for ${agent} at ${shown}` : `using the sign-in konjir login keeps for ${shown}`);
+    io.log(agent ? `using the sign-in kept for ${agent} at ${shown}` : `using the sign-in kolab login keeps for ${shown}`);
     return { login: stored, loginCommand, agent };
   }
-  const run = `run ${loginCommand ?? `konjir login --url ${shown}`} in a terminal`;
+  const run = `run ${loginCommand ?? `kolab login --url ${shown}`} in a terminal`;
   if (!signInOn(env)) {
     io.log(`no sign-in is kept for ${shown}, and KONJIR_CHANNEL_SIGN_IN is off: ${run}`);
     return { login: stored, loginCommand, agent };
@@ -119,7 +119,7 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
       io.log(`another konjir channel started a browser sign-in to ${shown}; this one will use that sign-in once it is done`);
       return { login: stored, awaiting: 'another-channel', loginCommand, agent };
     }
-    // A marker that is a symbolic link, or one konjir can't read or remove: said as it is.
+    // A marker that is a symbolic link, or one kolab can't read or remove: said as it is.
     io.log(`the channel can't sign in by itself (${why}); ${run}`);
     return { login: stored, loginCommand, agent };
   }
@@ -127,7 +127,7 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
     // Under the credentials lock: a sign-in kept since the first look is used, and nothing is registered.
     // What it saw there is the sign-in's baseline: none (''), so any kept after this makes it yield.
     if (await stored.locked(async () => stored.signedIn)) {
-      io.log(`using the sign-in another konjir kept for ${shown} meanwhile`);
+      io.log(`using the sign-in another kolab process kept for ${shown} meanwhile`);
       return { login: stored, loginCommand, agent };
     }
     const who = await login(url, {
@@ -153,8 +153,8 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
       io.log(`the sign-in worked as ${who.actor}, not ${agent}, so it was revoked and forgotten; ${run}, choosing ${agent}`);
     } else {
       io.log(who.yielded
-        ? `another konjir signed in to ${shown} meanwhile, as ${who.actor}: the channel uses that sign-in, and revoked its own`
-        : `signed in to ${shown} as ${who.actor}, in kolab ${who.kolab} as ${who.role}${agent ? '' : '; kept for konjir too'}`);
+        ? `another kolab process signed in to ${shown} meanwhile, as ${who.actor}: the channel uses that sign-in, and revoked its own`
+        : `signed in to ${shown} as ${who.actor}, in kolab ${who.kolab} as ${who.role}${agent ? '' : '; kept for kolab too'}`);
     }
   } catch (e) {
     io.log(`the sign-in didn't finish (${mask(String((e as Error).message ?? e))}); waiting: ${run}`);

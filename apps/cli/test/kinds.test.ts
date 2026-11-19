@@ -81,7 +81,7 @@ test('over MCP: a spec, its prototype and two bindings, each naming its parent, 
   expect(stale).toStrictEqual(['kj:orders-pg@2#W1', 'kj:orders-pg@2#b1', 'kj:orders-ui@1#cancel']);
 });
 
-test('in a shell: konjir create_node takes kind and parent, and prints the parent Kolab named; a plan is refused (D104)', async () => {
+test('in a shell: kolab create_node takes kind and parent, and prints the parent Kolab named; a plan is refused (D104)', async () => {
   const { server, pm, eng } = await kolabWithAgents();
   await call(pm, 'create_node', { kind: 'spec', title: 'Orders', id: 'orders' });
   const out: string[] = [];

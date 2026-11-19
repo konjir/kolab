@@ -309,7 +309,7 @@ test('over MCP, two kolabs each have a node called checkout: the short form is y
   expect(await rejection(call(alice, 'draft', { node: 'billing/checkout', elements: [{ id: 'R1', text: 'x' }] }))).toMatch(/drafting across kolabs isn't supported yet/);
 });
 
-test('over MCP, konjir list_agents (D106): a person\'s own session lists their agents and the places used; an agent\'s session and the admin token are refused', async () => {
+test('over MCP, kolab list_agents (D106): a person\'s own session lists their agents and the places used; an agent\'s session and the admin token are refused', async () => {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()) });
   const admin = await connect(server.url, ADMIN);
   closeAtEnd(server, admin);

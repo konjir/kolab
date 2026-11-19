@@ -1,7 +1,7 @@
 // W3.4's done-when, end to end, with no admin (P15, D55): a new person signs up with one command,
-// `konjir login`, choosing on Kolab's page a new agent of theirs and a first kolab of their own; the
+// `kolab login`, choosing on Kolab's page a new agent of theirs and a first kolab of their own; the
 // agent works there through the CLI, whose 15-minute token refreshes by itself; the person invites
-// a teammate with a link, who joins; and `konjir logout` revokes the agent's grant. The identity
+// a teammate with a link, who joins; and `kolab logout` revokes the agent's grant. The identity
 // provider is a stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,7 +50,7 @@ afterEach(() => {
   process.env = { ...env };
 });
 
-test('from nothing to an agent working in its own kolab, with a teammate invited, with no admin: konjir login, a refresh, an invite, konjir logout', async () => {
+test('from nothing to an agent working in its own kolab, with a teammate invited, with no admin: kolab login, a refresh, an invite, kolab logout', async () => {
   const kolab = await openKolab();
   const idp = new StubIdentity().next({ subject: '41', login: 'Ann' });
   const server = await startServer({ adminToken: 'login-admin', kolab, identity: idp, webRoot: null });
@@ -68,7 +68,7 @@ test('from nothing to an agent working in its own kolab, with a teammate invited
   expect(page).toContain('konjir CLI');
   expect(page).toMatch(/value="engineer" checked/);   // preselected from --role
 
-  // The sign-in is kept where only Ann can read it, and every konjir command uses it.
+  // The sign-in is kept where only Ann can read it, and every kolab command uses it.
   const path = credentialsPath();
   expect(statSync(path).mode & 0o777).toBe(0o600);
   expect(statSync(join(path, '..')).mode & 0o777).toBe(0o700);
@@ -99,16 +99,16 @@ test('from nothing to an agent working in its own kolab, with a teammate invited
   await main(['whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns', role: 'engineer' });
 
-  // konjir logout revokes the grant and forgets it: the agent's session ends.
+  // kolab logout revokes the grant and forgets it: the agent's session ends.
   out = [];
   await main(['logout']);
   expect(out.join('\n')).toMatch(/Signed out of .*: the sign-in is revoked and forgotten/);
   expect((await kolab.db.query(`select 1 from session where actor_id = 'ann-cli' and ended_at is null`)).rows).toStrictEqual([]);
-  expect(await rejection(main(['whoami']))).toMatch(/or run konjir login/);
+  expect(await rejection(main(['whoami']))).toMatch(/or run kolab login/);
   expect(await logout(server.url)).toStrictEqual({ had: false, revoked: false });
 });
 
-/** Ann signs in with konjir login, as a new agent of hers, in a first kolab. */
+/** Ann signs in with kolab login, as a new agent of hers, in a first kolab. */
 async function signedIn(label = 'cli') {
   const kolab = await openKolab();
   const idp = new StubIdentity();
@@ -126,7 +126,7 @@ async function signedIn(label = 'cli') {
 test('a project\'s .konjir.json names the kolab and Kolab\'s URL for login and the verbs, from a folder below it too; --kolab, --url and KONJIR_URL override it (API26)', async () => {
   const { kolab, server, idp } = await signedIn();
   delete process.env.KONJIR_URL;
-  // Another sign-in kept beside Ann's, so konjir can't take the one kept (D106): only the file names the URL.
+  // Another sign-in kept beside Ann's, so kolab can't take the one kept (D106): only the file names the URL.
   const path = credentialsPath();
   const all = JSON.parse(readFileSync(path, 'utf8'));
   all['https://kolab.example.com/mcp'] = { tokens: { access_token: 'x', token_type: 'Bearer', refresh_token: 'kjr_x' } };
@@ -148,22 +148,22 @@ test('a project\'s .konjir.json names the kolab and Kolab\'s URL for login and t
     expect(JSON.parse(out.join('\n'))).toHaveProperty('nodes');
     // The URL: KONJIR_URL, then --url, override the file's.
     process.env.KONJIR_URL = 'http://127.0.0.1:9/mcp';
-    expect(await rejection(main(['whoami']))).toMatch(/konjir keeps no sign-in for http:\/\/127\.0\.0\.1:9\/mcp, but keeps sign-ins for/);
+    expect(await rejection(main(['whoami']))).toMatch(/kolab keeps no sign-in for http:\/\/127\.0\.0\.1:9\/mcp, but keeps sign-ins for/);
     out = [];
     await main(['--url', server.url, 'whoami']);
     expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
     delete process.env.KONJIR_URL;
     // The kolab: a session in another kolab is refused before anything runs; --kolab overrides the file's.
     says({ kolab: 'other', url: server.url });
-    expect(await rejection(main(['create_node', 'kind=spec', 'title=Not here', 'id=not-here']))).toBe(`Error: ${file} names kolab other, but this session works in kolab anns: run konjir login to sign in to other, or pass --kolab anns`);
+    expect(await rejection(main(['create_node', 'kind=spec', 'title=Not here', 'id=not-here']))).toBe(`Error: ${file} names kolab other, but this session works in kolab anns: run kolab login to sign in to other, or pass --kolab anns`);
     expect((await kolab.db.query(`select 1 from node where id = 'not-here'`)).rows).toStrictEqual([]);
     out = [];
     await main(['--kolab', 'anns', 'whoami']);
     expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
     says({ kolab: 'anns', url: server.url });
-    expect(await rejection(main(['--kolab', 'other', 'whoami']))).toBe('Error: --kolab names kolab other, but this session works in kolab anns: run konjir login --kolab other to sign in to other');
+    expect(await rejection(main(['--kolab', 'other', 'whoami']))).toBe('Error: --kolab names kolab other, but this session works in kolab anns: run kolab login --kolab other to sign in to other');
 
-    // konjir login takes both from the file, and --agent a label of Ann's: <you>-<label>. With the
+    // kolab login takes both from the file, and --agent a label of Ann's: <you>-<label>. With the
     // kolab, role and agent named, Kolab's page is locked to ann-cli (D97).
     let page = '';
     const open = (form: Record<string, string>) => (u: URL) => {
@@ -187,7 +187,7 @@ test('a project\'s .konjir.json names the kolab and Kolab\'s URL for login and t
 
 test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in is used; a real token still wins, and a blank --token beats an exported one', async () => {
   const { server } = await signedIn();
-  // konjir connect claude writes KONJIR_TOKEN: "" in .mcp.json; those settings copied into a shell.
+  // kolab connect claude writes KONJIR_TOKEN: "" in .mcp.json; those settings copied into a shell.
   for (const blank of ['', '   ']) {
     process.env.KONJIR_TOKEN = blank;
     out = [];
@@ -218,7 +218,7 @@ test('an empty or blank KONJIR_TOKEN, or --token "", is unset: the kept sign-in 
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
 });
 
-test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; with several, it names them (D106)', async () => {
+test('with no KONJIR_URL and no --url, kolab uses the one sign-in it keeps; with several, it names them (D106)', async () => {
   const { server } = await signedIn();
   delete process.env.KONJIR_URL;
   const errors = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -226,13 +226,13 @@ test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; wit
   await main(['whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli', kolab: 'anns' });
   // It says so, on stderr, so the output stays the verb's.
-  expect(errors.mock.calls.map((c) => String(c[0]))).toContain(`konjir: using ${server.url} (the one sign-in kept)`);
-  // Only a verb, konjir work or logout takes it: login and connect sign in afresh, at the local
+  expect(errors.mock.calls.map((c) => String(c[0]))).toContain(`kolab: using ${server.url} (the one sign-in kept)`);
+  // Only a verb, kolab work or logout takes it: login and connect sign in afresh, at the local
   // default; with a token, or inside a job, never; a URL given always wins.
   const one = () => [server.url];
   for (const cmd of ['whoami', 'list_agents', 'work', 'logout']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: server.url, implicit: true });
   for (const cmd of ['login', 'serve', '--version', 'help']) expect(connectionUrl({ cmd, kept: one })).toStrictEqual({ url: LOCAL_URL, implicit: false });
-  // konjir connect sets up at Konjir's own Kolab, from a checkout too, unless a URL is given or the
+  // kolab connect sets up at Konjir's own Kolab, from a checkout too, unless a URL is given or the
   // project names one (API26), whatever sign-in or token there is.
   expect(HOSTED_URL).toBe('https://kolab.konjir.com/mcp');
   for (const o of [{}, { token: 'kjs_x' }, { kept: () => [] }]) expect(connectionUrl({ cmd: 'connect', kept: one, ...o })).toStrictEqual({ url: HOSTED_URL, implicit: false });
@@ -248,33 +248,33 @@ test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; wit
   errors.mockClear();
   process.env.KONJIR_TOKEN = 'kjs_not-a-token';
   await rejection(main(['whoami']));
-  expect(errors.mock.calls.map((c) => String(c[0]))).not.toContain(`konjir: using ${server.url} (the one sign-in kept)`);
+  expect(errors.mock.calls.map((c) => String(c[0]))).not.toContain(`kolab: using ${server.url} (the one sign-in kept)`);
   delete process.env.KONJIR_TOKEN;
-  // Inside a job, konjir refuses with no token, whatever is kept.
+  // Inside a job, kolab refuses with no token, whatever is kept.
   process.env.KONJIR_JOB = '01JOB';
   expect(await rejection(main(['whoami']))).toMatch(/this is a Konjir job \(KONJIR_JOB is set\)/);
   delete process.env.KONJIR_JOB;
-  // Another Kolab's sign-in kept beside it: konjir can't choose, so it uses the default, which it
+  // Another Kolab's sign-in kept beside it: kolab can't choose, so it uses the default, which it
   // keeps nothing for, and names the URLs it does keep.
   const path = credentialsPath();
   const all = JSON.parse(readFileSync(path, 'utf8'));
   all['https://kolab.example.com/mcp'] = { tokens: { access_token: 'x', token_type: 'Bearer', refresh_token: 'kjr_x' } };
   writeFileSync(path, JSON.stringify(all), { mode: 0o600 });
-  expect(await rejection(main(['whoami']))).toBe(`Error: set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run konjir login to sign in with your browser. `
-    + `konjir keeps no sign-in for http://127.0.0.1:7420/mcp, the default, but keeps sign-ins for ${server.url}, https://kolab.example.com/mcp: set KONJIR_URL, or pass --url, to one of them`);
+  expect(await rejection(main(['whoami']))).toBe(`Error: set KONJIR_TOKEN (an agent session token, or the admin token for admin_* verbs), or run kolab login to sign in with your browser. `
+    + `kolab keeps no sign-in for http://127.0.0.1:7420/mcp, the default, but keeps sign-ins for ${server.url}, https://kolab.example.com/mcp: set KONJIR_URL, or pass --url, to one of them`);
   // A URL given is used, as before.
   out = [];
   await main(['--url', server.url, 'whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
-  // konjir logout with several kept, and none for the default, names them.
+  // kolab logout with several kept, and none for the default, names them.
   out = [];
   await main(['logout']);
-  expect(out.join('\n')).toBe(`No sign-in kept for ${LOCAL_URL}. konjir keeps sign-ins for ${server.url}, https://kolab.example.com/mcp: run konjir logout --url <url> for each.`);
+  expect(out.join('\n')).toBe(`No sign-in kept for ${LOCAL_URL}. kolab keeps sign-ins for ${server.url}, https://kolab.example.com/mcp: run kolab logout --url <url> for each.`);
   process.env.KONJIR_URL = server.url;
   out = [];
   await main(['whoami']);
   expect(JSON.parse(out.join('\n'))).toMatchObject({ actor: 'ann-cli' });
-  // konjir logout with no URL, one sign-in kept: that one is revoked and forgotten.
+  // kolab logout with no URL, one sign-in kept: that one is revoked and forgotten.
   const only = JSON.parse(readFileSync(path, 'utf8'));
   delete only['https://kolab.example.com/mcp'];
   writeFileSync(path, JSON.stringify(only), { mode: 0o600 });
@@ -285,8 +285,8 @@ test('with no KONJIR_URL and no --url, konjir uses the one sign-in it keeps; wit
   expect(JSON.parse(readFileSync(path, 'utf8'))).toStrictEqual({});
 });
 
-test('two konjir processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
-  // konjir's own default folder already exists, more open than it should be: konjir closes it.
+test('two kolab processes refreshing one sign-in at once: both go on working, and nothing is revoked', async () => {
+  // kolab's own default folder already exists, more open than it should be: kolab closes it.
   delete process.env.KONJIR_CREDENTIALS;
   process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'konjir-xdg-'));
   mkdirSync(join(process.env.XDG_CONFIG_HOME, 'konjir'), { mode: 0o755 });
@@ -307,7 +307,7 @@ test('two konjir processes refreshing one sign-in at once: both go on working, a
   expect(() => statSync(`${credentialsPath()}.lock`)).toThrow();   // no lock left behind
 }, 120_000);
 
-test('konjir login again revokes the sign-in it replaces; logout that can\'t reach Kolab keeps the sign-in and says so, unless told to forget it', async () => {
+test('kolab login again revokes the sign-in it replaces; logout that can\'t reach Kolab keeps the sign-in and says so, unless told to forget it', async () => {
   const { kolab, server, again } = await signedIn();
   const before = (await kolab.db.query<{ id: string }>(`select id from oauth_grant`)).rows.map((r) => r.id);
   await again({ agent_label: 'other', kolab: '@new', new_kolab_name: 'anns-2', new_kolab_title: 'Two', role: 'product' });
@@ -326,7 +326,7 @@ test('konjir login again revokes the sign-in it replaces; logout that can\'t rea
   expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url]).toBeDefined();   // the other Kolab's is untouched
 });
 
-test('a credentials file konjir can\'t read is never overwritten: konjir says where it is', async () => {
+test('a credentials file kolab can\'t read is never overwritten: kolab says where it is', async () => {
   const path = credentialsPath();
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, '{ not json');
@@ -336,7 +336,7 @@ test('a credentials file konjir can\'t read is never overwritten: konjir says wh
   expect(readFileSync(path, 'utf8')).toBe('{ not json');
 });
 
-test('a sign-in that was revoked elsewhere says to run konjir login; the answer to another sign-in is refused', async () => {
+test('a sign-in that was revoked elsewhere says to run kolab login; the answer to another sign-in is refused', async () => {
   const kolab = await openKolab();
   const idp = new StubIdentity().next({ subject: '43', login: 'bo' });
   const server = await startServer({ adminToken: 'login-admin', kolab, identity: idp, webRoot: null });
@@ -354,7 +354,7 @@ test('a sign-in that was revoked elsewhere says to run konjir login; the answer 
   // An admin ends the agent's session; its grant goes with it on the next refresh.
   await kolab.db.query(`update oauth_grant set revoked_at = now(), revoked_by = 'admin'`);
   await kolab.endSession({ actor: 'bo-cli' });
-  expect(await rejection(main(['whoami']))).toMatch(/your sign-in to .* has ended or was revoked: run konjir login/);
+  expect(await rejection(main(['whoami']))).toMatch(/your sign-in to .* has ended or was revoked: run kolab login/);
 });
 
 test('an admin verb from a sign-in that isn\'t an admin\'s own says so, and the sign-in is kept: never "ended or was revoked"', async () => {
@@ -379,7 +379,7 @@ test('an admin verb from a sign-in that isn\'t an admin\'s own says so, and the 
 const URL_ = 'http://127.0.0.1:9/mcp';
 const tokens = (n: number) => ({ access_token: `kjs_a${n}`, refresh_token: `kjr_r${n}`, token_type: 'Bearer', expires_in: 900 });
 
-test('a folder named through KONJIR_CREDENTIALS is never changed: konjir warns when others may write in it', async () => {
+test('a folder named through KONJIR_CREDENTIALS is never changed: kolab warns when others may write in it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-shared-'));
   chmodSync(dir, 0o777);
   process.env.KONJIR_CREDENTIALS = join(dir, 'c.json');
@@ -390,7 +390,7 @@ test('a folder named through KONJIR_CREDENTIALS is never changed: konjir warns w
   expect(statSync(join(dir, 'c.json')).mode & 0o777).toBe(0o600);
 });
 
-test('a lock that is a dangling symbolic link, or a stale one konjir can\'t remove, ends in a clear error by the deadline, never a spin', async () => {
+test('a lock that is a dangling symbolic link, or a stale one kolab can\'t remove, ends in a clear error by the deadline, never a spin', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-lock-'));
   const path = join(dir, 'c.json');
   symlinkSync(join(dir, 'nowhere'), `${path}.lock`);
@@ -398,7 +398,7 @@ test('a lock that is a dangling symbolic link, or a stale one konjir can\'t remo
   expect(await rejection(new StoredLogin(URL_, { path, lockWaitMs: 300 }).forget())).toMatch(/c\.json\.lock is a symbolic link, so konjir won't use it as its lock: remove it/);
   expect(Date.now() - started).toBeLessThan(5000);
 
-  // A stale lock in a folder konjir may not change: it waits until the deadline, sleeping, then says so.
+  // A stale lock in a folder kolab may not change: it waits until the deadline, sleeping, then says so.
   const ro = mkdtempSync(join(tmpdir(), 'konjir-ro-'));
   const roPath = join(ro, 'c.json');
   writeFileSync(`${roPath}.lock`, 'someone-else');
@@ -415,7 +415,7 @@ test('a lock that is a dangling symbolic link, or a stale one konjir can\'t remo
   }
 });
 
-test('a lock broken while its holder stalled: the break is atomic, the holder notices, and keeps the tokens another konjir saved', async () => {
+test('a lock broken while its holder stalled: the break is atomic, the holder notices, and keeps the tokens another kolab process saved', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-break-'));
   const lockPath = join(dir, 'x.lock');
   const a = new FileLock(lockPath, 2000);
@@ -431,7 +431,7 @@ test('a lock broken while its holder stalled: the break is atomic, the holder no
   expect(readFileSync(lockPath, 'utf8')).toBe('owner-b');   // A's release leaves B's lock alone
   b.release('owner-b');
 
-  // Two konjir refreshing: X stalls past the stale mark, Y breaks the lock, refreshes and saves.
+  // Two kolab refreshing: X stalls past the stale mark, Y breaks the lock, refreshes and saves.
   const path = join(dir, 'c.json');
   await new StoredLogin(URL_, { path }).saveTokens(tokens(1));
   const x = new StoredLogin(URL_, { path });
@@ -446,7 +446,7 @@ test('a lock broken while its holder stalled: the break is atomic, the holder no
   expect(() => statSync(`${path}.lock`)).toThrow();
 });
 
-test('an abandoned konjir login keeps the sign-in it would have replaced, working', async () => {
+test('an abandoned kolab login keeps the sign-in it would have replaced, working', async () => {
   const { kolab, server } = await signedIn();
   const before = JSON.parse(readFileSync(credentialsPath(), 'utf8'))[server.url].tokens.refresh_token;
   expect(await rejection(login(server.url, { log: () => undefined, open: () => undefined, timeoutMs: 300 }))).toMatch(/took too long: it waited 300 ms for the browser; /);
@@ -457,14 +457,14 @@ test('an abandoned konjir login keeps the sign-in it would have replaced, workin
   expect((await kolab.db.query(`select count(*)::int as n from oauth_grant where revoked_at is null`)).rows).toStrictEqual([{ n: 1 }]);
 });
 
-test('a hold leaked by an error that escaped the SDK, in a konjir that keeps running (a watch), ends by itself: the heartbeat stops and others take the lock', async () => {
+test('a hold leaked by an error that escaped the SDK, in a kolab that keeps running (a watch), ends by itself: the heartbeat stops and others take the lock', async () => {
   const path = join(mkdtempSync(join(tmpdir(), 'konjir-leak-')), 'c.json');
   await new StoredLogin(URL_, { path }).saveTokens(tokens(1));
-  // The watch's sign-in starts a refresh, and the error that would end it never reaches anything konjir awaits.
+  // The watch's sign-in starts a refresh, and the error that would end it never reaches anything kolab awaits.
   const watching = new StoredLogin(URL_, { path, lockMaxHoldMs: 300 });
   expect((await watching.tokens({}))?.refresh_token).toBe('kjr_r1');
   expect(statSync(`${path}.lock`).isFile()).toBe(true);
-  // Well past the cap, the process still running, the lock is gone and another konjir writes at once.
+  // Well past the cap, the process still running, the lock is gone and another kolab writes at once.
   await new Promise((r) => setTimeout(r, 700));
   expect(() => statSync(`${path}.lock`)).toThrow();
   const t0 = Date.now();
@@ -475,7 +475,7 @@ test('a hold leaked by an error that escaped the SDK, in a konjir that keeps run
   expect(JSON.parse(readFileSync(path, 'utf8'))[URL_].tokens.refresh_token).toBe('kjr_r2');
 });
 
-test('konjir watch, as its stream closes at token expiry and listens again, lets go only of an idle hold, never of a refresh in flight', async () => {
+test('kolab watch, as its stream closes at token expiry and listens again, lets go only of an idle hold, never of a refresh in flight', async () => {
   const { kolab, server } = await signedIn();   // ann-cli, an engineer in anns
   const annAs = async (role: 'product' | 'engineer') => {
     await kolab.endSession({ actor: 'ann' }).catch(() => undefined);
@@ -521,7 +521,7 @@ test('konjir watch, as its stream closes at token expiry and listens again, lets
   await server.close();
 }, 90_000);
 
-test('konjir login waits for the browser as long as Kolab\'s sign-in page lasts, 20 minutes (W5.7)', async () => {
+test('kolab login waits for the browser as long as Kolab\'s sign-in page lasts, 20 minutes (W5.7)', async () => {
   const kolab = await openKolab();
   expect(SIGN_IN_WAIT_MS).toBe(kolab.oauth.requestTtlS * 1000);
   expect(SIGN_IN_WAIT_MS).toBe(20 * 60_000);
@@ -534,7 +534,7 @@ test('in a project that names a kolab: the break-glass admin token still runs th
   const file = join(project, '.konjir.json');
   const says = (o: object) => writeFileSync(file, JSON.stringify(o));
   const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-elsewhere-')));
-  const mismatch = `Error: ${file} names kolab other, but this session works in kolab anns: run konjir login to sign in to other, or pass --kolab anns`;
+  const mismatch = `Error: ${file} names kolab other, but this session works in kolab anns: run kolab login to sign in to other, or pass --kolab anns`;
   const cwd = process.cwd();
   try {
     // The admin token works in no kolab, and Kolab refuses it whoami: the admin verbs run all the
@@ -568,8 +568,8 @@ test('in a project that names a kolab: the break-glass admin token still runs th
       expect(await rejection(main(['--url', server.url, 'whoami']))).toBe(mismatch);
     }
 
-    // -C: konjir work, work deliver and repo register read the file of the folder they act on, not
-    // of the one konjir is run in. repo register's own --url is the repository's, never Kolab's.
+    // -C: kolab work, work deliver and repo register read the file of the folder they act on, not
+    // of the one kolab is run in. repo register's own --url is the repository's, never Kolab's.
     delete process.env.KONJIR_URL;
     says({ kolab: 'other', url: server.url });
     process.chdir(elsewhere);

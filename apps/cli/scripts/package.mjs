@@ -1,23 +1,23 @@
 #!/usr/bin/env node
-// Builds the published konjir (W2.6, binding element API6): the client and the channel bridge
-// (`konjir bridge`, W9.5, API29), as one file.
+// Builds the published kolab (W2.6, binding element API6): the client and the channel bridge
+// (`kolab bridge`, W9.5, API29), as one file.
 //
 //   node scripts/package.mjs npm                 -> dist-npm/: the npm package
 //   node scripts/package.mjs binaries [target…]  -> dist-bin/: single-file executables, bun build --compile
 //   node scripts/package.mjs bun <dir>           -> installs the pinned Bun for this machine in <dir>, verified
 //
-// Both builds are one bundle, konjir.mjs, of the CLI and everything it imports (scripts/bundle.mjs,
-// with Bun): the npm package ships it, with no dependencies, so npx konjir works without this
+// Both builds are one bundle, kolab.mjs, of the CLI and everything it imports (scripts/bundle.mjs,
+// with Bun): the npm package ships it, with no dependencies, so npx kolab works without this
 // workspace, and each binary is compiled from it. @konjir/server isn't in it: it brings the
-// database, and only `konjir serve` loads it, so the published konjir has no serve (the CLI says
-// so). Of the @konjir/* packages only @konjir/login, the OAuth client and credentials store `konjir
-// login` uses, and @konjir/channel-bridge, which `konjir bridge` runs, are bundled; the others
+// database, and only `kolab serve` loads it, so the published kolab has no serve (the CLI says
+// so). Of the @konjir/* packages only @konjir/login, the OAuth client and credentials store `kolab
+// login` uses, and @konjir/channel-bridge, which `kolab bridge` runs, are bundled; the others
 // reach the CLI as types only. What the bundle doesn't carry is bundled as absent, never left for
-// the runtime to find in whatever folder konjir is run in (bundle.mjs says why).
+// the runtime to find in whatever folder kolab is run in (bundle.mjs says why).
 //
 // The version is apps/cli/package.json's, which nx release sets; the build defines KONJIR_VERSION
-// with it, for `konjir --version`. It also defines KONJIR_DEFAULT_URL as the hosted Kolab (API25;
-// bundle.mjs's HOSTED_URL): the Kolab a published konjir talks to with no --url, KONJIR_URL or
+// with it, for `kolab --version`. It also defines KONJIR_DEFAULT_URL as the hosted Kolab (API25;
+// bundle.mjs's HOSTED_URL): the Kolab a published kolab talks to with no --url, KONJIR_URL or
 // project file, where a checkout, which can serve, talks to the local one.
 //
 // Bun is pinned in apps/cli/bun-runtimes.json: its version, the sha256 of each release zip this
@@ -29,7 +29,7 @@
 // A new Bun means new pins there: take the sha256s from the release's SHASUMS256.txt, and each
 // integrity from `npm view @oven/<name>@<version> dist.integrity`.
 //
-// konjir is licensed Apache-2.0 (D63; apps/cli/LICENSE, the full licence text). LICENSE, and
+// kolab is licensed Apache-2.0 (D63; apps/cli/LICENSE, the full licence text). LICENSE, and
 // THIRD-PARTY-NOTICES.md, which lists every package the bundle inlines (from Bun's metafile) with
 // its licence text, and the Bun runtime the binaries embed, ship in the npm package and with the
 // binaries. The build refuses a manifest that declares any other licence.
@@ -44,7 +44,7 @@ const app = join(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(app, '../..');
 const manifest = JSON.parse(readFileSync(join(app, 'package.json'), 'utf8'));
 const pinned = JSON.parse(readFileSync(join(app, 'bun-runtimes.json'), 'utf8'));
-if (manifest.license !== 'Apache-2.0') throw new Error(`apps/cli/package.json declares the licence ${manifest.license}, but konjir is Apache-2.0`);
+if (manifest.license !== 'Apache-2.0') throw new Error(`apps/cli/package.json declares the licence ${manifest.license}, but kolab is Apache-2.0`);
 // The targets we ship, and the Bun release zip each compiles on. x64 uses Bun's baseline
 // runtime, which runs on CPUs without AVX2. `binaries` with no arguments builds them all.
 const TARGETS = {
@@ -61,10 +61,10 @@ const runtime = (name) => fetchRuntime(name, { pinned, cache });
 
 const checkBun = () => checkPinnedBun(pinned.version);
 
-/** Bundles konjir into `out`/konjir.mjs, with Bun's metafile beside it (scripts/bundle.mjs); returns both paths. */
+/** Bundles kolab into `out`/kolab.mjs, with Bun's metafile beside it (scripts/bundle.mjs); returns both paths. */
 function bundle(out) {
   execFileSync('bun', [join(app, 'scripts/bundle.mjs'), out, manifest.version], { stdio: 'inherit', cwd: app });
-  return { file: join(out, 'konjir.mjs'), metafile: join(out, '.metafile.json') };
+  return { file: join(out, 'kolab.mjs'), metafile: join(out, '.metafile.json') };
 }
 
 /**
@@ -72,7 +72,7 @@ function bundle(out) {
  * (the tokens its sign-in page is drawn with) and the channel bridge's (W9.5), nothing else of the
  * workspace's (no server, engine, db or address code). Those four are the workspace's only
  * Apache-2.0 packages: the rest of the repository is FSL-1.1-ALv2
- * (D64), which the Apache-2.0 konjir (D63) must never carry. The build fails on anything else,
+ * (D64), which the Apache-2.0 kolab (D63) must never carry. The build fails on anything else,
  * since the @konjir/source condition would otherwise inline it from TypeScript unseen, and on any of
  * the four if its package.json stops declaring Apache-2.0.
  */
@@ -89,7 +89,7 @@ function checkFirstParty(metafile, out) {
 function checkBundledLicences(packages, out) {
   const fsl = fslPackages(packages);
   if (fsl.length) rmSync(out, { recursive: true, force: true });
-  if (fsl.length) throw new Error(`the bundle inlines FSL-licensed packages, which the Apache-2.0 konjir can't carry: ${fsl.map((p) => p.name).join(', ')}`);
+  if (fsl.length) throw new Error(`the bundle inlines FSL-licensed packages, which the Apache-2.0 kolab can't carry: ${fsl.map((p) => p.name).join(', ')}`);
   return packages;
 }
 
@@ -98,15 +98,15 @@ const bundledPackages = (metafile) => packagesIn(inputs(metafile), app);
 
 function notices(packages) {
   return noticesOf(packages, {
-    title: 'Third-party notices for konjir',
-    intro: `konjir ${manifest.version} is licensed under the Apache License 2.0 (see LICENSE). It bundles the following packages into konjir.mjs and into each single-file binary. Their licences follow.`,
+    title: 'Third-party notices for kolab',
+    intro: `kolab ${manifest.version} is licensed under the Apache License 2.0 (see LICENSE). It bundles the following packages into kolab.mjs and into each single-file binary. Their licences follow.`,
     after: [
       `## Bun ${pinned.version} (binaries only)`,
       '',
-      'Each single-file binary (konjir-<os>-<arch>) embeds the Bun runtime. Bun is MIT-licensed. It statically links',
+      'Each single-file binary (kolab-<os>-<arch>) embeds the Bun runtime. Bun is MIT-licensed. It statically links',
       'JavaScriptCore and WebKit under the LGPL-2, and other libraries under their own licences, all listed in',
       `https://github.com/oven-sh/bun/blob/bun-v${pinned.version}/LICENSE.md, with how to relink Bun. The application`,
-      'code each binary embeds is konjir.mjs, the same bundle the npm package ships.',
+      'code each binary embeds is kolab.mjs, the same bundle the npm package ships.',
       '',
     ],
   });
@@ -136,13 +136,13 @@ if (mode === 'bun') {
     version: manifest.version,
     description: manifest.description,
     keywords: ['konjir', 'kolab', 'mcp', 'cli', 'agents', 'specs'],
-    homepage: 'https://github.com/konjir/kolab#readme',
+    homepage: 'https://www.konjir.com/kolab/',
     bugs: 'https://github.com/konjir/kolab/issues',
     repository: { type: 'git', url: 'git+https://github.com/konjir/kolab.git', directory: 'apps/cli' },
     license: manifest.license,
     type: 'module',
-    bin: { konjir: 'konjir.mjs' },
-    files: ['konjir.mjs', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
+    bin: { kolab: 'kolab.mjs' },
+    files: ['kolab.mjs', 'LICENSE', 'THIRD-PARTY-NOTICES.md'],
     engines: manifest.engines,
     publishConfig: manifest.publishConfig,
   };
@@ -160,7 +160,7 @@ if (mode === 'bun') {
   const { file: bundled, metafile } = bundle(join(out, '.bundle'));
   checkFirstParty(metafile, out);
   for (const t of targets) {
-    const file = join(out, `konjir-${t}${t.startsWith('windows') ? '.exe' : ''}`);
+    const file = join(out, `kolab-${t}${t.startsWith('windows') ? '.exe' : ''}`);
     // No .env or bunfig.toml autoloading: the binary reads its environment as the npm package does.
     execFileSync('bun', ['build', bundled, '--compile', `--target=${TARGETS[t].replace(/-aarch64$/, '-arm64')}`, `--compile-executable-path=${await runtime(TARGETS[t])}`,
       '--minify', '--no-compile-autoload-dotenv', '--no-compile-autoload-bunfig', '--outfile', file], { stdio: 'inherit', cwd: app });

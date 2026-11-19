@@ -1,5 +1,5 @@
 /**
- * `konjir connect <harness>`: one command connects a harness to a kolab, with one agent per entry
+ * `kolab connect <harness>`: one command connects a harness to a kolab, with one agent per entry
  * (W3.7, D59; one page, Lee's instruction of 2026-11-01). It opens the browser once, at Kolab's
  * setup page, which names the kolab (made now if it is new) and each agent with its role (made now
  * or reused); the person signs in and allows it, and Kolab makes and grants them all. It writes one
@@ -9,8 +9,8 @@
  *
  * For Claude Code, each entry is the Konjir channel bridge (W3.8, D61), Claude Code's one Konjir
  * server: Kolab's tools passed through and the channel, on its agent's own sign-in, which Kolab
- * issues at the setup and konjir keeps in that agent's credentials file (KONJIR_AGENT), so no
- * further page opens. The entry runs the bridge this konjir carries, `konjir bridge` (W9.5, API29),
+ * issues at the setup and kolab keeps in that agent's credentials file (KONJIR_AGENT), so no
+ * further page opens. The entry runs the bridge this kolab carries, `kolab bridge` (W9.5, API29),
  * or, from a checkout, the checkout's own. `--subagents` also writes one Claude Code subagent per
  * agent, `.claude/agents/<label>.md`, with only that agent's Konjir tools. `--http` writes Claude Code's plain HTTP entry instead, as `claude mcp add
  * --scope project --transport http` writes it, with no channel; it and OpenCode's entries each sign
@@ -60,7 +60,7 @@ export function mcpUrl(url: string): string {
   const u = new URL(url);
   if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error(`--url ${url}: give Kolab's https URL`);
   // Written into the harness's config: never with a user name or password in it.
-  if (u.username || u.password) throw new Error('--url: give Kolab\'s URL without a user name or password in it; konjir connect writes it into your harness\'s config');
+  if (u.username || u.password) throw new Error('--url: give Kolab\'s URL without a user name or password in it; kolab connect writes it into your harness\'s config');
   if (u.search || u.hash) throw new Error('--url: give Kolab\'s URL without a query or fragment');
   if (u.pathname === '/' || u.pathname === '') u.pathname = '/mcp';
   return u.toString();
@@ -81,7 +81,7 @@ export interface Bridge { command: string; args: string[] }
 
 /**
  * What Claude Code is given by default (W3.8): the Konjir channel bridge, started as `bridge` says
- * (a checkout's start.sh, or the published konjir's `konjir bridge`), as `claude mcp add --scope
+ * (a checkout's start.sh, or the published kolab's `kolab bridge`), as `claude mcp add --scope
  * project` writes a stdio server. KONJIR_AGENT keeps the agent's sign-in apart; KONJIR_SCOPE
  * preselects it at consent. Neither is a secret.
  */
@@ -92,18 +92,18 @@ export const claudeBridgeEntry = (e: Entry, bridge: Bridge | string) => ({
 });
 
 /**
- * The name konjir connect registers under for Claude Code's channel, which Kolab's setup page shows,
+ * The name kolab connect registers under for Claude Code's channel, which Kolab's setup page shows,
  * and the client each agent's sign-in is issued to: the bridge's own CLIENT_NAME, as the agent's
  * own browser sign-in through the bridge would register.
  */
 export const CHANNEL_CLIENT_NAME = 'konjir channel (Claude Code)';
-/** The name konjir connect registers under for the other harnesses, whose entries sign in by themselves. */
+/** The name kolab connect registers under for the other harnesses, whose entries sign in by themselves. */
 export const CONNECT_CLIENT_NAME = 'konjir connect';
 
 // The published builds (scripts/package.mjs) define this as the package's version.
 declare const KONJIR_VERSION: string | undefined;
 
-/** How this konjir runs, for publishedKonjir: `process`, and the version its build defined. Tests give others. */
+/** How this kolab runs, for publishedKonjir: `process`, and the version its build defined. Tests give others. */
 export interface Running { version?: string; execPath: string; script?: string }
 const running = (): Running => ({ version: typeof KONJIR_VERSION === 'string' ? KONJIR_VERSION : undefined, execPath: process.execPath, script: process.argv[1] });
 
@@ -111,37 +111,37 @@ const running = (): Running => ({ version: typeof KONJIR_VERSION === 'string' ? 
 const RUN_ONCE = /^(_npx|dlx|dlx-.+|bunx-.+)$/;
 
 /**
- * The published konjir this is (W9.5, API29), or undefined when it isn't one (a checkout, whose
- * build defines no version): how Claude Code starts the bridge it carries, `konjir bridge`, and how
+ * The published kolab this is (W9.5, API29), or undefined when it isn't one (a checkout, whose
+ * build defines no version): how Claude Code starts the bridge it carries, `kolab bridge`, and how
  * a person runs it again (`self`).
  *
  *   a binary                   itself: its own path, `bridge`
- *   installed from npm         the node (or bun) running it, and konjir.mjs where it is installed, `bridge`
- *   run by npx, or a dlx       the same, on a copy of konjir.mjs that konjir keeps in its own config
+ *   installed from npm         the node (or bun) running it, and kolab.mjs where it is installed, `bridge`
+ *   run by npx, or a dlx       the same, on a copy of kolab.mjs that kolab keeps in its own config
  *                              folder (`keep`: made once the setup is allowed), since the runner's
  *                              cache is cleared under it; `self` runs that copy too. Never `npx
- *                              konjir`: Claude Code starts the bridge in the project, where npx
- *                              would run a konjir the project's own node_modules held
+ *                              kolab`: Claude Code starts the bridge in the project, where npx
+ *                              would run a kolab the project's own node_modules held
  */
 export function publishedKonjir(r: Running = running(), env: Record<string, string | undefined> = process.env): { bridge: Bridge; self: string; keep?: { from: string; to: string } } | undefined {
   if (!r.version) return undefined;
-  // A binary's script is inside the executable (Bun's own file system); otherwise it is konjir.mjs, on disk.
+  // A binary's script is inside the executable (Bun's own file system); otherwise it is kolab.mjs, on disk.
   const script = r.script && !r.script.startsWith('/$bunfs') && !/^[A-Z]:\\~BUN\\/.test(r.script) ? r.script : undefined;
-  if (!script) return { bridge: { command: r.execPath, args: ['bridge'] }, self: 'konjir' };
+  if (!script) return { bridge: { command: r.execPath, args: ['bridge'] }, self: 'kolab' };
   let real = script;
   try { real = realpathSync(script); } catch { /* as given */ }
   if (real.split(/[\\/]/).some((part) => RUN_ONCE.test(part))) {
     // Absolute, whatever KONJIR_CREDENTIALS says: Claude Code starts the entry in the project.
-    const to = resolve(dirname(credentialsPath(env)), 'bridge', `konjir-${r.version}.mjs`);
-    // Run again from that copy too, never as `npx konjir` in the project.
+    const to = resolve(dirname(credentialsPath(env)), 'bridge', `kolab-${r.version}.mjs`);
+    // Run again from that copy too, never as `npx kolab` in the project.
     return { bridge: { command: r.execPath, args: [to, 'bridge'] }, self: [r.execPath, to].map(shellWord).join(' '), keep: { from: real, to } };
   }
-  return { bridge: { command: r.execPath, args: [real, 'bridge'] }, self: 'konjir' };
+  return { bridge: { command: r.execPath, args: [real, 'bridge'] }, self: 'kolab' };
 }
 
 /**
- * Keeps a copy of this konjir.mjs where its entries run it from (publishedKonjir's `keep`):
- * `bridge/` beside konjir's credentials, a folder of konjir's own as `agents/` is, so 0700, and
+ * Keeps a copy of this kolab.mjs where its entries run it from (publishedKonjir's `keep`):
+ * `bridge/` beside kolab's credentials, a folder of kolab's own as `agents/` is, so 0700, and
  * refused if it is a symbolic link or someone else's. One already there with the same bytes is left.
  */
 export function keepKonjir(keep: { from: string; to: string }) {
@@ -149,8 +149,8 @@ export function keepKonjir(keep: { from: string; to: string }) {
   mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
   try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as { code?: string }).code !== 'EEXIST') throw e; }
   const st = lstatSync(dir);
-  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} isn't a folder of konjir's (it is a symbolic link, or not a folder), so konjir won't keep its bridge there: remove it`);
-  if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} belongs to someone else, so konjir won't keep its bridge there: remove it`);
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} isn't a folder of kolab's (it is a symbolic link, or not a folder), so kolab won't keep its bridge there: remove it`);
+  if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} belongs to someone else, so kolab won't keep its bridge there: remove it`);
   if ((st.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
   const bytes = readFileSync(keep.from);
   try { if (!lstatSync(keep.to).isSymbolicLink() && readFileSync(keep.to).equals(bytes)) return; } catch { /* not there yet */ }
@@ -160,7 +160,7 @@ export function keepKonjir(keep: { from: string; to: string }) {
 }
 
 /**
- * The channel bridge's start.sh in the Kolab checkout this konjir runs from, or undefined when it
+ * The channel bridge's start.sh in the Kolab checkout this kolab runs from, or undefined when it
  * doesn't run from one: the published package or a binary, which run the bridge they carry
  * (publishedKonjir). Proven from this
  * module's own place, never from a path relative to wherever it was installed: this file must be
@@ -178,7 +178,7 @@ export function bridgeCommand(moduleUrl: string = import.meta.url): string | und
     const workspace = json(join(root, 'package.json'));
     if (workspace.name !== 'kolab' || !Array.isArray(workspace.workspaces)) return undefined;
     if (!existsSync(join(root, '.git'))) return undefined;
-    if (json(join(root, 'apps', 'cli', 'package.json')).name !== 'konjir') return undefined;
+    if (json(join(root, 'apps', 'cli', 'package.json')).name !== '@konjir/kolab') return undefined;
     if (json(join(root, 'apps', 'channel-bridge', 'package.json')).name !== '@konjir/channel-bridge') return undefined;
     const start = realpathSync(join(root, 'apps', 'channel-bridge', 'scripts', 'start.sh'));
     // Both inside this same checkout, as real paths: no link leads either elsewhere.
@@ -189,7 +189,7 @@ export function bridgeCommand(moduleUrl: string = import.meta.url): string | und
   }
 }
 
-/** The agent, role and kolab an entry konjir connect wrote signs in as, from its scope: `konjir kolab:<k> role:<r> agent:<a>`. */
+/** The agent, role and kolab an entry kolab connect wrote signs in as, from its scope: `konjir kolab:<k> role:<r> agent:<a>`. */
 export interface Who { agent: string; role: string; kolab: string }
 
 /** The system prompt API24 describes: who the agent is, where, and where its rules come from. */
@@ -204,7 +204,7 @@ export const claudeAgentsDir = (opts: { global: boolean; cwd: string; env: Recor
 /**
  * One agent's Claude Code subagent (`--subagents`, API29), `<label>.md`: its tools are its own
  * entry's alone, `mcp__konjir-<label>__*`, so in a session that loads several entries each subagent
- * works as one agent, and has no other tool; its prompt is the one konjir claude gives a session.
+ * works as one agent, and has no other tool; its prompt is the one kolab claude gives a session.
  */
 export const subagentFile = (e: Entry) => [
   '---',
@@ -243,9 +243,9 @@ export const claudeUserConfig = (env: Record<string, string | undefined>) =>
 export function mergeOpencode(path: string, before: string, entries: Entry[], force: boolean): string {
   const text = before.trim() ? before : '{\n  "$schema": "https://opencode.ai/config.json"\n}\n';
   const root = parseOrRefuse(path, text, 'OpenCode');
-  if (root.type !== 'object') throw new Error(`${path} isn't an OpenCode configuration (not a JSON object), so konjir connect won't touch it`);
+  if (root.type !== 'object') throw new Error(`${path} isn't an OpenCode configuration (not a JSON object), so kolab connect won't touch it`);
   const mcp = member(root, 'mcp');
-  if (mcp && mcp.type !== 'object') throw new Error(`${path}: its "mcp" is ${mcp.type === 'null' ? 'null' : 'not an object'}, so konjir connect won't touch it: make it {} or remove it, then run konjir connect again`);
+  if (mcp && mcp.type !== 'object') throw new Error(`${path}: its "mcp" is ${mcp.type === 'null' ? 'null' : 'not an object'}, so kolab connect won't touch it: make it {} or remove it, then run kolab connect again`);
   refuseTaken(path, entries, (mcp ? valueOf(mcp) : {}) as Record<string, unknown>, force, opencodeEntry);
   const after = setEntries(text, 'mcp', entries.map((e) => [e.name, opencodeEntry(e)]));
   checkMerge(path, text, after, 'mcp', entries.map((e) => [e.name, opencodeEntry(e)]));
@@ -264,23 +264,23 @@ export function mergeClaude(path: string, before: string, entries: Entry[], forc
   if (!before.trim()) return JSON.stringify({ mcpServers: Object.fromEntries(set) }, null, 2);
   let config: unknown;
   try { config = JSON.parse(before); } catch (e) {
-    throw new Error(`${path} isn't JSON (${(e as Error).message}), so konjir connect won't touch it: fix it, then run konjir connect again`);
+    throw new Error(`${path} isn't JSON (${(e as Error).message}), so kolab connect won't touch it: fix it, then run kolab connect again`);
   }
-  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error(`${path} isn't a Claude Code MCP configuration (not a JSON object), so konjir connect won't touch it`);
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error(`${path} isn't a Claude Code MCP configuration (not a JSON object), so kolab connect won't touch it`);
   const raw = config as Record<string, unknown>;
   const servers = 'mcpServers' in raw ? raw.mcpServers : {};
-  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error(`${path}: its "mcpServers" is ${servers === null ? 'null' : 'not an object'}, so konjir connect won't touch it: make it {} or remove it, then run konjir connect again`);
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error(`${path}: its "mcpServers" is ${servers === null ? 'null' : 'not an object'}, so kolab connect won't touch it: make it {} or remove it, then run kolab connect again`);
   refuseTaken(path, entries, servers as Record<string, unknown>, force, make);
   const after = setEntries(before, 'mcpServers', set);
   checkMerge(path, before, after, 'mcpServers', set);
-  try { JSON.parse(after); } catch { throw new Error(`konjir connect couldn't merge into ${path} safely, so nothing is written: add the entries by hand`); }
+  try { JSON.parse(after); } catch { throw new Error(`kolab connect couldn't merge into ${path} safely, so nothing is written: add the entries by hand`); }
   return after;
 }
 
 function parseOrRefuse(path: string, text: string, reader: string): JsonNode {
   try { return parseTree(text); } catch (e) {
     if (!(e instanceof JsoncError)) throw e;
-    throw new Error(`${path} isn't JSON that ${reader} reads (${e.message}), so konjir connect won't touch it: fix it, then run konjir connect again`);
+    throw new Error(`${path} isn't JSON that ${reader} reads (${e.message}), so kolab connect won't touch it: fix it, then run kolab connect again`);
   }
 }
 
@@ -304,7 +304,7 @@ const canonical = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) =>
  * in it, in order. Anything else is refused, so an edit gone wrong is never written.
  */
 function checkMerge(path: string, before: string, after: string, section: string, set: [string, unknown][]) {
-  const refuse = (why: string) => new Error(`konjir connect couldn't merge into ${path} safely (${why}), so nothing is written: add the entries by hand, or tell us at github.com/konjir/kolab`);
+  const refuse = (why: string) => new Error(`kolab connect couldn't merge into ${path} safely (${why}), so nothing is written: add the entries by hand, or tell us at github.com/konjir/kolab`);
   let got: unknown;
   try { got = valueOf(parseTree(after)); } catch { throw refuse('the result wouldn\'t parse'); }
   const was = valueOf(parseTree(before.trim() ? before : '{}')) as Record<string, unknown>;
@@ -367,12 +367,12 @@ function setMember(text: string, obj: JsonNode, key: string, value: unknown): st
 
 /**
  * Refuses, unless `force`, to replace an entry already there, `existing[name]`: one that already
- * says exactly what `make` would write (konjir connect run again) isn't replaced, so it passes.
+ * says exactly what `make` would write (kolab connect run again) isn't replaced, so it passes.
  */
 function refuseTaken(where: string, entries: Entry[], existing: Record<string, unknown>, force: boolean, make: (e: Entry) => unknown) {
   const taken = entries.filter((e) => e.name in existing && canonical(existing[e.name]) !== canonical(make(e))).map((e) => e.name);
   if (taken.length && !force) {
-    throw new Error(`${where} already has ${taken.join(', ')}. konjir connect won't overwrite ${taken.length === 1 ? 'it' : 'them'}: pass --force to replace ${taken.length === 1 ? 'it' : 'them'}, or choose other labels with --agent`);
+    throw new Error(`${where} already has ${taken.join(', ')}. kolab connect won't overwrite ${taken.length === 1 ? 'it' : 'them'}: pass --force to replace ${taken.length === 1 ? 'it' : 'them'}, or choose other labels with --agent`);
   }
 }
 
@@ -417,7 +417,7 @@ export function writeAtomically(path: string, text: string, opts: { within?: str
   let target = path;
   const link = linkTarget(path);
   if (link) {
-    if (!link.real) throw new Error(`${path} is a link to ${link.to}, which isn't there; konjir won't write through it`);
+    if (!link.real) throw new Error(`${path} is a link to ${link.to}, which isn't there; kolab won't write through it`);
     target = link.real;
   }
   const dir = dirname(target);
@@ -433,14 +433,14 @@ export function writeAtomically(path: string, text: string, opts: { within?: str
     if (opts.within !== undefined) {
       const now = linkTarget(path);
       const real = join(realpathSync(dirname(target)), basename(target));
-      if ((link ? now?.real !== target : !!now) || !inside(real, opts.within)) throw new Error(`${path} changed while konjir connect wrote it, or leads outside ${opts.within}; nothing written`);
+      if ((link ? now?.real !== target : !!now) || !inside(real, opts.within)) throw new Error(`${path} changed while kolab connect wrote it, or leads outside ${opts.within}; nothing written`);
     }
     if (existsSync(target) && !lstatSync(target).isFile()) throw new Error(`${target} isn't a regular file; nothing written`);
     renameSync(tmp, target);
   } catch (e) { try { unlinkSync(tmp); } catch { /* gone */ } throw e; }
 }
 
-/** The most of a config file konjir connect reads: a harness's config is far smaller. */
+/** The most of a config file kolab connect reads: a harness's config is far smaller. */
 export const MAX_CONFIG_BYTES = 1024 * 1024;
 
 /**
@@ -452,24 +452,24 @@ function readText(path: string): string {
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0)); } catch (e) {
     if ((e as { code?: string }).code === 'ENOENT') return '';
-    throw new Error(`konjir connect can't read ${path} (${(e as { code?: string }).code ?? e})`);
+    throw new Error(`kolab connect can't read ${path} (${(e as { code?: string }).code ?? e})`);
   }
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) throw new Error(`${path} isn't a regular file, so konjir connect won't read or write it`);
-    if (st.size > MAX_CONFIG_BYTES) throw new Error(`${path} is over ${MAX_CONFIG_BYTES / 1024 / 1024} MiB, far more than a harness's config; konjir connect won't read it`);
+    if (!st.isFile()) throw new Error(`${path} isn't a regular file, so kolab connect won't read or write it`);
+    if (st.size > MAX_CONFIG_BYTES) throw new Error(`${path} is over ${MAX_CONFIG_BYTES / 1024 / 1024} MiB, far more than a harness's config; kolab connect won't read it`);
     const buf = Buffer.alloc(st.size + 1);
     let n = 0;
     for (let r; n < buf.length && (r = readSync(fd, buf, n, buf.length - n, n)) > 0;) n += r;
-    if (n > st.size) throw new Error(`${path} grew while konjir connect read it; run konjir connect again`);
+    if (n > st.size) throw new Error(`${path} grew while kolab connect read it; run kolab connect again`);
     return buf.subarray(0, n).toString('utf8');
   } finally { closeSync(fd); }
 }
 
-/** A config file's text, as konjir connect reads it (readText), for konjir claude. */
+/** A config file's text, as kolab connect reads it (readText), for kolab claude. */
 export const readConfigText = (path: string) => readText(path);
 
-/** What `konjir connect` is asked to do. */
+/** What `kolab connect` is asked to do. */
 export interface ConnectOptions {
   harness: Harness;
   /** Kolab's MCP URL. */
@@ -487,17 +487,17 @@ export interface ConnectOptions {
   auth: boolean;
   /** Claude Code: write the plain HTTP entry (no channel) instead of the channel bridge. */
   http?: boolean;
-  /** Claude Code: how the channel bridge starts (a start.sh alone, or a command and its arguments); by default the checkout's this konjir runs from, else the published konjir's own. */
+  /** Claude Code: how the channel bridge starts (a start.sh alone, or a command and its arguments); by default the checkout's this kolab runs from, else the published kolab's own. */
   bridge?: string | Bridge;
   /** Claude Code: also write one subagent per agent, `.claude/agents/<label>.md`, with only its entry's tools. */
   subagents?: boolean;
-  /** How a person runs this konjir again, in the steps printed last: `konjir` by default, or the published one's own (npx). */
+  /** How a person runs this kolab again, in the steps printed last: `kolab` by default, or the published one's own (npx). */
   self?: string;
   cwd: string;
   env: Record<string, string | undefined>;
 }
 
-/** What `konjir connect` asks Kolab to set up, on its one page. */
+/** What `kolab connect` asks Kolab to set up, on its one page. */
 export interface SetupRequest {
   /** Kolab's MCP URL. */
   url: string;
@@ -505,13 +505,13 @@ export interface SetupRequest {
   scope: string;
   /** Whether Kolab issues each agent's own sign-in (Claude Code's channel), or only sets them up. */
   mint: boolean;
-  /** The name konjir registers under, which Kolab's page shows, and which each agent's sign-in is issued to. */
+  /** The name kolab registers under, which Kolab's page shows, and which each agent's sign-in is issued to. */
   clientName: string;
   /** What the terminal says as the browser opens (the link follows it). */
   opening: string;
 }
 
-/** The world `konjir connect` acts on, so tests can stand in for the browser, the harnesses and Kolab. */
+/** The world `kolab connect` acts on, so tests can stand in for the browser, the harnesses and Kolab. */
 export interface ConnectIO {
   log: (line: string) => void;
   /** Runs a harness's own command, attached to the terminal; resolves with its exit code (-1 if it can't start). */
@@ -540,7 +540,7 @@ const YOU = '<you>';
 /** How to start Claude Code with the Konjir channel entries (a development channel, during the research preview). */
 function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: boolean, self: string, local: boolean): string[] {
   return [
-    ...(global || !local ? [] : ['The entries in this project\'s .mcp.json name this machine\'s paths, as konjir claude\'s files in .claude/ do, so don\'t commit them.']),
+    ...(global || !local ? [] : ['The entries in this project\'s .mcp.json name this machine\'s paths, as kolab claude\'s files in .claude/ do, so don\'t commit them.']),
     'At its development-channels warning, choose "I am using this for local development". Channels need Claude Code signed in with a claude.ai account.',
     ...(signedIn ? [] : ['Each entry signs in by itself in your browser when Claude Code first starts it, on a page locked to its agent.']),
     ...sessionSteps(entries, cwd, self),
@@ -548,16 +548,16 @@ function channelSteps(entries: Entry[], cwd: string, global: boolean, signedIn: 
 }
 
 /**
- * One `konjir claude <label>` per agent (API24): each starts Claude Code with that agent's entry and
+ * One `kolab claude <label>` per agent (API24): each starts Claude Code with that agent's entry and
  * channel alone, and its system prompt, rather than one session that loads every agent's channel.
  */
-function sessionSteps(entries: Entry[], cwd: string, self = 'konjir'): string[] {
+function sessionSteps(entries: Entry[], cwd: string, self = 'kolab'): string[] {
   return [`Start each agent's own Claude Code session, one terminal each, from ${cwd}:`,
     ...entries.map((e) => `${self} claude ${e.label}`)];
 }
 
 /** The steps that sign an entry in by hand, per harness. */
-function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: boolean, self = 'konjir'): string[] {
+function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: boolean, self = 'kolab'): string[] {
   if (harness === 'opencode') {
     return [`Sign each entry in, one at a time${global ? '' : `, from ${cwd}`}:`,
       ...entries.map((e) => `  opencode mcp auth ${e.name}     # Kolab's page is for ${e.agent} alone, in kolab ${e.kolab} as ${e.role}: check it, then Allow`)];
@@ -571,31 +571,31 @@ function signInSteps(harness: Harness, entries: Entry[], cwd: string, global: bo
 const KOLAB = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * `konjir connect` (Lee's instruction of 2026-11-01): one command, one browser page. It checks what
+ * `kolab connect` (Lee's instruction of 2026-11-01): one command, one browser page. It checks what
  * it can first (the kolab's name, the config file, the entries already there), prints the plan, and
  * opens the browser once at Kolab's setup page, locked to what it asks: the kolab, made now if it is
  * new, and each agent with its role, made now or reused. On Allow, Kolab makes them and grants each
  * agent in the kolab; for Claude Code's channel it also issues each agent its own sign-in, which
- * konjir keeps in that agent's credentials file, where the bridge finds it. Then the config is
+ * kolab keeps in that agent's credentials file, where the bridge finds it. Then the config is
  * written atomically, and for OpenCode each entry signs in by itself. Denied, or refused on the page
  * (a kolab of that name the person can't reach, say), nothing is written. Returns the entries.
  */
 export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promise<Entry[]> {
-  if (opts.kolab === undefined) throw new Error('konjir connect needs --kolab <name>: a kolab of yours or one you reach, or a new one, made private and yours on Kolab\'s page');
+  if (opts.kolab === undefined) throw new Error('kolab connect needs --kolab <name>: a kolab of yours or one you reach, or a new one, made private and yours on Kolab\'s page');
   if (!KOLAB.test(opts.kolab) || opts.kolab.length > 100) throw new Error(`--kolab ${opts.kolab.slice(0, 120)}: a kolab's name is lowercase letters, digits and '-', starting with a letter or digit (a new one, at most 40)`);
   if (opts.http && opts.harness !== 'claude') throw new Error('--http is for Claude Code: OpenCode\'s entries are always its remote MCP server');
   if (opts.subagents && opts.harness !== 'claude') throw new Error('--subagents is for Claude Code: it writes Claude Code\'s subagents, one per agent');
-  // Claude Code's entry: the channel bridge (W3.8), the checkout's own or the one the published konjir
+  // Claude Code's entry: the channel bridge (W3.8), the checkout's own or the one the published kolab
   // carries (W9.5); or, with --http, the plain HTTP server.
   const channel = opts.harness === 'claude' && !opts.http;
   const published = publishedKonjir();
   const bridge = channel ? opts.bridge ?? bridgeCommand() ?? published?.bridge : undefined;
   if (channel && !bridge) {
-    throw new Error('konjir connect claude sets up the Konjir channel, Claude Code\'s one Konjir server, which the published konjir carries and a checkout of github.com/konjir/kolab runs from its own source, and this konjir is neither. Run it as <checkout>/bin/konjir connect claude or from the npm package, or pass --http for Claude Code\'s plain HTTP entry (no channel)');
+    throw new Error('kolab connect claude sets up the Konjir channel, Claude Code\'s one Konjir server, which the published kolab carries and a checkout of github.com/konjir/kolab runs from its own source, and this kolab is neither. Run it as <checkout>/bin/kolab connect claude or from the npm package, or pass --http for Claude Code\'s plain HTTP entry (no channel)');
   }
   const claudeMake = bridge ? (e: Entry) => claudeBridgeEntry(e, bridge) : claudeEntry;
-  const self = opts.self ?? published?.self ?? 'konjir';
-  // Whether the entries name this machine's paths: all but the published konjir run by npx.
+  const self = opts.self ?? published?.self ?? 'kolab';
+  // Whether the entries name this machine's paths: all but the published kolab run by npx.
   const local = !!bridge && /[\\/]/.test(typeof bridge === 'string' ? bridge : bridge.command);
   const kolab = opts.kolab;
 
@@ -604,9 +604,9 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   // opens, and before it is read: it is the project's own file, never read or written through a
   // link, which a cloned repository could aim anywhere (--force-path is for the harness's config).
   const project = opts.global ? undefined : join(opts.cwd, PROJECT_FILE);
-  if (project && linkTarget(project)) throw new Error(`${shown(project)} is a link; konjir connect won't write the project's file through it. Remove the link, then run konjir connect again`);
+  if (project && linkTarget(project)) throw new Error(`${shown(project)} is a link; kolab connect won't write the project's file through it. Remove the link, then run kolab connect again`);
   const projectBefore = project ? readText(project) : '';
-  // What it names now: nothing if it isn't there, and nothing konjir reads if it isn't what konjir
+  // What it names now: nothing if it isn't there, and nothing kolab reads if it isn't what kolab
   // connect writes (`projectBroken`), which this run replaces, showing the replacement first.
   let projectWas: Project | undefined;
   let projectBroken = false;
@@ -616,12 +616,12 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   // later commands follow: repointed only with --force, as an entry that says something else is.
   const projectSame = !!projectWas && projectWas.kolab === kolab && projectWas.url === opts.url;
   if (projectWas && !opts.force && ((projectWas.kolab !== undefined && projectWas.kolab !== kolab) || (projectWas.url !== undefined && projectWas.url !== opts.url))) {
-    throw new Error(`${shown(project!)} already names ${[projectWas.kolab !== undefined ? `kolab ${projectWas.kolab}` : '', projectWas.url !== undefined ? `Kolab at ${safeUrl(projectWas.url)}` : ''].filter(Boolean).join(', ')}, and this would make it kolab ${kolab} at ${safeUrl(opts.url)}. konjir connect won't repoint the project: pass --force to, or --kolab and --url as the file has them, or --global to leave the project as it is`);
+    throw new Error(`${shown(project!)} already names ${[projectWas.kolab !== undefined ? `kolab ${projectWas.kolab}` : '', projectWas.url !== undefined ? `Kolab at ${safeUrl(projectWas.url)}` : ''].filter(Boolean).join(', ')}, and this would make it kolab ${kolab} at ${safeUrl(opts.url)}. kolab connect won't repoint the project: pass --force to, or --kolab and --url as the file has them, or --global to leave the project as it is`);
   }
   const projectAfter = !project || projectSame ? projectBefore : projectText(projectBefore, kolab, opts.url);
 
   // The plan for `person`: each file's text after, or for Claude Code's own user settings, its
-  // commands. Made first with `<you>` in the person's place, so a config konjir won't touch, or an
+  // commands. Made first with `<you>` in the person's place, so a config kolab won't touch, or an
   // entry already there, stops it before any browser opens; again once the person is known.
   const planFor = (person: string) => {
     const entries: Entry[] = opts.agents.map((a) => ({ name: `konjir-${a.label}`, agent: `${person}-${a.label}`, label: a.label, role: a.role, kolab, url: opts.url }));
@@ -636,15 +636,15 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       const before = readText(path);
       change = { path, before, after: mergeClaude(path, before, entries, opts.force, claudeMake), exists: existsSync(path) };
     } else {
-      // Claude Code's user settings are its own file, which it rewrites as it runs: konjir only reads
+      // Claude Code's user settings are its own file, which it rewrites as it runs: kolab only reads
       // it, to refuse an entry already there, and lets Claude Code's own command write it.
       const path = claudeUserConfig(opts.env);
       let parsed: unknown;
       try { parsed = JSON.parse(readText(path) || '{}'); } catch {
-        throw new Error(`${path} isn't JSON, so konjir connect can't tell which servers Claude Code already has: fix it, then run konjir connect again`);
+        throw new Error(`${path} isn't JSON, so kolab connect can't tell which servers Claude Code already has: fix it, then run kolab connect again`);
       }
       const s = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).mcpServers ?? {} : null;
-      if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error(`${path}: its "mcpServers" isn't an object, so konjir connect can't tell which servers Claude Code already has`);
+      if (!s || typeof s !== 'object' || Array.isArray(s)) throw new Error(`${path}: its "mcpServers" isn't an object, so kolab connect can't tell which servers Claude Code already has`);
       const servers = s as Record<string, unknown>;
       refuseTaken(`Claude Code's user settings (${path})`, entries, servers, opts.force, claudeMake);
       commands = entries.flatMap((e) => [
@@ -660,14 +660,14 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       return { path, before, after: subagentFile(e), exists: existsSync(path) };
     });
     const taken = agents.filter((a) => a.exists && a.before !== a.after).map((a) => a.path);
-    if (taken.length && !opts.force) throw new Error(`${taken.join(', ')} ${taken.length === 1 ? 'is' : 'are'} already there and ${taken.length === 1 ? 'says' : 'say'} something else. konjir connect won't overwrite ${taken.length === 1 ? 'it' : 'them'}: pass --force to replace ${taken.length === 1 ? 'it' : 'them'}, or choose other labels with --agent`);
+    if (taken.length && !opts.force) throw new Error(`${taken.join(', ')} ${taken.length === 1 ? 'is' : 'are'} already there and ${taken.length === 1 ? 'says' : 'say'} something else. kolab connect won't overwrite ${taken.length === 1 ? 'it' : 'them'}: pass --force to replace ${taken.length === 1 ? 'it' : 'them'}, or choose other labels with --agent`);
     return { entries, change, commands, agents };
   };
 
   // Run again, the entries already there name the person; else `<you>` stands for them until they sign in.
   const known = personIn(opts.harness === 'opencode' ? opencodePath(opts) : opts.global ? claudeUserConfig(opts.env) : join(opts.cwd, '.mcp.json'), opts.agents, opts.url);
   const draft = planFor(known ?? YOU);
-  io.log(`konjir connect ${opts.harness}: kolab ${kolab} at ${opts.url}, ${draft.entries.length === 1 ? 'one agent' : `${draft.entries.length} agents`}, one entry each${known ? '' : ` (${YOU} is the name you sign in to Kolab as)`}:`);
+  io.log(`kolab connect ${opts.harness}: kolab ${kolab} at ${opts.url}, ${draft.entries.length === 1 ? 'one agent' : `${draft.entries.length} agents`}, one entry each${known ? '' : ` (${YOU} is the name you sign in to Kolab as)`}:`);
   for (const e of draft.entries) io.log(`  ${e.name}  as ${e.agent}, ${e.role}`);
   io.log('');
   if (draft.change) {
@@ -676,11 +676,11 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     const target = linkTarget(draft.change.path);
     if (target) {
       const root = opts.global ? dirname(draft.change.path) : opts.cwd;
-      if (!target.real) throw new Error(`${draft.change.path} is a link to ${target.to}, which isn't there; konjir connect won't write through it. Remove the link, then run konjir connect again`);
+      if (!target.real) throw new Error(`${draft.change.path} is a link to ${target.to}, which isn't there; kolab connect won't write through it. Remove the link, then run kolab connect again`);
       if (!inside(target.real, root) && !opts.forcePath) {
-        throw new Error(`${draft.change.path} is a link to ${target.real}, outside ${root}; konjir connect won't write there. Pass --force-path if you mean it to`);
+        throw new Error(`${draft.change.path} is a link to ${target.real}, outside ${root}; kolab connect won't write there. Pass --force-path if you mean it to`);
       }
-      io.log(`${draft.change.path} is a link to ${target.real}, which konjir connect would change.`);
+      io.log(`${draft.change.path} is a link to ${target.real}, which kolab connect would change.`);
     }
     if (draft.change.before === draft.change.after) io.log(`${draft.change.path} already says exactly this.`);
     // A new file in one line; the diff for a file that is there already, or with --dry-run.
@@ -697,8 +697,8 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
   if (project) {
     if (projectBefore === projectAfter) io.log(`${shown(project)} already names kolab ${kolab} at ${safeUrl(opts.url)}.`);
     else {
-      io.log(`${projectBroken ? 'Will replace' : projectBefore.trim() ? 'Will update' : 'Will write'} ${shown(project)}: kolab ${kolab} at ${safeUrl(opts.url)}, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.`);
-      // What it replaces, shown: a file that isn't what konjir connect writes, or one --force repoints.
+      io.log(`${projectBroken ? 'Will replace' : projectBefore.trim() ? 'Will update' : 'Will write'} ${shown(project)}: kolab ${kolab} at ${safeUrl(opts.url)}, and no token, so later kolab commands here need no --kolab or --url, and it may be committed.`);
+      // What it replaces, shown: a file that isn't what kolab connect writes, or one --force repoints.
       if (projectBroken || (projectWas && (projectWas.kolab ?? kolab) !== kolab) || (projectWas && (projectWas.url ?? opts.url) !== opts.url)) io.log(unifiedDiff(project, projectBefore, projectAfter, true).split('\n').map(shown).join('\n'));
     }
   }
@@ -725,7 +725,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
       : revoked === issued.length ? `. The ${issued.length === 1 ? 'agent\'s new sign-in was' : `agents' ${issued.length} new sign-ins were`} revoked`
         : `. ${issued.length - revoked} of the agents' ${issued.length} new sign-ins couldn't be revoked; unused, they lapse within 30 days`;
     const files = kept ? `; ${kept === 1 ? 'one agent\'s credentials file was' : `${kept} agents' credentials files were`} written before it failed, and ${kept === 1 ? 'holds' : 'hold'} a sign-in that no longer works` : '';
-    throw new Error(`${said}${signIns}${files}. Run konjir connect again`);
+    throw new Error(`${said}${signIns}${files}. Run kolab connect again`);
   };
 
   // Everything checked before anything is kept or written: the plan for the person who signed in,
@@ -738,11 +738,11 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
     }
     plan = planFor(done.person);
     if (done.kolab.id !== kolab || done.agents.length !== plan.entries.length || done.agents.some((a, k) => a.agent !== plan.entries[k].agent || a.role !== plan.entries[k].role || (mint && !a.tokens))) {
-      throw new Error('Kolab set up something other than konjir connect asked for, so nothing is written');
+      throw new Error('Kolab set up something other than kolab connect asked for, so nothing is written');
     }
-    if (plan.change && readText(plan.change.path) !== draft.change!.before) throw new Error(`${plan.change.path} changed while konjir connect was waiting; nothing written`);
-    for (const [k, a] of plan.agents.entries()) if (readText(a.path) !== draft.agents[k].before) throw new Error(`${a.path} changed while konjir connect was waiting; nothing written`);
-    if (project && (linkTarget(project) || readText(project) !== projectBefore)) throw new Error(`${shown(project)} changed while konjir connect was waiting; nothing written`);
+    if (plan.change && readText(plan.change.path) !== draft.change!.before) throw new Error(`${plan.change.path} changed while kolab connect was waiting; nothing written`);
+    for (const [k, a] of plan.agents.entries()) if (readText(a.path) !== draft.agents[k].before) throw new Error(`${a.path} changed while kolab connect was waiting; nothing written`);
+    if (project && (linkTarget(project) || readText(project) !== projectBefore)) throw new Error(`${shown(project)} changed while kolab connect was waiting; nothing written`);
   } catch (e) { return failed(e); }
   const { entries } = plan;
   io.log(`Set up for ${done.person}: kolab ${kolab}${done.kolab.made ? ' (made now, private, yours)' : ''}; ${done.agents.map((a) => `${a.agent}${a.made ? ' (made now)' : ''}`).join(', ')}.`);
@@ -755,7 +755,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
         kept++;
       }
     }
-    // What the entries name is there before they are: the bridge konjir keeps, and each subagent.
+    // What the entries name is there before they are: the bridge kolab keeps, and each subagent.
     if (channel && !opts.bridge && !bridgeCommand() && published?.keep) keepKonjir(published.keep);
     for (const a of plan.agents) {
       if (a.after === a.before) { io.log(`${a.path} already says this; left as it is.`); continue; }
@@ -807,7 +807,7 @@ export async function connectHarness(opts: ConnectOptions, io: ConnectIO): Promi
 }
 
 /**
- * The person the `konjir-<label>` entries already in `path` sign in for, when konjir connect wrote
+ * The person the `konjir-<label>` entries already in `path` sign in for, when kolab connect wrote
  * them for this Kolab before: their agent, `<person>-<label>`, from KONJIR_AGENT (the channel) or the
  * scope's `agent:` (OpenCode's and Claude Code's HTTP entries). Only to show the plan by name, and
  * to see that a run again writes nothing new; undefined when it can't tell.
@@ -827,13 +827,13 @@ function personIn(path: string, agents: AgentSpec[], url: string): string | unde
 }
 
 /**
- * Refuses a subagent's file konjir connect would write outside `root` (the project, or with
+ * Refuses a subagent's file kolab connect would write outside `root` (the project, or with
  * --global Claude Code's own folder): one that is a link, or whose folder, as far as it exists yet,
  * really is somewhere else (`.claude` or `.claude/agents` linked away). Checked with the plan,
  * before the file is read or any browser opens, so nothing is made, read or left behind out there.
  */
 function refuseLinkedSubagent(path: string, root: string) {
-  if (linkTarget(path)) throw new Error(`${path} is a link; konjir connect won't write a subagent through it. Remove the link, then run konjir connect again`);
+  if (linkTarget(path)) throw new Error(`${path} is a link; kolab connect won't write a subagent through it. Remove the link, then run kolab connect again`);
   // Each as it really is, as far as it exists yet: what is still to be made is made where it says.
   const really = (p: string): string => {
     const rest: string[] = [];
@@ -844,8 +844,8 @@ function refuseLinkedSubagent(path: string, root: string) {
     return join(realpathSync(dir), ...rest);
   };
   let real: string, within: string;
-  try { real = really(dirname(path)); within = really(root); } catch { throw new Error(`${dirname(path)} can't be read (a link to nothing, perhaps), so konjir connect won't write a subagent there. Remove the link, then run konjir connect again`); }
-  if (real !== within && !real.startsWith(within.endsWith(sep) ? within : within + sep)) throw new Error(`${dirname(path)} leads to ${real}, outside ${root}; konjir connect won't write a subagent there. Remove the link, then run konjir connect again`);
+  try { real = really(dirname(path)); within = really(root); } catch { throw new Error(`${dirname(path)} can't be read (a link to nothing, perhaps), so kolab connect won't write a subagent there. Remove the link, then run kolab connect again`); }
+  if (real !== within && !real.startsWith(within.endsWith(sep) ? within : within + sep)) throw new Error(`${dirname(path)} leads to ${real}, outside ${root}; kolab connect won't write a subagent there. Remove the link, then run kolab connect again`);
 }
 
 /** Where a link at `path` leads, if `path` is one: `real` is the file it reaches, if that is there. */

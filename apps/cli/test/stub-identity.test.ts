@@ -1,4 +1,4 @@
-// KONJIR_STUB_IDENTITY (Lee's instruction of 2026-11-01): `konjir serve` with the stub identity
+// KONJIR_STUB_IDENTITY (Lee's instruction of 2026-11-01): `kolab serve` with the stub identity
 // provider, for local development and browser tests, so a browser completes Kolab's sign-in with no
 // GitHub. It signs anyone in, so it can never be on in a deployed Kolab: refused with a public host
 // (every deployed Kolab has one) and beside GitHub's settings, and the deployed config never sets it.
@@ -34,7 +34,7 @@ test('the deployed Kolab can\'t turn the stub on: its config never names it, and
   expect(userdata).toMatch(/^KONJIR_PUBLIC_HOST=\$DOMAIN$/m);
 });
 
-test('konjir serve with KONJIR_STUB_IDENTITY and a public host refuses to start', async () => {
+test('kolab serve with KONJIR_STUB_IDENTITY and a public host refuses to start', async () => {
   const port = 20000 + Math.floor(Math.random() * 20000);
   const child = spawn('node', [join(root, 'apps/cli/dist/main.js'), 'serve', '--port', String(port), '--data', mkdtempSync(join(tmpdir(), 'konjir-')), '--public-host', 'kolab.example.com', '--quiet'], {
     env: { ...process.env, NODE_OPTIONS: '--no-experimental-strip-types', KONJIR_ADMIN_TOKEN: 'x'.repeat(44), KONJIR_STUB_IDENTITY: 'ann' },

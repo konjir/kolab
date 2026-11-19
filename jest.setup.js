@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach } from '@jest/globals';
 import { closeOpened, markOpened } from '@konjir/engine/testing';
 
-// Never the sign-ins kept on this machine: konjir with no URL uses the one it keeps (D106), which
+// Never the sign-ins kept on this machine: kolab with no URL uses the one it keeps (D106), which
 // may be a deployed Kolab's, and so may a KONJIR_CREDENTIALS exported in the shell, so it is
 // replaced, not kept. A file that doesn't exist keeps none; a test that signs in names its own.
 process.env.KONJIR_CREDENTIALS = join(tmpdir(), `konjir-test-${process.pid}-none`, 'credentials.json');

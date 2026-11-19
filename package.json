@@ -15,8 +15,8 @@
     "build": "nx run-many -t build",
     "measure": "nx run @konjir/engine:measure --output-style=stream --",
     "rebase-storm": "nx run @konjir/engine:rebase-storm --output-style=stream --",
-    "serve": "bin/konjir serve",
-    "konjir": "bin/konjir",
+    "serve": "bin/kolab serve",
+    "kolab": "bin/kolab",
     "test:postgres": "KONJIR_TEST_POSTGRES=1 nx run-many -t test",
     "release:trust": "bash tools/npm-trust.sh",
     "e2e:connect":"node apps/cli/scripts/e2e-connect.mjs",
@@ -38,7 +38,7 @@
     "typescript": "^7.0.2"
   },
   "bin": {
-    "konjir": "./bin/konjir"
+    "kolab": "./bin/kolab"
   },
   "nx": {
     "includedScripts": []

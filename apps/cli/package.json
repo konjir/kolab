@@ -1,8 +1,8 @@
 {
-  "name": "konjir",
-  "version": "0.5.0",
+  "name": "@konjir/kolab",
+  "version": "0.8.0",
   "private": true,
-  "description": "konjir: the Kolab verbs from a shell, as an MCP client of Kolab, and the Konjir channel for Claude Code",
+  "description": "kolab: the Kolab verbs from a shell, as an MCP client of Kolab, and the Konjir channel for Claude Code",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=22"

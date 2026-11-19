@@ -1,19 +1,19 @@
 name: CLI
 
-# Builds the published konjir on every pull request into main and every push to main (W2.6,
-# binding element API6), and checks it reaches a Kolab. Nothing is published: the npm package and
+# Builds the published kolab, @konjir/kolab on npm, on every pull request into main and every
+# push to main (W2.6, binding element API6), and checks it reaches a Kolab. Nothing is published: the npm package and
 # the binaries are uploaded as this run's artifacts. release-cli.yml publishes.
 #
-# One job, "Build konjir CLI", on arm64 with production's Node version, as ci.yml's jobs run:
+# One job, "Build kolab CLI", on arm64 with production's Node version, as ci.yml's jobs run:
 # - apps/cli/scripts/package.mjs bundles the client into one file for npm and compiles it with
 #   bun build --compile for linux-x64, linux-arm64, darwin-arm64, darwin-x64 and windows-x64.
 #   Bun cross-compiles, so one runner builds them all. Bun's version is apps/cli/.bun-version.
-# - It starts a Kolab from the checkout (bin/konjir serve, on PGlite, with a throwaway admin
+# - It starts a Kolab from the checkout (bin/kolab serve, on PGlite, with a throwaway admin
 #   token) and runs apps/cli/scripts/smoke.sh against it twice: with the linux-arm64 binary, and
 #   with the npm tarball through npm exec, outside the workspace, as npx runs it.
 # - It runs apps/cli/scripts/e2e-connect.mjs twice more, with the binary and with the package
-#   installed outside the workspace: konjir connect claude's entries run konjir bridge, the channel
-#   bridge konjir carries (W9.5, API29), and a session on one hears its channel.
+#   installed outside the workspace: kolab connect claude's entries run kolab bridge, the channel
+#   bridge kolab carries (W9.5, API29), and a session on one hears its channel.
 #
 # Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
 # dependencies installed without install scripts.
@@ -31,7 +31,7 @@ on:
       - package.json
       - package-lock.json
       - nx.json
-      - bin/konjir
+      - bin/kolab
       - .github/workflows/cli.yml
   push:
     branches: [main]
@@ -49,7 +49,7 @@ env:
 
 jobs:
   build:
-    name: Build konjir CLI
+    name: Build kolab CLI
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     permissions:
@@ -90,7 +90,7 @@ jobs:
         env:
           TARGETS: ${{ github.event_name == 'pull_request' && 'linux-arm64' || '' }}
         run: |
-          npx nx run konjir:bundle --output-style=static
+          npx nx run @konjir/kolab:bundle --output-style=static
           # shellcheck disable=SC2086 # TARGETS is empty (all) or one word
           node apps/cli/scripts/package.mjs binaries $TARGETS
 
@@ -100,22 +100,22 @@ jobs:
           npm pack ./apps/cli/dist-npm --pack-destination "$RUNNER_TEMP/pack"
           ls -l apps/cli/dist-bin "$RUNNER_TEMP/pack"
 
-      # konjir is Apache-2.0 (D63): the tarball and the binaries carry LICENSE and the third-party notices,
+      # kolab is Apache-2.0 (D63): the tarball and the binaries carry LICENSE and the third-party notices,
       # and bundle none of the FSL-1.1-ALv2 rest of the repository (D64).
       - name: Check the licence ships
-        run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/pack/konjir-*.tgz apps/cli/dist-bin
+        run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/pack/konjir-kolab-*.tgz apps/cli/dist-bin
 
-      # A published konjir talks to the hosted Kolab by default (API25), checked without connecting
+      # A published kolab talks to the hosted Kolab by default (API25), checked without connecting
       # to it: its help names it, and with nothing signed in it refuses, naming it, before any request.
       - name: The published builds default to the hosted Kolab
         run: |
           check() {
             env -u KONJIR_URL -u KONJIR_TOKEN "$@" help | grep -F 'KONJIR_URL (default https://kolab.konjir.com/mcp)'
-            if out=$(env -u KONJIR_URL -u KONJIR_TOKEN KONJIR_CREDENTIALS="$RUNNER_TEMP/none/credentials.json" "$@" whoami 2>&1); then echo "::error::konjir whoami succeeded with nothing signed in"; exit 1; fi
-            echo "$out" | grep -F 'konjir keeps no sign-in for https://kolab.konjir.com/mcp, the default'
+            if out=$(env -u KONJIR_URL -u KONJIR_TOKEN KONJIR_CREDENTIALS="$RUNNER_TEMP/none/credentials.json" "$@" whoami 2>&1); then echo "::error::kolab whoami succeeded with nothing signed in"; exit 1; fi
+            echo "$out" | grep -F 'kolab keeps no sign-in for https://kolab.konjir.com/mcp, the default'
           }
-          (cd "$RUNNER_TEMP" && check "$GITHUB_WORKSPACE/apps/cli/dist-bin/konjir-linux-arm64")
-          (cd "$RUNNER_TEMP" && check node "$GITHUB_WORKSPACE/apps/cli/dist-npm/konjir.mjs")
+          (cd "$RUNNER_TEMP" && check "$GITHUB_WORKSPACE/apps/cli/dist-bin/kolab-linux-arm64")
+          (cd "$RUNNER_TEMP" && check node "$GITHUB_WORKSPACE/apps/cli/dist-npm/kolab.mjs")
 
       - name: Choose a throwaway admin token for the test Kolab
         run: |
@@ -124,42 +124,42 @@ jobs:
           echo "KONJIR_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
           echo "KONJIR_URL=http://127.0.0.1:7420/mcp" >> "$GITHUB_ENV"
 
-      - name: Start a Kolab from the checkout; konjir reaches it as a binary and through npx
+      - name: Start a Kolab from the checkout; kolab reaches it as a binary and through npx
         run: |
-          bin/konjir serve --port 7420 --data "$RUNNER_TEMP/kolab" --quiet > "$RUNNER_TEMP/kolab.log" 2>&1 &
+          bin/kolab serve --port 7420 --data "$RUNNER_TEMP/kolab" --quiet > "$RUNNER_TEMP/kolab.log" 2>&1 &
           for _ in $(seq 60); do curl -sf http://127.0.0.1:7420/healthz >/dev/null && break; sleep 1; done
           curl -sf http://127.0.0.1:7420/healthz >/dev/null || { echo "::error::Kolab didn't answer /healthz within 60 s"; cat "$RUNNER_TEMP/kolab.log"; exit 1; }
-          apps/cli/scripts/smoke.sh smoke-binary apps/cli/dist-bin/konjir-linux-arm64
+          apps/cli/scripts/smoke.sh smoke-binary apps/cli/dist-bin/kolab-linux-arm64
           # Outside the workspace, so nothing resolves from its node_modules.
           smoke="$PWD/apps/cli/scripts/smoke.sh"
-          tarball=$(ls "$RUNNER_TEMP"/pack/konjir-*.tgz)
+          tarball=$(ls "$RUNNER_TEMP"/pack/konjir-kolab-*.tgz)
           mkdir -p "$RUNNER_TEMP/npx" && cd "$RUNNER_TEMP/npx"
-          "$smoke" smoke-npx npm exec --yes --package="$tarball" -- konjir
+          "$smoke" smoke-npx npm exec --yes --package="$tarball" -- kolab
 
-      # W9.5 (API29): the published konjir carries the channel bridge. konjir connect claude, from the
-      # binary and from the package installed outside the workspace, writes entries that run konjir
+      # W9.5 (API29): the published kolab carries the channel bridge. kolab connect claude, from the
+      # binary and from the package installed outside the workspace, writes entries that run kolab
       # bridge, and a session started on one lists Kolab's tools and is pushed a channel message
       # (apps/cli/scripts/e2e-connect.mjs, against a Kolab of its own from the checkout).
-      - name: konjir connect claude from the binary and the installed package; a session on its entry hears its channel
+      - name: kolab connect claude from the binary and the installed package; a session on its entry hears its channel
         timeout-minutes: 5
         run: |
-          node apps/cli/scripts/e2e-connect.mjs --konjir apps/cli/dist-bin/konjir-linux-arm64
-          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/pack/konjir-*.tgz
-          node apps/cli/scripts/e2e-connect.mjs --konjir "$RUNNER_TEMP/installed/node_modules/.bin/konjir"
-          # As a package runner's cache holds it (npx's _npx): its entries run the copy konjir keeps.
-          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/_npx/e2e" "$RUNNER_TEMP"/pack/konjir-*.tgz
-          node apps/cli/scripts/e2e-connect.mjs --konjir "$RUNNER_TEMP/_npx/e2e/node_modules/.bin/konjir"
+          node apps/cli/scripts/e2e-connect.mjs --kolab apps/cli/dist-bin/kolab-linux-arm64
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/installed" "$RUNNER_TEMP"/pack/konjir-kolab-*.tgz
+          node apps/cli/scripts/e2e-connect.mjs --kolab "$RUNNER_TEMP/installed/node_modules/.bin/kolab"
+          # As a package runner's cache holds it (npx's _npx): its entries run the copy kolab keeps.
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/_npx/e2e" "$RUNNER_TEMP"/pack/konjir-kolab-*.tgz
+          node apps/cli/scripts/e2e-connect.mjs --kolab "$RUNNER_TEMP/_npx/e2e/node_modules/.bin/kolab"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: konjir-binaries
+          name: kolab-binaries
           path: apps/cli/dist-bin/
           if-no-files-found: error
           retention-days: 14
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: konjir-npm
+          name: kolab-npm
           path: ${{ runner.temp }}/pack/
           if-no-files-found: error
           retention-days: 14
