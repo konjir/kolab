@@ -112,7 +112,7 @@ export class TeamClient {
     if (!login.signedIn) {
       throw new SignInError(as.kind === 'person' ? `you aren't logged in to team ${team}: run konnect login ${team}` : `agent ${as.label} has no login to team ${team} on this machine: ${renewAdvice(team, as)}`);
     }
-    const mcp = new Client(CLIENT_INFO,{ versionNegotiation: { mode: 'auto' } });
+    const mcp = new Client(CLIENT_INFO, { versionNegotiation: { mode: 'auto' } });
     try {
       await mcp.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: login, fetch: login.fetch, onInsufficientScope: 'throw' }));
     } catch (e) {
