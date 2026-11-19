@@ -2,6 +2,7 @@
  * The verbs' parameters as their schemas give them (W5.7): `kolab tools`, `kolab help <verb>` and
  * docs/verbs.md are all made here, from the input schemas Kolab serves, never written by hand.
  */
+import { kolabWords } from '@konjir/channel-bridge/words';
 
 interface JsonSchema {
   type?: string | string[]; enum?: unknown[]; const?: unknown; description?: string;
@@ -50,21 +51,21 @@ export function firstSentence(text = ''): string {
   return (m ? m[1] : text.trim()).replace(/\s+/g, ' ');
 }
 
-/** `kolab tools`: each verb's usage, then the first sentence of what it does. */
+/** `kolab tools`: each verb's usage, then the first sentence of what it does, in kolab's words (words.ts). */
 export function toolsListing(tools: ListedTool[]): string {
-  return [...tools].sort((a, b) => a.name.localeCompare(b.name))
-    .map((t) => `${usageLine(t)}\n    ${firstSentence(t.description)}`).join('\n');
+  return kolabWords([...tools].sort((a, b) => a.name.localeCompare(b.name))
+    .map((t) => `${usageLine(t)}\n    ${firstSentence(t.description)}`).join('\n'));
 }
 
 /** `kolab help <verb>`: its usage, its description, and each parameter. */
 export function verbHelp(tool: ListedTool): string {
   const params = paramsOf(tool).map((p) => `  ${p.name}${p.required ? '' : ' (optional)'}: ${p.type}${p.description ? ` — ${p.description}` : ''}`);
-  return [`kolab ${usageLine(tool)}`, '', tool.description ?? '', '', params.length ? params.join('\n') : '  (no parameters)'].join('\n');
+  return kolabWords([`kolab ${usageLine(tool)}`, '', tool.description ?? '', '', params.length ? params.join('\n') : '  (no parameters)'].join('\n'));
 }
 
 const cell = (s: string) => s.replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
 
-/** docs/verbs.md: every verb, its usage and a table of its parameters, from the schemas Kolab serves. */
+/** docs/verbs.md: every verb, its usage and a table of its parameters, from the schemas Kolab serves, in kolab's words (words.ts). */
 export function verbsMarkdown(tools: ListedTool[]): string {
   const sorted = [...tools].sort((a, b) => a.name.localeCompare(b.name));
   const out = [
@@ -88,7 +89,7 @@ export function verbsMarkdown(tools: ListedTool[]): string {
     } else out.push('No parameters.');
     out.push('');
   }
-  return out.join('\n');
+  return kolabWords(out.join('\n'));
 }
 
 /**

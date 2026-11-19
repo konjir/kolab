@@ -1,5 +1,6 @@
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { kolabWords } from './words.js';
 
 // Claude Code starts the bridge in the project. @onivoro/server-mcp, as it loads, looks up
 // @nestjs/core/package.json from the working folder, and would run one a project shipped as a
@@ -9,4 +10,4 @@ const project = process.cwd();
 process.chdir(dirname(fileURLToPath(import.meta.url)));
 const loading = import('./channel.js');
 loading.finally(() => process.chdir(project)).then(({ main }) => main())
-  .catch((e) => { process.stderr.write(`konjir channel: ${String(e?.message ?? e)}\n`); process.exit(1); });
+  .catch((e) => { process.stderr.write(`konjir channel: ${kolabWords(String(e?.message ?? e))}\n`); process.exit(1); });

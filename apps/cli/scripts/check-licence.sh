@@ -2,7 +2,7 @@
 # Checks that a packed kolab carries its licence, and only Apache-2.0 code of this repository:
 # kolab is Apache-2.0 (D63), and the rest of the repository is FSL-1.1-ALv2 (D64).
 #
-#   apps/cli/scripts/check-licence.sh <konjir-x.y.z.tgz> [<binaries dir>]
+#   apps/cli/scripts/check-licence.sh <konjir-kolab-x.y.z.tgz> [<binaries dir>]
 #
 # The tarball must hold LICENSE, the Apache License 2.0 text that apps/cli/LICENSE is, and
 # THIRD-PARTY-NOTICES.md, and its package.json must declare "license": "Apache-2.0". The binaries

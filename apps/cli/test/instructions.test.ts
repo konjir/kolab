@@ -9,6 +9,7 @@ import { startServer } from '@konjir/server';
 import { connect, call, main } from '../src/cli.js';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 import { fillPlaybook, playbookText } from '@konjir/engine';
+import { kolabWords } from '@konjir/channel-bridge/words';
 
 const ADMIN = 'instructions-test-admin';
 
@@ -266,13 +267,16 @@ test('the CLI: kolab instructions, kolab instructions reviewer and kolab instruc
     process.env.KONJIR_URL = server.url;
     process.env.KONJIR_TOKEN = ann.token;
     const run = async (...argv: string[]) => { out.length = 0; await main(argv); return out.join('\n'); };
-    const operating = await promptText(ann.client, 'konjir_operating_instructions');
-    const reviewer = await promptText(ann.client, 'konjir_reviewer_instructions');
+    // Kolab's own text, with the command it names said as kolab says it (words.ts), until the server says kolab itself.
+    const operating = kolabWords(await promptText(ann.client, 'konjir_operating_instructions'));
+    const reviewer = kolabWords(await promptText(ann.client, 'konjir_reviewer_instructions'));
+    expect(operating).toContain('kolab work deliver <work> --submit');
+    expect(operating).not.toMatch(/konjir (work|watch|login)\b/);
     expect(await run('instructions')).toBe(operating);
     expect(await run('instructions', 'which=operating')).toBe(operating);
     expect(await run('instructions', 'reviewer')).toBe(reviewer);
     expect(await run('instructions', 'which=reviewer')).toBe(reviewer);
-    expect(await run('instructions', 'which=playbook', 'kind=build')).toBe(playbookText('build'));
+    expect(await run('instructions', 'which=playbook', 'kind=build')).toBe(kolabWords(playbookText('build')));
     await expect(main(['instructions', 'admin'])).rejects.toThrow(/no instructions "admin"/);
   } finally {
     log.mockRestore();

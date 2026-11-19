@@ -20,6 +20,11 @@
       "@konjir/source": "./src/messages.ts",
       "types": "./dist/messages.d.ts",
       "default": "./dist/messages.js"
+    },
+    "./words": {
+      "@konjir/source": "./src/words.ts",
+      "types": "./dist/words.d.ts",
+      "default": "./dist/words.js"
     }
   },
   "scripts": {
