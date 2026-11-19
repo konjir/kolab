@@ -125,3 +125,26 @@ test('messages stay unremovable outside an erase, and an erase of one kolab remo
   await kolab.eraseOwnKolab(ann, 'hub');
   expect(await rowsOf(kolab, 'side')).toStrictEqual(side);
 });
+
+test('erasing revokes the sign-ins in use there and those begun there, but not one begun there and now in use in another kolab', async () => {
+  const { kolab, ann, bo, boAgent } = await hub();
+  await kolab.createKolab('bos', { owner: 'bo' });
+  const grant = async (id: string, actor: string, person: string, scope: string, session?: string) => {
+    await kolab.db.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, expires_at) values ($1, 'c', $2, $3, $4, now() + interval '1 day')`, [id.padEnd(22, 'x'), actor, person, scope]);
+    if (session) await kolab.db.query(`update session set grant_id = $2, token_key = id where kolab_id = 'hub' and actor_id = $1 and ended_at is null`, [actor, id.padEnd(22, 'x')]);
+  };
+  // In use here: bo-claude's session.
+  await grant('inuse', 'bo-claude', 'bo', 'konjir kolab:hub', boAgent);
+  // Begun here and idle (its session ended): ann's old one.
+  await grant('idle', 'ann', 'ann', 'konjir kolab:hub');
+  // Begun here, now in use in bos: bo's, whose session moved.
+  await grant('moved', 'bo', 'bo', 'konjir kolab:hub', bo);
+  const inBos = await kolab.switchSession(bo, { kolab: 'bos', role: 'product' });
+  // Begun elsewhere: untouched.
+  await grant('other', 'bo', 'bo', 'konjir kolab:bos');
+
+  expect((await kolab.eraseOwnKolab(ann, 'hub')).revoked).toBe(2);
+  const left = (await kolab.db.query<{ id: string; revoked: boolean }>(`select left(id, 5) as id, revoked_at is not null as revoked from oauth_grant order by id`)).rows;
+  expect(Object.fromEntries(left.map((g) => [g.id, g.revoked]))).toStrictEqual({ inuse: true, idlex: true, moved: false, other: false });
+  expect((await kolab.unreadChannels(inBos))).toStrictEqual([]);
+});
