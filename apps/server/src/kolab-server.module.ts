@@ -9,6 +9,7 @@ import { HealthController } from './health.controller.js';
 import { Inboxes } from './inboxes.js';
 import { ListenScope } from './listen-scope.js';
 import { ListenStreams } from './listen-streams.js';
+import { mcpClients } from './mcp-clients.js';
 import { AgentStates } from './agent-states.js';
 import { InstructionsAccess, OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
 import { KOLAB, MCP_ROUTE, OAUTH_OPTIONS, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
@@ -55,6 +56,8 @@ export class KolabServerModule implements NestModule {
    */
   configure(consumer: MiddlewareConsumer) {
     consumer.apply(ListenScope).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
+    // Who connects: each client's name and version, logged (mcpClients).
+    consumer.apply(mcpClients()).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
   }
 
   static register(options: KolabServerModuleOptions): DynamicModule {
