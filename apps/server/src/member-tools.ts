@@ -15,6 +15,7 @@ const listInvitations = args({ ...paging });
 const withdrawInvitation = args({ invitation: z.string().describe('The invitation\'s id, ivt_…, as konjir_invite or konjir_list_invitations gives it') });
 const removeMember = args({ member: z.string().describe('The person to remove, by name, as konjir_list_members names them') });
 const leaveKolab = args({});
+const ownKolab = args({ kolab: z.string().describe('Your kolab\'s name, the one this session is in: named, so nobody does this to the wrong one') });
 const removeAgent = args({ agent: z.string().describe('Your agent to remove: its label (as konjir_list_agents and konjir_list_members give it), its whole name, or <you>/<label>') });
 
 /**
@@ -95,6 +96,25 @@ export class MemberTools {
   })
   leaveKolab(_: z.infer<typeof leaveKolab>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.leaveKolab(s));
+  }
+
+  @McpTool({
+    name: 'konjir_archive_kolab',
+    description: 'For the owner of your kolab only, from a person\'s own session: archive it, named. As an admin\'s archive does, it disappears from listings and can\'t be used: every session there ends, this one too. Nothing is deleted, its name stays reserved, and a Konjir admin can unarchive it. ended, how many sessions ended.',
+    schema: ownKolab,
+  })
+  archiveKolab({ kolab }: z.infer<typeof ownKolab>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.archiveOwnKolab(s, kolab));
+  }
+
+  @McpTool({
+    name: 'konjir_erase_kolab',
+    description: 'For the owner of your kolab only, from a person\'s own session: erase it, named, for good, when it holds no documents (a kolab of messages, such as a konnect team). Its messages and channels, members, invitations, leases and hosts go, every session there ends, this one too, every sign-in to it is revoked, and its name is free again. A kolab with documents is refused: archive it instead. It can\'t be undone. ended, how many sessions ended; revoked, how many sign-ins were revoked; messages, how many messages went.',
+    schema: ownKolab,
+    annotations: { destructiveHint: true },
+  })
+  eraseKolab({ kolab }: z.infer<typeof ownKolab>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.eraseOwnKolab(s, kolab));
   }
 
   @McpTool({

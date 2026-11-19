@@ -3,6 +3,7 @@
  *
  *   konnect channel list | create <name> | follow <name> | unfollow <name>
  *   konnect team list | create <name> | invite <github-user>... | remove <person> | leave <team>
+ *               | archive <team> | delete <team> --yes
  *   konnect login [<team>]
  *   konnect logout [<team>]
  */
@@ -58,16 +59,18 @@ export async function channel(ctx: Ctx, verb: string | undefined, rest: string[]
 
 /** The server's words for what only the team's owner may do, as konnect says them. */
 const ownerOnly = (team: string) => (e: unknown) => {
+  if (e instanceof Refused && /only the owner of kolab \S+ can (archive|erase) it/.test(e.message)) return new Refused(`only team ${team}'s owner can ${/archive/.test(e.message) ? 'archive' : 'delete'} it`);
   if (e instanceof Refused && /only the owner of kolab/.test(e.message)) return new Refused(`only team ${team}'s owner can do that: ask them`);
-  if (e instanceof Refused && /you own kolab \S+, so you can't leave it/.test(e.message)) return new Refused(`you own team ${team}, so you can't leave it`);
+  if (e instanceof Refused && /you own kolab \S+, so you can't leave it/.test(e.message)) return new Refused(`you own team ${team}, so you can't leave it: konnect team archive ${team} closes it, or konnect team delete ${team} deletes it`);
+  if (e instanceof Refused && /holds documents, so it can't be erased/.test(e.message)) return new Refused(`team ${team} holds documents, so it can't be deleted: konnect team archive ${team} closes it and keeps them`);
   return e;
 };
 
 export async function team(ctx: Ctx, verb: string | undefined, rest: string[]) {
   if (verb === undefined) throw new UsageError(helpFor(['team']));
-  if (!['list', 'create', 'invite', 'remove', 'leave'].includes(verb)) {
+  if (!['list', 'create', 'invite', 'remove', 'leave', 'archive', 'delete'].includes(verb)) {
     // 0.1.0's `konnect team <name>` signed in to a team, creating it when the name was free.
-    throw new UsageError(`konnect team has no ${printable(verb)}: it is list, create, invite, remove or leave. To log in to a team: konnect login ${printable(verb)}. To create one: konnect team create ${printable(verb)}`);
+    throw new UsageError(`konnect team has no ${printable(verb)}: it is list, create, invite, remove, leave, archive or delete. To log in to a team: konnect login ${printable(verb)}. To create one: konnect team create ${printable(verb)}`);
   }
 
   if (verb === 'list') {
@@ -94,20 +97,34 @@ export async function team(ctx: Ctx, verb: string | undefined, rest: string[]) {
     return;
   }
 
-  if (verb === 'leave') {
-    // The team is named, never resolved: nobody leaves the wrong team by where they happen to stand.
-    const name = checkName(one(rest, 'konnect team leave <team>: name the team to leave'));
-    if (ctx.args.team !== undefined && ctx.args.team !== name) throw new UsageError(`konnect team leave ${name} was given --team ${printable(ctx.args.team)}: name the team once`);
+  if (verb === 'leave' || verb === 'archive' || verb === 'delete') {
+    // The team is named, never resolved: nobody leaves, archives or deletes the wrong team by where they happen to stand.
+    const name = checkName(one(rest, `konnect team ${verb} <team>: name the team to ${verb}`));
+    if (ctx.args.team !== undefined && ctx.args.team !== name) throw new UsageError(`konnect team ${verb} ${name} was given --team ${printable(ctx.args.team)}: name the team once`);
+    if (verb === 'delete' && !ctx.args.yes) {
+      throw new UsageError(`konnect team delete ${name} deletes team ${name} and everything in it, for everyone, and it can't be undone: its messages and channels, who is in it and invited, its leases and its machines that host. Everyone in it is logged out of it.\nTo delete it: konnect team delete ${name} --yes\nTo close it and keep everything instead: konnect team archive ${name}`);
+    }
     const client = await ctx.openAsPerson(name);
     let r;
-    try { r = await client.leave().catch((e) => { throw ownerOnly(name)(e); }); } finally { await client.close(); }
+    try {
+      r = await (verb === 'leave' ? client.leave() : verb === 'archive' ? client.archiveTeam(name) : client.deleteTeam(name)).catch((e) => { throw ownerOnly(name)(e); });
+    } finally { await client.close(); }
     await logout(ctx.url, { path: teamFile(name, ctx.env), forget: true }).catch(() => undefined);
     // Its agents' logins are revoked with it: what konnect kept of them here, for this service, goes too.
     const kept = dirname(agentFile(name, 'x', ctx.env));
     let files: string[] = [];
     try { files = readdirSync(kept).filter((f) => f.endsWith('.json')); } catch { /* none kept */ }
     for (const f of files) { await logout(ctx.url, { path: join(kept, f), forget: true }).catch(() => undefined); dropIfEmpty(join(kept, f)); }
-    ctx.print(r, () => `You left team ${name}${r.agents.length ? `, and your agents ${r.agents.map(printable).join(', ')} with you` : ''}. konnect dropped its logins to it here.`);
+    if ('left' in r) {
+      const left = r;
+      ctx.print(left, () => `You left team ${name}${left.agents.length ? `, and your agents ${left.agents.map(printable).join(', ')} with you` : ''}. konnect dropped its logins to it here.`);
+    } else if ('archived' in r) {
+      const a = r;
+      ctx.print({ team: name, archived: true, ended: a.ended }, () => `Archived team ${name}: nobody can use it now, and everything in it is kept. ${a.ended} session${a.ended === 1 ? '' : 's'} ended. A Konjir admin can unarchive it. konnect dropped its logins to it here.`);
+    } else {
+      const d = r;
+      ctx.print({ team: name, deleted: true, ended: d.ended, revoked: d.revoked, messages: d.messages }, () => `Deleted team ${name} and everything in it (${d.messages} message${d.messages === 1 ? '' : 's'}). ${d.ended} session${d.ended === 1 ? '' : 's'} ended, and its name is free again. konnect dropped its logins to it here.`);
+    }
     return;
   }
 

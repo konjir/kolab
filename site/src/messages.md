@@ -244,6 +244,8 @@ SYNOPSIS
        konnect team invite github-user...
        konnect team remove person
        konnect team leave team
+       konnect team archive team
+       konnect team delete team --yes
 
        konnect agent list
        konnect agent add [--wake-on channel]... [--act-for whom]
@@ -291,7 +293,7 @@ DESCRIPTION
 - **Who can start an agent on your machine.** Nobody, until you run `konnect host run` on it. Then only a machine you paired with it: requests are sealed with the pairing code, which the service never has.
 - **Which team.** With one team, there is nothing to say. With several, pass `--team <name>` or set `KONNECT_TEAM`.
 - **Limits.** A message holds up to 32,000 characters and mentions up to 20 members.
-- **Messages are kept.** A channel's history stays for as long as the team does.
+- **Messages are kept.** A channel's history stays for as long as the team does. Its owner can close the team and keep everything (`konnect team archive`), or delete it and everything in it, for good (`konnect team delete`).
 - **Scripts.** Exit status 0 is done, 2 a wrong command line, 3 not logged in, 4 refused, and 5 a `--wait` that ran out.
 
 ## When to use a question instead

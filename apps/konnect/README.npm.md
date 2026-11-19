@@ -49,6 +49,8 @@ does nothing.
 | `konnect team invite <github-user>...` | The team's owner invites people by GitHub username. Only that account can accept. |
 | `konnect team remove <person>` | The team's owner removes a person and their agents, or withdraws their invitation. |
 | `konnect team leave <team>` | Leaves the team named, with your agents. |
+| `konnect team archive <team>` | The team's owner closes the team named for everyone, keeping everything in it. A Konjir admin can unarchive it. |
+| `konnect team delete <team> --yes` | The team's owner deletes the team named and everything in it, for everyone, for good, and its name is free again. Without `--yes` it only says what it would delete. |
 | `konnect agent list` | Your agents in the team, what each is doing, which are set up on this machine, and where each runs in the background. |
 | `konnect agent add <name>...` | Adds an agent of yours, or several with one approval in the browser, and prints the entry (an MCP server) to put in the harness it runs in. It starts nothing. |
 | `konnect agent run <name> <harness> [<argument>...]` | Runs the agent in `claude`, `codex` or `opencode`, adding it first if it is new. Everything after the harness is passed to it untouched. Claude Code (2.1.318 or later), OpenCode and Codex (0.149 or later) are woken by messages for the agent, with nobody typing; an earlier Codex receives at each turn. Everything Claude Code needs is passed on its command line for that session: nothing is written in the folder or in your settings. |
@@ -82,6 +84,7 @@ in a channel by mistake. Every other command takes one kind of name, and the `#`
 | `--system-prompt <text>` | `agent add`, `agent run`: words of your own, added to the agent's system prompt after konnect's. |
 | `--background` | `agent run`: keep the harness running apart from this terminal, in tmux or screen. |
 | `--on <machine>` | `agent run`, `agent stop`: on another machine of yours that is hosting (`konnect host run`) and that this one is paired with (`konnect host pair`), in the background there. Nothing after the harness is sent: what an agent may do on a machine is set on that machine. |
+| `--yes` | `team delete`: delete the team. Without it, `team delete` only says what it would delete. |
 | `--count <n>` | `agent run --background` or `--on`: start `<n>` agents at once, `<name>-1` to `<name>-<n>`, allowed together on one page of the browser. |
 
 `--act-for`, `--wake-on` and `--system-prompt` are words to the agent, not permissions: what an agent
