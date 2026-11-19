@@ -29,145 +29,15 @@
 // Exits nonzero, saying which check failed. The server and temp folders are removed either way
 // (KEEP=1 keeps the folders, and prints where).
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { Failed, check, fail, harness, konnectArg } from './harness.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const given = process.argv.indexOf('--konnect');
-if (given < 0 || !process.argv[given + 1]) { console.error('--konnect <path to a published konnect>'); process.exit(2); }
-const KONNECT = resolve(process.argv[given + 1]);
-/** How konnect is run: a .mjs through node, anything else as it is. */
-const konnectCmd = KONNECT.endsWith('.mjs') ? [process.execPath, KONNECT] : [KONNECT];
+const h = harness(konnectArg('--konnect <path to a published konnect>'), 'konnect-e2e');
+const { live, step, konnect, say, signingIn } = h;
 const TEAM = `konnect-${randomBytes(3).toString('hex')}`;
 const PEOPLE = { lead: { subject: '501', login: 'lead' }, peer: { subject: '502', login: 'peer' } };
-const started = Date.now();
-const tmp = mkdtempSync(join(tmpdir(), 'konnect-e2e-'));
-const bin = join(tmp, 'bin');
-let server;
-const live = new Set();
-
-const step = (s) => console.log(`[${((Date.now() - started) / 1000).toFixed(1)}s] ${s}`);
-class Failed extends Error {}
-const fail = (why) => { throw new Failed(why); };
-const check = (ok, why) => { if (!ok) fail(why); };
-
-async function cleanup() {
-  const running = [...live, server].filter((p) => p && p.exitCode === null && p.signalCode === null);
-  const kill = (p, sig) => { try { process.kill(-p.pid, sig); } catch { /* gone */ } };
-  await Promise.all(running.map((p) => new Promise((ok) => {
-    const t = setTimeout(() => { kill(p, 'SIGKILL'); ok(); }, 5_000);
-    p.once('exit', () => { clearTimeout(t); ok(); });
-    kill(p, 'SIGTERM');
-  })));
-  if (process.env.KEEP) { console.error(`kept ${tmp}`); return; }
-  try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { console.error(`couldn't remove ${tmp}: ${e.message}`); }
-}
-for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) process.once(sig, () => { void cleanup().finally(() => process.exit(code)); });
-
-/** One person's machine: a HOME, config, work folder and record of what the browser was sent to. */
-function machine(name) {
-  const home = join(tmp, name);
-  const m = { name, home, work: join(home, 'work'), opened: join(home, 'opened.txt') };
-  mkdirSync(m.work, { recursive: true });
-  return m;
-}
-
-/** The environment a person's commands run in: their temp HOME and config, and no KONJIR_* or KONNECT_* of the runner's. */
-function env(m, extra = {}) {
-  const e = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('KONJIR_') && !k.startsWith('KONNECT_')));
-  return { ...e, HOME: m.home, XDG_CONFIG_HOME: join(m.home, '.config'), PATH: `${bin}:${process.env.PATH}`, OPENED: m.opened, KONNECT_URL: MCP, KONNECT_TERMINAL: '1', ...extra };
-}
-
-/** Runs a command to its end: its exit code, stdout and stderr. */
-function run(cmd, args, opts = {}, timeoutMs = 90_000) {
-  return new Promise((ok) => {
-    const p = spawn(cmd, args, { ...opts, stdio: [opts.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true });
-    live.add(p);
-    if (opts.input !== undefined) p.stdin.end(opts.input);
-    let out = '', err = '';
-    p.stdout.on('data', (d) => { out += d; });
-    p.stderr.on('data', (d) => { err += d; });
-    const t = setTimeout(() => { try { process.kill(-p.pid, 'SIGKILL'); } catch { /* gone */ } err += `\n(killed after ${timeoutMs / 1000}s)`; }, timeoutMs);
-    p.on('close', (code) => { clearTimeout(t); live.delete(p); ok({ code, out, err }); });
-  });
-}
-
-let MCP;
-const konnect = (m, args, opts = {}) => run(konnectCmd[0], [...konnectCmd.slice(1), ...args], { cwd: m.work, ...opts, env: env(m, opts.env) });
-
-/** Tells the stub identity provider something (`next <subject> <login>`, `account …`), and waits for its ok. */
-let say;
-async function startKolab() {
-  server = spawn('npx', ['tsx', '--conditions=@konjir/source', join(ROOT, 'apps/konnect/scripts/e2e-kolab.ts'), join(tmp, 'data')], { cwd: ROOT, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
-  let log = '', buffer = '';
-  const waiting = [];
-  server.stderr.on('data', (d) => { log += d; });
-  const url = new Promise((ok, no) => {
-    const t = setTimeout(() => no(new Failed(`Kolab didn't start in 90s:\n${log}`)), 90_000);
-    server.stdout.on('data', (d) => {
-      buffer += d;
-      for (let i = buffer.indexOf('\n'); i >= 0; i = buffer.indexOf('\n')) {
-        const line = buffer.slice(0, i).trim();
-        buffer = buffer.slice(i + 1);
-        if (line.startsWith('{')) { clearTimeout(t); ok(JSON.parse(line).url); } else if (line === 'ok') waiting.shift()?.();
-        else log += `${line}\n`;
-      }
-    });
-    server.on('exit', (code) => { clearTimeout(t); no(new Failed(`Kolab exited (${code}) before listening:\n${log}`)); });
-  });
-  say = (line) => new Promise((ok) => { waiting.push(ok); server.stdin.write(`${line}\n`); });
-  return url;
-}
-
-async function waitOpened(m, timeoutMs = 60_000) {
-  for (const until = Date.now() + timeoutMs; Date.now() < until; await new Promise((r) => setTimeout(r, 100))) {
-    if (existsSync(m.opened)) { const u = readFileSync(m.opened, 'utf8').trim().split('\n').pop(); if (u) { rmSync(m.opened); return new URL(u); } }
-  }
-  fail(`${m.name}'s konnect opened no browser within 60s`);
-}
-
-/** The person's browser: from the URL konnect opened, follows Kolab's redirects with its cookies to its page, presses the button `prefix` names, and follows Kolab's answer to konnect's loopback listener. */
-async function browser(start, prefix) {
-  check(start.origin === new URL(MCP).origin && start.pathname === '/oauth/authorize', `konnect opened ${start}, not this Kolab's /oauth/authorize`);
-  const jar = new Map();
-  const go = async (url, init = {}) => {
-    const res = await fetch(url, { ...init, redirect: 'manual', headers: { ...init.headers, cookie: [...jar].map(([k, v]) => `${k}=${v}`).join('; ') } });
-    for (const c of res.headers.getSetCookie()) { const kv = c.split(';')[0]; const i = kv.indexOf('='); jar.set(kv.slice(0, i), kv.slice(i + 1)); }
-    return res;
-  };
-  let url = start;
-  let res = await go(url);
-  for (let hops = 0; res.status >= 300 && res.status < 400; hops++) {
-    check(hops < 10, 'more than 10 redirects before Kolab\'s page');
-    url = new URL(res.headers.get('location'), url);
-    res = await go(url);
-  }
-  const html = await res.text();
-  const field = (name) => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1];
-  const button = [...html.matchAll(/<button[^>]*name="([^"]+)" value="([^"]+)"/g)].map((m) => [m[1], m[2]]).find(([n, v]) => `${n}=${v}`.startsWith(prefix));
-  check(res.status === 200 && field('csrf') && button, `no ${prefix} button on Kolab's page at ${url.pathname}: ${res.status} ${html.slice(0, 400)}`);
-  const done = await go(new URL('/oauth/consent', url), {
-    method: 'POST', headers: { origin: url.origin, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ sign_in: field('sign_in') ?? '', csrf: field('csrf'), ...(field('shown') ? { shown: field('shown') } : {}), [button[0]]: button[1] }).toString(),
-  });
-  check(done.status === 303, `Kolab refused the page's ${prefix}: ${done.status} ${(await done.text()).slice(0, 400)}`);
-  await (await fetch(new URL(done.headers.get('location')))).text();
-  return html;
-}
-
-/** A konnect command that signs in through the browser: who signs in, and which button to press. */
-async function signingIn(m, who, args, prefix) {
-  await say(`next ${who.subject} ${who.login}`);
-  const ran = konnect(m, args);
-  const browsing = waitOpened(m).then((u) => browser(u, prefix));
-  await Promise.race([browsing, ran.then((r) => (existsSync(m.opened) ? browsing : fail(`konnect ${args.join(' ')} ended (${r.code}) before opening a browser:\n${r.out}${r.err}`)))]);
-  const r = await ran;
-  check(r.code === 0, `konnect ${args.join(' ')} exited ${r.code}:\n${r.out}${r.err}`);
-  return r;
-}
 
 /**
  * The agent's entry, started as Claude Code starts it: stdio MCP. Initializes, lists its tools,
@@ -225,21 +95,15 @@ async function claudeSession(entry, cwd, act, wanted) {
 }
 
 async function main() {
-  mkdirSync(bin);
-  for (const name of ['open', 'xdg-open']) {
-    writeFileSync(join(bin, name), '#!/bin/sh\nprintf \'%s\\n\' "$1" >> "$OPENED"\n');
-    chmodSync(join(bin, name), 0o755);
-  }
-  const lead = machine('lead');
-  const peer = machine('peer');
-  step(`konnect: ${konnectCmd.join(' ')}`);
-  MCP = 'http://127.0.0.1:9/mcp';
+  const lead = h.machine('lead');
+  const peer = h.machine('peer');
+  step(`konnect: ${h.konnectCmd.join(' ')}`);
   const version = await konnect(lead, ['--version']);
   check(version.code === 0 && /^\d+\.\d+\.\d+/.test(version.out.trim()), `konnect --version: ${version.code} ${version.out}${version.err}`);
-  step(`starting a local Kolab (stub identity) in ${tmp}`);
-  MCP = await startKolab();
+  step(`starting a local Kolab (stub identity) in ${h.tmp}`);
+  await h.startKolab();
   for (const who of Object.values(PEOPLE)) await say(`account ${who.subject} ${who.login}`);
-  step(`Kolab at ${MCP}`);
+  step(`Kolab at ${h.url}`);
 
   step('a command line that names no action does nothing, and exits 2; one not logged in exits 3');
   const bare = await konnect(lead, []);
@@ -307,7 +171,7 @@ async function main() {
   check(notAnAgents.code === 4, `konnect --agent helper team invite: ${notAnAgents.code} ${notAnAgents.out}${notAnAgents.err}`);
 
   step('the entry, started as Claude Code starts it: a mention of @lead/helper in #general wakes it');
-  const { events, received } = await claudeSession({ ...entry, env: { ...env(lead), ...entry.env } }, lead.work,
+  const { events, received } = await claudeSession({ ...entry, env: { ...h.env(lead), ...entry.env } }, lead.work,
     async () => {
       const r = await konnect(peer, ['send', '#general', '@lead/helper please check the importer']);
       check(r.code === 0 && r.out.trim() === 'Sent to #general, mentioning @lead/helper.', `peer's mention: ${r.out}${r.err}`);
@@ -320,7 +184,7 @@ async function main() {
   // E2E_HOLD=<file>: for a live check with a real harness (scripts/wake-live.py). Says where
   // everything is, then keeps the Kolab up until <file>.done appears.
   if (process.env.E2E_HOLD) {
-    writeFileSync(process.env.E2E_HOLD, JSON.stringify({ url: MCP, team: TEAM, konnect: konnectCmd, lead: { work: lead.work, config: join(lead.home, '.config', 'konnect') }, peer: { work: peer.work, config: join(peer.home, '.config', 'konnect') } }));
+    writeFileSync(process.env.E2E_HOLD, JSON.stringify({ url: h.url, team: TEAM, konnect: h.konnectCmd, lead: { work: lead.work, config: join(lead.home, '.config', 'konnect') }, peer: { work: peer.work, config: join(peer.home, '.config', 'konnect') } }));
     step(`holding for a live check: ${process.env.E2E_HOLD}`);
     for (const end = Date.now() + 15 * 60_000; !existsSync(`${process.env.E2E_HOLD}.done`) && Date.now() < end;) await new Promise((r) => setTimeout(r, 500));
   }
@@ -331,7 +195,4 @@ async function main() {
   step('passed');
 }
 
-main().then(() => 0, (e) => {
-  console.error(`konnect e2e FAILED: ${e instanceof Failed ? e.message : e?.stack ?? e}`);
-  return 1;
-}).then(async (code) => { await cleanup(); process.exit(code); });
+h.main('konnect e2e', main);
