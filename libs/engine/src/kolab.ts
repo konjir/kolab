@@ -3701,12 +3701,21 @@ export class Kolab {
       if (!(await ownsKolab(tx, by, k))) throw new AccessError(`only the owner of kolab ${k} can erase it`);
       if ((await tx.query(`select 1 from node where kolab_id = $1 limit 1`, [k])).rows.length) throw new TenancyError(keep);
       await tx.query(`select set_config('kj.erasing', $1, true)`, [k]);
+      // The sign-ins whose sessions are here, and those that began here (a grant's scope names the
+      // kolab it began in) with no live session elsewhere now: a session switched to another kolab
+      // keeps its grant, and its person stays signed in there.
+      const revoked = (await tx.query(
+        `update oauth_grant g set revoked_at = now(), revoked_by = $3
+          where g.revoked_at is null
+            and (g.id in (select s.grant_id from session s where s.kolab_id = $1 and s.ended_at is null and s.grant_id is not null)
+                 or (position($2 in ' ' || g.scope || ' ') > 0
+                     and not exists (select 1 from session s where s.grant_id = g.id and s.kolab_id <> $1 and s.ended_at is null)))
+          returning g.id`, [k, ` kolab:${k} `, by])).rows.length;
+      // Setups for it not yet exchanged or used can't be, now: a later kolab of its name owes them nothing.
+      await tx.query(`update oauth_setup set revoked_at = now() where kolab = $1 and revoked_at is null`, [k]);
       const ended = await tx.query<{ id: string }>(
         `update session set ended_at = now(), ended_by = $2 where kolab_id = $1 and ended_at is null returning id`, [k, by]);
       for (const { id } of ended.rows) await signal({ session: 'ended', id });
-      const revoked = (await tx.query(
-        `update oauth_grant set revoked_at = now(), revoked_by = $2
-          where revoked_at is null and position($1 in ' ' || scope || ' ') > 0 returning id`, [` kolab:${k} `, by])).rows.length;
       const grants = await tx.query<{ subject: string }>(`select coalesce(user_id, agent_id, team_id) as subject from kolab_grant where kolab_id = $1`, [k]);
       for (const g of grants.rows) await audit(tx, by, 'grant.removed', { kolab: k, subject: g.subject, detail: { erased: true } });
       await tx.query(`delete from kolab_grant where kolab_id = $1`, [k]);
