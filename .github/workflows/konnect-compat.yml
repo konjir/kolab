@@ -1,0 +1,135 @@
+name: konnect compat
+
+# Every published @konjir/konnect still works against the server as this branch has it
+# (docs/plans/rebrand-and-site.md, "Older konnect keeps working"). Each talks to the hosted Kolab,
+# and some recognise the server's errors by their words, so a change to the server, the engine or
+# the sign-in could break people who never update. Nothing is published, and nothing reaches the
+# hosted Kolab or GitHub.
+#
+# - "Published versions" lists the releases to test, from npm as the run starts
+#   (apps/konnect/scripts/compat.mjs --versions: every release from its MIN_VERSION on), so a new
+#   release is covered with no change here.
+# - "konnect <version>" installs that release from npm outside the workspace, as npx installs it,
+#   and runs apps/konnect/scripts/compat.mjs against a local Kolab from the checkout (on PGlite, the
+#   stub identity in GitHub's place, as konnect.yml's e2e has it): a team made, a teammate invited
+#   who joins, both talking in #general, status; and konnect still recognising a message to someone
+#   not in the team, an owner's action by someone else, and a revoked login.
+# - "konnect compat" passes only if every version passed: the one check to require.
+#
+# Hardening as ci.yml: a read-only token and no secrets, actions pinned to commit SHAs, and
+# dependencies installed without install scripts.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: &paths
+      - apps/server/**
+      - libs/engine/**
+      - libs/login/**
+      - libs/db/**
+      - libs/types/**
+      - libs/log/**
+      - libs/address/**
+      - apps/konnect/scripts/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/konnect-compat.yml
+  push:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+
+concurrency:
+  group: konnect-compat-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  versions:
+    name: Published versions
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.list.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: apps/konnect/scripts
+
+      - name: List the releases to test
+        id: list
+        run: |
+          versions=$(node apps/konnect/scripts/compat.mjs --versions)
+          echo "$versions"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  compat:
+    name: konnect ${{ matrix.version }}
+    needs: versions
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.versions) }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # The release, from npm, outside the workspace, as npx installs it.
+      - name: Install @konjir/konnect@${{ matrix.version }}
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::not a release: $VERSION"; exit 1; fi
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/konnect" "@konjir/konnect@$VERSION"
+          test "$("$RUNNER_TEMP/konnect/node_modules/.bin/konnect" --version)" = "$VERSION"
+
+      - name: konnect ${{ matrix.version }} against a local Kolab from this branch
+        timeout-minutes: 5
+        run: node apps/konnect/scripts/compat.mjs --konnect "$RUNNER_TEMP/konnect/node_modules/.bin/konnect"
+
+  result:
+    name: konnect compat
+    needs: [versions, compat]
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Every published version passed
+        env:
+          VERSIONS: ${{ needs.versions.result }}
+          COMPAT: ${{ needs.compat.result }}
+        run: |
+          echo "versions: $VERSIONS, compat: $COMPAT"
+          test "$VERSIONS" = success && test "$COMPAT" = success
