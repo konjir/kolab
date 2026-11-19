@@ -31,7 +31,7 @@ export interface WebSignInMethods { provider: string | null; token: boolean }
 /**
  * How this Kolab says to get the konjir CLI (W3.7): `npm` is the published package spec its
  * operator set (KONJIR_CLI_NPM_SPEC, pinned to an exact version), for `npx <npm> …`; null while the
- * package isn't published, when the page shows a checkout's `bin/konjir` instead, and says so.
+ * package isn't published, when the page shows a checkout's `bin/kolab` instead, and says so.
  */
 export interface WebCli { npm: string | null }
 

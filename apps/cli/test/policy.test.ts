@@ -67,7 +67,7 @@ test('konjir_answer_query takes cites: an agent\'s uncited answer on the functio
   expect(await call(bob.c, 'list_queries', { mine: true })).toMatchObject({ queries: [{ id: question, state: 'answered', cites: ['kj:orders@1#R2'] }] });
 });
 
-test('in a shell: konjir set_policy and read_policy, as the Admin signed in', async () => {
+test('in a shell: kolab set_policy and read_policy, as the Admin signed in', async () => {
   const { server, ada } = await adasKolab();
   const out: string[] = [];
   jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });

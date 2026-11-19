@@ -1,6 +1,6 @@
 // The M5 check's findings over MCP (W5.7): every verb refuses an argument it doesn't take, naming it
 // and the ones it takes; a test run's evidence takes a summary; no served message ends in '..';
-// `konjir tools` and docs/verbs.md list each verb's parameters, from the schemas Kolab serves.
+// `kolab tools` and docs/verbs.md list each verb's parameters, from the schemas Kolab serves.
 import { afterEach, expect, jest, test } from '@jest/globals';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -96,7 +96,7 @@ test('no description, parameter or instruction Kolab serves holds a doubled full
   expect(doubled).toStrictEqual([]);
 }, 120_000);
 
-test('konjir tools lists each verb with its parameters, from the schemas; docs/verbs.md is generated from the same and up to date (W5.7)', async () => {
+test('kolab tools lists each verb with its parameters, from the schemas; docs/verbs.md is generated from the same and up to date (W5.7)', async () => {
   const tools = await servedTools();
   const create = tools.find((t) => t.name === 'konjir_create_node')!;
   expect(usageLine(create)).toBe('create_node kind=<spec|prototype|binding|plan> title=<string> [id=<string>] [parent=<string>]');
@@ -115,7 +115,7 @@ test('konjir tools lists each verb with its parameters, from the schemas; docs/v
   await main(['tools']);
   expect(out.join('\n')).toMatch(/^pull_work \[binding=<string>\] \[plan=<string>\]$/m);
   await main(['help', 'create_node']);
-  expect(out.at(-1)).toMatch(/^konjir create_node kind=<spec\|prototype\|binding\|plan> title=<string> \[id=<string>\] \[parent=<string>\]\n/);
+  expect(out.at(-1)).toMatch(/^kolab create_node kind=<spec\|prototype\|binding\|plan> title=<string> \[id=<string>\] \[parent=<string>\]\n/);
 }, 120_000);
 
 test('a reviewer lists the links of the version waiting for it with lineage version=; deltas on a first version sent back say to send the full list (W5.7)', async () => {
@@ -150,7 +150,7 @@ test('a reviewer lists the links of the version waiting for it with lineage vers
   expect(await rejection(call(eng2.c, 'lineage', { node: 'orders-pg', version: 1, direction: 'downstream' }))).toMatch(/version= walks one version's links upstream/);
 }, 120_000);
 
-test('every `konjir_<verb> key=…` and `konjir <verb> key=…` Kolab serves or documents names only arguments the verb takes (W5.7)', async () => {
+test('every `konjir_<verb> key=…` and `kolab <verb> key=…` Kolab serves or documents names only arguments the verb takes (W5.7)', async () => {
   // What a next step, a refusal, a description, the instructions, the README or the hands-on tells
   // an agent to type: each key=value example, checked against the schema the verb is served with.
   const params = new Map((await servedTools()).map((t) => [t.name.replace(/^konjir_/, ''), paramsOf(t).map((p) => p.name)]));

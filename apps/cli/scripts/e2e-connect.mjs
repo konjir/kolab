@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// A headless end-to-end check of `konjir connect claude` (one page, D105), with no person: so a
+// A headless end-to-end check of `kolab connect claude` (one page, D105), with no person: so a
 // change to setup or consent is tested in minutes, by an agent as well as by hand.
 //
 //   npm run e2e:connect        (or: node apps/cli/scripts/e2e-connect.mjs)
-//   node apps/cli/scripts/e2e-connect.mjs --konjir <a published konjir: a binary, or an installed package's bin/konjir>
+//   node apps/cli/scripts/e2e-connect.mjs --kolab <a published kolab: a binary, or an installed package's bin/kolab>
 //
-// With --konjir, that konjir connects, and its entries must run the bridge it carries, `konjir
-// bridge` (W9.5, API29); without, the checkout's bin/konjir, whose entries run the checkout's own.
+// With --kolab, that kolab connects, and its entries must run the bridge it carries, `kolab
+// bridge` (W9.5, API29); without, the checkout's bin/kolab, whose entries run the checkout's own.
 // Kolab itself always runs from this checkout.
 //
-// It starts a local Kolab from this checkout (`bin/konjir serve`, on PGlite in a temp folder, on a
+// It starts a local Kolab from this checkout (`bin/kolab serve`, on PGlite in a temp folder, on a
 // free 127.0.0.1 port) with the stub identity (KONJIR_STUB_IDENTITY), so whoever opens Kolab's
-// sign-in is signed in with no GitHub. It never reaches any other Kolab. Everything konjir writes
+// sign-in is signed in with no GitHub. It never reaches any other Kolab. Everything kolab writes
 // lands in a temp folder: a throwaway git repository, and a temp HOME and XDG_CONFIG_HOME, so the
 // real ~/.config/konjir is never read or touched.
 //
@@ -22,7 +22,7 @@
 // browser sends: the same pages, cookies and POST /oauth/consent.
 //
 // Checks: connect exits 0; .mcp.json has a channel entry per agent; each agent's credentials file
-// is there, mode 600, and `konjir whoami` with it names that agent, its role and the kolab; the
+// is there, mode 600, and `kolab whoami` with it names that agent, its role and the kolab; the
 // project's .konjir.json names the kolab and Kolab's URL, and a command there with no --url takes
 // them, never with a token (W9.2, API26); the
 // same command again passes and leaves .mcp.json and .konjir.json as they were; a session started on an entry, as
@@ -39,10 +39,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const CHECKOUT = join(ROOT, 'bin', 'konjir');
-const given = process.argv.indexOf('--konjir');
-if (given >= 0 && !process.argv[given + 1]) { console.error('--konjir <path to a published konjir>'); process.exit(2); }
-/** The konjir that connects: a published one when --konjir names it, else the checkout's. */
+const CHECKOUT = join(ROOT, 'bin', 'kolab');
+const given = process.argv.indexOf('--kolab');
+if (given >= 0 && !process.argv[given + 1]) { console.error('--kolab <path to a published kolab>'); process.exit(2); }
+/** The kolab that connects: a published one when --kolab names it, else the checkout's. */
 const KONJIR = given >= 0 ? resolve(process.argv[given + 1]) : CHECKOUT;
 const PUBLISHED = given >= 0;
 const LOGIN = 'e2e';
@@ -144,16 +144,16 @@ async function waitOpened(timeoutMs = 60_000) {
     if (existsSync(opened)) { const u = readFileSync(opened, 'utf8').trim().split('\n').pop(); if (u) return new URL(u); }
     await new Promise((r) => setTimeout(r, 100));
   }
-  fail('konjir connect opened no browser within 60s');
+  fail('kolab connect opened no browser within 60s');
 }
 
 /**
- * The person's browser: from the URL konjir opened, follows Kolab's redirects with its cookies to
+ * The person's browser: from the URL kolab opened, follows Kolab's redirects with its cookies to
  * the setup page, then clicks Allow (Deny when the page offers nothing else), and follows Kolab's
  * answer to the CLI's loopback listener. Returns the page as it arrived.
  */
 async function browser(start, mcp) {
-  check(start.origin === new URL(mcp).origin && start.pathname === '/oauth/authorize', `konjir opened ${start}, not this Kolab's /oauth/authorize`);
+  check(start.origin === new URL(mcp).origin && start.pathname === '/oauth/authorize', `kolab opened ${start}, not this Kolab's /oauth/authorize`);
   const jar = new Map();
   const go = async (url, init = {}) => {
     const res = await fetch(url, { ...init, redirect: 'manual', headers: { ...init.headers, cookie: [...jar].map(([k, v]) => `${k}=${v}`).join('; ') } });
@@ -183,17 +183,17 @@ async function browser(start, mcp) {
   return html;
 }
 
-/** `konjir connect claude …` in `cwd`, with the browser played: its result and the setup page it showed. */
+/** `kolab connect claude …` in `cwd`, with the browser played: its result and the setup page it showed. */
 async function connect(cwd, mcp, agents) {
   rmSync(opened, { force: true });
   const args = ['connect', 'claude', '--url', mcp, '--kolab', KOLAB, ...agents.flatMap((a) => ['--agent', a])];
   const ran = run(KONJIR, args, { cwd, env: env() });
-  // konjir may end as soon as the browser has its answer: a failure only if it ended before
+  // kolab may end as soon as the browser has its answer: a failure only if it ended before
   // opening the browser at all.
   const browsing = waitOpened().then((u) => browser(u, mcp));
   const page = await Promise.race([
     browsing,
-    ran.then((r) => (existsSync(opened) ? browsing : fail(`konjir connect ended (${r.code}) before opening a browser:\n${r.out}${r.err}`))),
+    ran.then((r) => (existsSync(opened) ? browsing : fail(`kolab connect ended (${r.code}) before opening a browser:\n${r.out}${r.err}`))),
   ]);
   return { ...(await ran), page };
 }
@@ -289,14 +289,14 @@ async function main() {
   const agents = [['writer', 'product'], ['builder', 'engineer']];
   const dir = await project('repo');
 
-  step('konjir connect claude: writer:product, builder:engineer');
+  step('kolab connect claude: writer:product, builder:engineer');
   const first = await connect(dir, mcp, agents.map(([l, r]) => `${l}:${r}`));
-  check(first.code === 0, `konjir connect exited ${first.code}:\n${first.out}${first.err}`);
+  check(first.code === 0, `kolab connect exited ${first.code}:\n${first.out}${first.err}`);
   check(first.page.includes(`Set up 2 agents in <code>${KOLAB}</code>`) && first.page.includes('New: made now, private, yours'), `the setup page didn't offer a new kolab ${KOLAB} with 2 agents:\n${first.page}`);
   const last = first.out.trim().split('\n').slice(-2);
-  // `konjir claude <label>`, or for a konjir run from a package runner's cache, the copy it keeps, never npx.
-  const runsAgain = (label) => new RegExp(`^(konjir|\\S+ \\S+konjir-[0-9.]+\\.mjs) claude ${label}$`);
-  check(runsAgain('writer').test(last[0]) && runsAgain('builder').test(last[1]) && !/npx/.test(last.join(' ')), `connect's last lines aren't one konjir claude command per agent: ${last.join(' / ')}`);
+  // `kolab claude <label>`, or for a kolab run from a package runner's cache, the copy it keeps, never npx.
+  const runsAgain = (label) => new RegExp(`^(kolab|\\S+ \\S+kolab-[0-9.]+\\.mjs) claude ${label}$`);
+  check(runsAgain('writer').test(last[0]) && runsAgain('builder').test(last[1]) && !/npx/.test(last.join(' ')), `connect's last lines aren't one kolab claude command per agent: ${last.join(' / ')}`);
 
   const mcpJson = join(dir, '.mcp.json');
   check(existsSync(mcpJson), '.mcp.json was not written');
@@ -306,8 +306,8 @@ async function main() {
     const e = servers[`konjir-${label}`];
     const agent = `${LOGIN}-${label}`;
     check(e?.type === 'stdio' && Array.isArray(e.args), `.mcp.json has no channel entry konjir-${label}: ${JSON.stringify(e)}`);
-    // A published konjir's entry runs the bridge it carries; a checkout's, the checkout's own.
-    if (PUBLISHED) check(e.args.at(-1) === 'bridge' && !JSON.stringify(e).includes('start.sh'), `konjir-${label} doesn't run konjir bridge: ${JSON.stringify(e)}`);
+    // A published kolab's entry runs the bridge it carries; a checkout's, the checkout's own.
+    if (PUBLISHED) check(e.args.at(-1) === 'bridge' && !JSON.stringify(e).includes('start.sh'), `konjir-${label} doesn't run kolab bridge: ${JSON.stringify(e)}`);
     else check(e.command === join(ROOT, 'apps/channel-bridge/scripts/start.sh') && e.args.length === 0, `konjir-${label} doesn't run this checkout's bridge: ${JSON.stringify(e)}`);
     check(e.env?.KONJIR_URL === mcp && e.env.KONJIR_AGENT === agent && e.env.KONJIR_TOKEN === '', `konjir-${label}'s env is wrong: ${JSON.stringify(e.env)}`);
     check(e.env.KONJIR_SCOPE === `konjir kolab:${KOLAB} role:${role} agent:${agent}`, `konjir-${label}'s scope is ${e.env.KONJIR_SCOPE}`);
@@ -346,12 +346,12 @@ async function main() {
     check(w.code === 0 && JSON.parse(w.out).actor === `${LOGIN}-writer`, `whoami with no --url, in the project, exited ${w.code}:\n${w.out}${w.err}`);
     // A token is never sent to a URL the file names: refused before any request.
     const t = await run(KONJIR, ['whoami'], { cwd: dir, env: env({ KONJIR_TOKEN: 'kjs_not-a-token' }) });
-    check(t.code !== 0 && t.err.includes('konjir sends a token only to a URL you give it'), `whoami with a token and no --url, in the project, exited ${t.code}:\n${t.out}${t.err}`);
+    check(t.code !== 0 && t.err.includes('kolab sends a token only to a URL you give it'), `whoami with a token and no --url, in the project, exited ${t.code}:\n${t.out}${t.err}`);
   }
 
   step('the same command again: passes, reuses the kolab and agents, .mcp.json and .konjir.json unchanged');
   const again = await connect(dir, mcp, agents.map(([l, r]) => `${l}:${r}`));
-  check(again.code === 0, `konjir connect, run again, exited ${again.code}:\n${again.out}${again.err}`);
+  check(again.code === 0, `kolab connect, run again, exited ${again.code}:\n${again.out}${again.err}`);
   check(!again.page.includes('New: made now'), `the second setup page made something new:\n${again.page}`);
   check(readFileSync(mcpJson, 'utf8') === written, '.mcp.json changed on the second run');
   check(readFileSync(projectJson, 'utf8') === projectWritten, '.konjir.json changed on the second run');
@@ -360,7 +360,7 @@ async function main() {
   step(`a session on konjir-builder, as Claude Code starts it (${[servers['konjir-builder'].command, ...servers['konjir-builder'].args].join(' ')})`);
   // A project that ships packages the bridge looks for as it starts: none of them is ever run. These
   // are the ones the reviews of #144 found a binary or the npm package loading from the folder
-  // Claude Code starts it in; a published konjir resolves nothing as it runs (scripts/bundle.mjs).
+  // Claude Code starts it in; a published kolab resolves nothing as it runs (scripts/bundle.mjs).
   const ran = join(tmp, 'planted-ran.txt');
   for (const [pkg, file] of [['@nestjs/websockets', 'socket-module.js'], ['@nestjs/microservices', 'microservices-module.js'], ['@nestjs/microservices', 'index.js'],
     ['class-transformer', 'index.js'], ['class-validator', 'index.js'], ['@konjir/server', 'index.js'], ['file-type', 'index.js'],
@@ -377,7 +377,7 @@ async function main() {
   });
   check(heard.pushed.includes(`${LOGIN}-writer`) || heard.pushed.includes(said), `the channel message doesn't tell of ${LOGIN}-writer's message: ${heard.pushed.slice(0, 400)}`);
   for (const cmd of ['help', '--version']) await run(KONJIR, [cmd], { cwd: dir, env: env() });
-  check(!existsSync(ran), `konjir ran code the project planted in its node_modules: ${existsSync(ran) ? readFileSync(ran, 'utf8').trim().split('\n').join(', ') : ''}`);
+  check(!existsSync(ran), `kolab ran code the project planted in its node_modules: ${existsSync(ran) ? readFileSync(ran, 'utf8').trim().split('\n').join(', ') : ''}`);
   step(`it listed ${heard.tools} of Kolab's tools and was pushed: ${heard.pushed.split('\n')[0].slice(0, 120)}`);
 
   step('the agent cap: 2 live agents and 9 more is refused, on the page and in the CLI');
@@ -387,8 +387,8 @@ async function main() {
   const cap = 'you have 2 live agents, and this would make 9 more: a person has at most 10 here';
   check(refused.page.includes('This setup can&#39;t be allowed') || refused.page.includes('This setup can\'t be allowed'), `the setup page didn't refuse:\n${refused.page}`);
   check(refused.page.includes(cap) && !refused.page.includes('value="allow"'), `the setup page doesn't show the cap with Deny alone:\n${refused.page}`);
-  check(refused.code !== 0, 'konjir connect passed past the agent cap');
-  check(`${refused.out}${refused.err}`.includes(cap), `konjir connect doesn't say why:\n${refused.out}${refused.err}`);
+  check(refused.code !== 0, 'kolab connect passed past the agent cap');
+  check(`${refused.out}${refused.err}`.includes(cap), `kolab connect doesn't say why:\n${refused.out}${refused.err}`);
   check(!existsSync(join(capped, '.mcp.json')) && !existsSync(join(capped, '.konjir.json')), 'a refused setup wrote .mcp.json or .konjir.json');
   for (let i = 1; i <= 9; i++) check(!existsSync(join(xdg, 'konjir', 'agents', `${LOGIN}-extra${i}.json`)), 'a refused setup kept a sign-in');
 

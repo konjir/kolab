@@ -81,10 +81,10 @@
   },
   "release": {
     "projects": [
-      "konjir"
+      "@konjir/kolab"
     ],
     "releaseTag": {
-      "pattern": "konjir@{version}"
+      "pattern": "kolab@{version}"
     },
     "version": {
       "currentVersionResolver": "git-tag",

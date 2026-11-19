@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Checks that a published konjir reaches a Kolab (W2.6: "npx konjir and a downloaded binary both
+# Checks that a published kolab reaches a Kolab (W2.6: "npx kolab and a downloaded binary both
 # reach the test server"). CI runs it against a Kolab it starts from the checkout, never production.
 #
-#   KONJIR_URL=… KONJIR_ADMIN_TOKEN=… apps/cli/scripts/smoke.sh <actor id> <konjir command…>
+#   KONJIR_URL=… KONJIR_ADMIN_TOKEN=… apps/cli/scripts/smoke.sh <actor id> <kolab command…>
 #
-# e.g. smoke.sh smoke-bin apps/cli/dist-bin/konjir-linux-arm64
-#      smoke.sh smoke-npm npm exec --yes --package=/tmp/konjir-0.6.0.tgz -- konjir
+# e.g. smoke.sh smoke-bin apps/cli/dist-bin/kolab-linux-arm64
+#      smoke.sh smoke-npm npm exec --yes --package=/tmp/konjir-kolab-0.9.0.tgz -- kolab
 #
 # It adds a person with the given id (which must be new to that Kolab, and a valid kolab name),
 # makes them a kolab of their own by the same name, opens a session for them in it, and checks
@@ -25,4 +25,4 @@ if [ "$who" != "$actor" ]; then
   echo "whoami named '$who', expected '$actor'" >&2
   exit 1
 fi
-echo "konjir reached $KONJIR_URL as $who"
+echo "kolab reached $KONJIR_URL as $who"

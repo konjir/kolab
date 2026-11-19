@@ -114,7 +114,7 @@ require_an_admin_who_signs_in() {
   current="$(admin_token)"
   if [ "$current" = off ]; then unset current; return 0; fi
   [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first: --off checks Konjir's admins with the konjir CLI"
-  admins="$(KONJIR_URL="$(out url)" KONJIR_TOKEN="$current" "$ROOT/bin/konjir" admin_list_admins)" || { unset current; die "couldn't list Konjir's admins: $admins"; }
+  admins="$(KONJIR_URL="$(out url)" KONJIR_TOKEN="$current" "$ROOT/bin/kolab" admin_list_admins)" || { unset current; die "couldn't list Konjir's admins: $admins"; }
   unset current
   python3 -c '
 import json, sys
@@ -180,16 +180,16 @@ cmd_connect() {
   # that same owner, with the access it already has. Any other refusal (an invalid id, an owner
   # that isn't an account) stops here. A new actor gets Write on both layers of the kolab; an
   # agent's grant is refused if its owner holds less there.
-  if added="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_add_actor "id=$actor" ${owner:+"owner=$owner"} 2>&1)"; then
-    granted="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_grant "kolab=$kolab" "to=$actor" level=write 2>&1)" \
+  if added="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/kolab" admin_add_actor "id=$actor" ${owner:+"owner=$owner"} 2>&1)"; then
+    granted="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/kolab" admin_grant "kolab=$kolab" "to=$actor" level=write 2>&1)" \
       || die "$actor was added, but not granted access to kolab $kolab: $granted"
   else
     [[ "$added" == *"actor $actor already exists"* ]] || die "$added"
-    existing="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_list_actors \
+    existing="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/kolab" admin_list_actors \
       | python3 -c 'import json,sys;a=[x for x in json.load(sys.stdin)["actors"] if x["id"]==sys.argv[1]][0];print(a["owner"] or "")' "$actor")"
     [ "$existing" = "$owner" ] || die "$actor already exists as $([ -n "$existing" ] && echo "an agent of $existing" || echo "a person"), not as $([ -n "$owner" ] && echo "an agent of $owner" || echo "a person")"
   fi
-  opened="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/konjir" admin_open_session "actor=$actor" "role=$role" "kolab=$kolab")"
+  opened="$(KONJIR_URL="$url" KONJIR_TOKEN="$admin" "$ROOT/bin/kolab" admin_open_session "actor=$actor" "role=$role" "kolab=$kolab")"
   token="$(python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])' <<<"$opened")"
   expires="$(python3 -c 'import json,sys;print(json.load(sys.stdin).get("expires_at") or "never")' <<<"$opened")"
   unset opened
@@ -204,9 +204,9 @@ otherwise); run connect again for a new one then.
 
   Claude Code:  claude mcp add --transport http konjir $url --header "Authorization: Bearer $token"
   Shell / CLI:  export KONJIR_URL=$url KONJIR_TOKEN=$token
-                konjir instructions
+                kolab instructions
 
-Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh --env $ENV admin-token) bin/konjir admin_end_session actor=$actor
+Revoke with:    KONJIR_URL=$url KONJIR_TOKEN=\$(deploy/konjir-ops.sh --env $ENV admin-token) bin/kolab admin_end_session actor=$actor
 EOF
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Checks that a packed konnect carries its licence, and only Apache-2.0 code of this repository:
-# konnect is Apache-2.0, as konjir is (D63), and the rest of the repository is FSL-1.1-ALv2 (D64).
+# konnect is Apache-2.0, as kolab is (D63), and the rest of the repository is FSL-1.1-ALv2 (D64).
 #
 #   apps/konnect/scripts/check-licence.sh <konjir-konnect-x.y.z.tgz>
 #

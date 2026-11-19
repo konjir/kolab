@@ -1,6 +1,6 @@
 /**
  * The project's `.konjir.json` (W9.2, API26): the kolab a project works in and Kolab's MCP URL,
- * which `konjir connect` writes, so later commands run in the project, or in a folder below it,
+ * which `kolab connect` writes, so later commands run in the project, or in a folder below it,
  * need no --kolab, --url or KONJIR_URL. It never holds a token, and names no absolute path, so it
  * may be committed.
  */
@@ -17,9 +17,9 @@ const KOLAB = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
  * The `.konjir.json` a command run in `cwd` takes: in a repository, the nearest from `cwd` up to its
- * root (the folder holding .git), as konjir claude finds its project; outside one, `cwd`'s alone, so
+ * root (the folder holding .git), as kolab claude finds its project; outside one, `cwd`'s alone, so
  * a file in a folder above, which nobody chose for this one, is never read. Undefined when there is
- * none. One that isn't what konjir connect writes is refused, never passed over for the default.
+ * none. One that isn't what kolab connect writes is refused, never passed over for the default.
  */
 export function findProject(cwd: string): Project | undefined {
   for (let dir = cwd; ; dir = dirname(dir)) {
@@ -41,19 +41,19 @@ function inRepository(cwd: string): boolean {
 /**
  * Text fit to print to a terminal: a path, or a name Kolab or a file gave, with every control
  * character (an escape sequence's, a line break) shown as `?`, so nothing a repository names can
- * move the cursor or rewrite what konjir said.
+ * move the cursor or rewrite what kolab said.
  */
 export const shown = (text: string): string => text.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, '?');
 
 /**
- * A `.konjir.json`'s kolab and URL, checked: a kolab's name, and Kolab's URL as `konjir connect`
+ * A `.konjir.json`'s kolab and URL, checked: a kolab's name, and Kolab's URL as `kolab connect`
  * takes one (projectUrl), given back as connect writes it.
  */
 export const readProject = (path: string): Project => parseProject(path, readConfigText(path));
 
-/** What `text`, a `.konjir.json`'s, says; refused if it isn't what konjir connect writes. */
+/** What `text`, a `.konjir.json`'s, says; refused if it isn't what kolab connect writes. */
 export function parseProject(path: string, text: string): Project {
-  const bad = (why: string) => new Error(`${shown(path)} ${why}: it names the kolab and Kolab's URL, {"kolab": "<name>", "url": "https://…/mcp"}, as konjir connect writes it. Fix it, or write it again: konjir connect opencode|claude --kolab <name> --url <Kolab's URL>, which shows what it replaces first`);
+  const bad = (why: string) => new Error(`${shown(path)} ${why}: it names the kolab and Kolab's URL, {"kolab": "<name>", "url": "https://…/mcp"}, as kolab connect writes it. Fix it, or write it again: kolab connect opencode|claude --kolab <name> --url <Kolab's URL>, which shows what it replaces first`);
   let raw: unknown;
   try { raw = JSON.parse(text || 'null'); } catch { throw bad('isn\'t JSON'); }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw bad('isn\'t a JSON object');
@@ -65,10 +65,10 @@ export function parseProject(path: string, text: string): Project {
 }
 
 /**
- * The URL a `.konjir.json` names, as konjir uses it, or null if it may not name it: konjir connect's
+ * The URL a `.konjir.json` names, as kolab uses it, or null if it may not name it: kolab connect's
  * own rule (mcpUrl: http(s), no user name or password, no query or fragment, `/mcp` for no path),
  * and written as a URL is: one with a control character or a space in it, or that reads back any
- * other way (another case, an escape, a host in another script), is refused, so what konjir prints
+ * other way (another case, an escape, a host in another script), is refused, so what kolab prints
  * and keeps a sign-in under is the text the file holds.
  */
 function projectUrl(url: string): string | null {
@@ -95,10 +95,10 @@ export function projectText(before: string, kolab: string, url: string): string 
 export const loopbackHost = (host: string): boolean => /^(localhost|127(\.\d+){3}|\[::1\])$/.test(host);
 
 /**
- * Whether konjir uses `url`, which only a project's `.konjir.json` names, without the person having
- * named it (API26). A cloned repository's file could aim konjir, and the browser konjir login and
+ * Whether kolab uses `url`, which only a project's `.konjir.json` names, without the person having
+ * named it (API26). A cloned repository's file could aim kolab, and the browser kolab login and
  * connect open, anywhere, so only when it is `hosted` (Konjir's own Kolab), a Kolab on this machine,
- * or one konjir keeps a sign-in for (`kept`: the CLI's and each agent's), which the person once
+ * or one kolab keeps a sign-in for (`kept`: the CLI's and each agent's), which the person once
  * signed in to having given the URL themselves.
  */
 export function trustedProjectUrl(url: string, hosted: string, kept: () => string[]): boolean {
@@ -107,7 +107,7 @@ export function trustedProjectUrl(url: string, hosted: string, kept: () => strin
   return kept().some((k) => sameKolab(k, url));
 }
 
-/** Whether two URLs name the same Kolab, each read as konjir connect reads one. */
+/** Whether two URLs name the same Kolab, each read as kolab connect reads one. */
 export function sameKolab(a: string, b: string): boolean {
   const as = (u: string) => { try { return mcpUrl(u); } catch { return u; } };
   return as(a) === as(b);

@@ -1,4 +1,4 @@
-// konjir import (W6.3; D15, D104, D109): a person signed in imports a kolab's spec, binding, rulings
+// kolab import (W6.3; D15, D104, D109): a person signed in imports a kolab's spec, binding, rulings
 // and repository from one file, over Kolab's konjir_import; never inside a job or as an agent; run
 // again it changes nothing; --dry-run writes nothing. The fixture is invented.
 import { afterEach, expect, jest, test } from '@jest/globals';
@@ -62,7 +62,7 @@ async function leesKolab() {
   return { kolab, server, signIn, admin };
 }
 
-/** Runs konjir with `argv` as `token`, returning what it printed to stdout and to stderr. */
+/** Runs kolab with `argv` as `token`, returning what it printed to stdout and to stderr. */
 async function konjir(server: { url: string }, token: string, argv: string[]) {
   const out: string[] = [];
   const err: string[] = [];
@@ -74,7 +74,7 @@ async function konjir(server: { url: string }, token: string, argv: string[]) {
   return { out: out.join('\n'), err: err.join('\n') };
 }
 
-test('in a shell: konjir import in two sign-ins writes the file as the person; read_node shows the spec and binding by their IDs; run again it changes nothing (W6.3)', async () => {
+test('in a shell: kolab import in two sign-ins writes the file as the person; read_node shows the spec and binding by their IDs; run again it changes nothing (W6.3)', async () => {
   const { server, signIn } = await leesKolab();
   const path = fileOf(FILE);
   const product = await signIn('lee', 'product');
@@ -123,7 +123,7 @@ test('in a shell: konjir import in two sign-ins writes the file as the person; r
   expect(new Set(again.steps.map((s: { outcome: string }) => s.outcome))).toStrictEqual(new Set(['unchanged']));
 });
 
-test('konjir import --dry-run writes nothing and says what it would; an engineer pass before the spec exits 0 saying what waits; a difference exits 1 (W6.3)', async () => {
+test('kolab import --dry-run writes nothing and says what it would; an engineer pass before the spec exits 0 saying what waits; a difference exits 1 (W6.3)', async () => {
   const { kolab, server, signIn } = await leesKolab();
   const early = await konjir(server, (await signIn('lee', 'engineer')).token, ['import', fileOf(FILE)]);
   expect(JSON.parse(early.out)).toMatchObject({ role: 'engineer', complete: false, created: [], failed: [], next: 'konjir login --kolab test --role product, then konjir import again' });
@@ -149,16 +149,16 @@ test('konjir import --dry-run writes nothing and says what it would; an engineer
   expect(JSON.parse((await konjir(server, lee.token, ['import', named, '--dry-run'])).out)).toMatchObject({ dry_run: true });
 });
 
-test('konjir import refuses inside a job, as an agent, and with bad arguments, writing nothing (W6.3)', async () => {
+test('kolab import refuses inside a job, as an agent, and with bad arguments, writing nothing (W6.3)', async () => {
   const { kolab, server, signIn, admin } = await leesKolab();
   const lee = await signIn('lee', 'engineer');
   const bot = await signIn('lee-bot', 'engineer');
   const path = fileOf(FILE);
   process.env.KONJIR_JOB = 'job-1';
-  expect(await rejection(konjir(server, lee.token, ['import', path]))).toMatch(/konjir import doesn't run inside a Konjir job \(KONJIR_JOB is set\)/);
+  expect(await rejection(konjir(server, lee.token, ['import', path]))).toMatch(/kolab import doesn't run inside a Konjir job \(KONJIR_JOB is set\)/);
   delete process.env.KONJIR_JOB;
   expect(await rejection(konjir(server, bot.token, ['import', path]))).toMatch(/lee-bot is an agent, and an agent imports nothing/);
-  expect(await rejection(konjir(server, lee.token, ['import']))).toMatch(/konjir import <file\.json> \[--dry-run\] \[--update\]: name one file/);
+  expect(await rejection(konjir(server, lee.token, ['import']))).toMatch(/kolab import <file\.json> \[--dry-run\] \[--update\]: name one file/);
   expect(await rejection(konjir(server, lee.token, ['import', path, '--force']))).toMatch(/unknown --force/);
   expect(await rejection(konjir(server, lee.token, ['import', fileOf([1, 2])]))).toMatch(/is one JSON object/);
   expect(await rejection(konjir(server, lee.token, ['import', fileOf({ ...FILE, kolab: 'elsewhere' })]))).toMatch(/imports into kolab elsewhere, and this session works in kolab test/);

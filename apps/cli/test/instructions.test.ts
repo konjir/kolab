@@ -1,4 +1,4 @@
-// The instructions for an agent connected only over MCP, with no konjir CLI: its client shows the
+// The instructions for an agent connected only over MCP, with no kolab CLI: its client shows the
 // prompts to the person, not to the model, so the same texts are a tool, konjir_instructions, and
 // two resources. Each serves exactly what the matching prompt serves, scoped to the session's kolab.
 import { readFileSync } from 'node:fs';
@@ -255,7 +255,7 @@ test('the server instructions tell an MCP session to call konjir_instructions fi
   await server.close();
 });
 
-test('the CLI: konjir instructions, konjir instructions reviewer and konjir instructions which=reviewer', async () => {
+test('the CLI: kolab instructions, kolab instructions reviewer and kolab instructions which=reviewer', async () => {
   const { server, open } = await boot();
   const ann = await open('ann', 'anns');
   await precedent(ann.client, 'alpha');
@@ -363,7 +363,7 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
   await server.close();
 });
 
-test('konjir help shows the build loop, in the order the served instructions give it (W5.3)', async () => {
+test('kolab help shows the build loop, in the order the served instructions give it (W5.3)', async () => {
   const out: string[] = [];
   const log = jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
   try {
@@ -373,10 +373,10 @@ test('konjir help shows the build loop, in the order the served instructions giv
   }
   const help = out.join('\n');
   const build = help.slice(help.indexOf('Build:'), help.indexOf('Git:'));
-  expect(build).toMatch(/^Build: {5}the loop for an engineer \(konjir instructions has it step by step\)/);
+  expect(build).toMatch(/^Build: {5}the loop for an engineer \(kolab instructions has it step by step\)/);
   const flat = build.replace(/\n +/g, ' ');
-  const steps = ['konjir pull_work', 'konjir read_work', 'git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"', 'konjir work deliver <work> --submit',
-    'konjir review', 'konjir open_case', 'konjir reopen_work'];
+  const steps = ['kolab pull_work', 'kolab read_work', 'git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"', 'kolab work deliver <work> --submit',
+    'kolab review', 'kolab open_case', 'kolab reopen_work'];
   for (const s of steps) expect(flat).toContain(s);
   for (let i = 1; i < steps.length; i++) expect(flat.indexOf(steps[i - 1])).toBeLessThan(flat.indexOf(steps[i]));
 });

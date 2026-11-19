@@ -1,9 +1,9 @@
-// konjir work guard (W6.4; JOB4): the PreToolUse hook a job's Claude Code runs before each shell
+// kolab work guard (W6.4; JOB4): the PreToolUse hook a job's Claude Code runs before each shell
 // command. A push that deletes a remote branch is denied in every form a push can take (a `:branch`
 // refspec, `+:branch`, `:refs/heads/x`, one delete among several refspecs, --delete and -d however
 // abbreviated or clustered, --prune, --mirror, --all), as are forced pushes, pushes to the default
 // branch, merging, gh api and terraform, however the command is quoted or wrapped; a feature
-// branch's ordinary push is allowed. The built konjir, run as the hook, exits 2 with why.
+// branch's ordinary push is allowed. The built kolab, run as the hook, exits 2 with why.
 import { expect, test } from '@jest/globals';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync } from 'node:fs';
@@ -66,7 +66,7 @@ test('a feature branch\'s ordinary push, and everything else a job runs, is allo
     ['git push --dry-run origin feature'], ['git push -n origin feature'], ['git push --no-verify -u origin feature'], ['git push origin tag v1.2'], ['git push origin feature 2>&1 | tail -3'],
     ['git commit -m "never git push origin :main"'], ['git commit -m "$(cat msg.txt)"'], ['git log --oneline -3'], ['git status'], ['git -P log'], ['git --no-pager diff'],
     ['npm test'], ['npm run build && npm test'], ['npx jest --maxWorkers=2'], ['gh pr create --title "Merge-free" --body "x"'], ['gh pr view 3'],
-    ['echo "git push origin :x"'], ["grep -rn 'git push' docs"], ['ls # git push origin :x'], ['konjir work deliver kj:b#W1 --submit'],
+    ['echo "git push origin :x"'], ["grep -rn 'git push' docs"], ['ls # git push origin :x'], ['kolab work deliver kj:b#W1 --submit'],
   ] as [string, string?][]) expect([line, deny(line, on)]).toEqual([line, undefined]);
 });
 
@@ -161,7 +161,7 @@ test('the hook: Claude Code\'s PreToolUse input in, exit 2 and why for a denial,
   git('symbolic-ref', 'HEAD', 'refs/heads/feature');
   expect(guardHook(input('git push', dir), 'main').code).toBe(0);
 
-  // The built konjir, as Claude Code runs it: inside a job (KONJIR_JOB set, no token), it talks to no Kolab.
+  // The built kolab, as Claude Code runs it: inside a job (KONJIR_JOB set, no token), it talks to no Kolab.
   const hook = (command: string) => spawnSync('node', [join(root, 'apps/cli/dist/main.js'), 'work', 'guard', '--branch', 'main'],
     { input: input(command, dir), encoding: 'utf8', env: { PATH: process.env.PATH, HOME: process.env.HOME, KONJIR_JOB: 'J1', KONJIR_URL: 'http://127.0.0.1:9/mcp' } });
   const denied = hook("git push origin '+:old'");

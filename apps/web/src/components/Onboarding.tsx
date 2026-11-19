@@ -46,10 +46,10 @@ export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https:
  * How to run the konjir CLI here (W3.7): `npx <spec>` only when this Kolab's operator named the
  * published package, pinned to an exact version (KONJIR_CLI_NPM_SPEC). Until then, never `npx
  * konjir`: with no version pinned, whatever is published under the name at the time would run on
- * every machine that pasted the command. A checkout's bin/konjir instead, at ~/kolab.
+ * every machine that pasted the command. A checkout's bin/kolab instead, at ~/kolab.
  */
 export const CHECKOUT = '~/kolab';
-export const konjirCommand = (cli: WebCli | undefined) => (cli?.npm ? `npx ${cli.npm}` : `${CHECKOUT}/bin/konjir`);
+export const konjirCommand = (cli: WebCli | undefined) => (cli?.npm ? `npx ${cli.npm}` : `${CHECKOUT}/bin/kolab`);
 
 /** `konjir connect` for a harness (W3.7, D59): one agent of yours per entry, product and engineer by default. */
 export const konjirConnect = (cli: WebCli | undefined, harness: 'opencode' | 'claude', origin: string, kolab: string) => `${konjirCommand(cli)} connect ${harness} --url ${origin} --kolab ${kolab}`;

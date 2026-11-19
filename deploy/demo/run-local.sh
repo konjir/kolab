@@ -20,9 +20,9 @@ start_kolab() {
   (
     cd "$ROOT"
     if [ -n "${DB_URL:-}" ]; then
-      KONJIR_ADMIN_TOKEN="$ADMIN" exec bin/konjir serve --port "$PORT" --database-url "$DB_URL"
+      KONJIR_ADMIN_TOKEN="$ADMIN" exec bin/kolab serve --port "$PORT" --database-url "$DB_URL"
     else
-      KONJIR_ADMIN_TOKEN="$ADMIN" exec bin/konjir serve --port "$PORT" --data "$1/data"
+      KONJIR_ADMIN_TOKEN="$ADMIN" exec bin/kolab serve --port "$PORT" --data "$1/data"
     fi
   ) >>"$1/kolab.log" 2>&1 &
   echo $! >"$1/pid"

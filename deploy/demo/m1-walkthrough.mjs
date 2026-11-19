@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The M1 walkthrough: two teams put a small, real-looking product spec on a Kolab, end to end,
-// through the konjir CLI, as an outside team would. See deploy/demo/DEMO.md.
+// through the kolab CLI, as an outside team would. See deploy/demo/DEMO.md.
 //
 //   KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<admin token> node deploy/demo/m1-walkthrough.mjs
 //   node deploy/demo/m1-walkthrough.mjs cleanup <state file>
@@ -13,7 +13,7 @@
 // Settings (environment):
 //   KONJIR_URL            the Kolab's MCP endpoint (default http://127.0.0.1:7420/mcp)
 //   KONJIR_TOKEN          the admin token (or KONJIR_ADMIN_TOKEN)
-//   KONJIR_BIN            the konjir command (default: this checkout's bin/konjir, else konjir on PATH);
+//   KONJIR_BIN            the kolab command (default: this checkout's bin/kolab, else kolab on PATH);
 //                         may hold arguments, e.g. "npx -y konjir@<version>" once published (always pinned)
 //   KONJIR_DEMO_RUN       the suffix that keeps this run's names fresh (default: MMDD plus 4 random characters)
 //   KONJIR_DEMO_STATE     where to write the state file (default ~/.konjir-demo/<run>.json)
@@ -32,13 +32,13 @@ import { randomBytes } from 'node:crypto';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const URL_ = process.env.KONJIR_URL ?? 'http://127.0.0.1:7420/mcp';
 const ADMIN = process.env.KONJIR_ADMIN_TOKEN ?? process.env.KONJIR_TOKEN;
-const BIN = (process.env.KONJIR_BIN ?? (existsSync(resolve(HERE, '../../bin/konjir')) ? resolve(HERE, '../../bin/konjir') : 'konjir')).split(' ').filter(Boolean);
+const BIN = (process.env.KONJIR_BIN ?? (existsSync(resolve(HERE, '../../bin/kolab')) ? resolve(HERE, '../../bin/kolab') : 'kolab')).split(' ').filter(Boolean);
 const color = !process.env.NO_COLOR && process.stdout.isTTY;
 const c = (code, s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
 const bold = (s) => c('1', s), dim = (s) => c('2', s), green = (s) => c('32', s), red = (s) => c('31', s), cyan = (s) => c('36', s);
 const started = Date.now();
 
-// ---- the konjir CLI ----------------------------------------------------------------------------
+// ---- the kolab CLI ----------------------------------------------------------------------------
 
 /** Who is acting, by name, and their token (never printed). */
 const ADMIN_ACTOR = { name: 'admin', token: ADMIN };
@@ -71,15 +71,15 @@ function run(who, verb, args = {}) {
 
 /** Run a verb as `who`, print the command, and fail the walkthrough if it fails. */
 function k(who, verb, args = {}, { quiet = false } = {}) {
-  if (!quiet) console.log(`  ${cyan(who.name.padEnd(22))} ${dim('$')} konjir ${verb} ${dim(show(args))}`);
+  if (!quiet) console.log(`  ${cyan(who.name.padEnd(22))} ${dim('$')} kolab ${verb} ${dim(show(args))}`);
   const r = run(who, verb, args);
-  if (!r.ok) fail(`konjir ${verb} as ${who.name} failed:\n${r.error}`);
+  if (!r.ok) fail(`kolab ${verb} as ${who.name} failed:\n${r.error}`);
   return r.value;
 }
 
 /** Run a verb that must be refused, and show the refusal. */
 function refused(who, verb, args, why) {
-  console.log(`  ${cyan(who.name.padEnd(22))} ${dim('$')} konjir ${verb} ${dim(show(args))}`);
+  console.log(`  ${cyan(who.name.padEnd(22))} ${dim('$')} kolab ${verb} ${dim(show(args))}`);
   const r = run(who, verb, args);
   if (r.ok) fail(`expected Kolab to refuse ${verb} (${why}), but it did: ${JSON.stringify(r.value)}`);
   say(`refused, as it should be (${why}):`);
@@ -132,7 +132,7 @@ function cleanup(path) {
   for (const x of s.sessions ?? []) {
     if (!x.token) continue;
     const r = run(admin, 'admin_end_session', { token: x.token });
-    console.log(`  ${dim('$')} konjir admin_end_session token=<${x.actor}'s token>  ${r.ok ? green('ended') : dim(`(${r.error.split('\n')[0]})`)}`);
+    console.log(`  ${dim('$')} kolab admin_end_session token=<${x.actor}'s token>  ${r.ok ? green('ended') : dim(`(${r.error.split('\n')[0]})`)}`);
     if (r.ok) ended++;
   }
   // Each one by name, so each is archived in its own right and stays archived whatever happens to
@@ -141,7 +141,7 @@ function cleanup(path) {
   for (const t of targets) {
     const [kind, name] = Object.entries(t)[0];
     const r = run(admin, 'admin_archive', t);
-    console.log(`  ${dim('$')} konjir admin_archive ${kind}=${name}  ${r.ok ? green('archived') : dim(`(${r.error.split('\n')[0]})`)}`);
+    console.log(`  ${dim('$')} kolab admin_archive ${kind}=${name}  ${r.ok ? green('archived') : dim(`(${r.error.split('\n')[0]})`)}`);
     if (r.ok) archived++;
   }
   console.log(`\n  Ended ${ended} session(s) and archived ${archived} of ${targets.length}.`);
@@ -189,7 +189,7 @@ function main() {
 
   console.log(bold('Konjir M1 walkthrough: "an outside team could put a real product spec on it"'));
   console.log(`  Kolab:   ${URL_}`);
-  console.log(`  konjir:  ${BIN.join(' ')}`);
+  console.log(`  kolab:  ${BIN.join(' ')}`);
   console.log(`  run:     ${runId} (every name below ends in it, so nothing existing is touched)`);
   console.log(`  state:   ${statePath} (mode 600: it holds the agents' tokens, which are never printed)`);
 

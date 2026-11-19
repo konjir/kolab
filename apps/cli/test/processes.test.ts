@@ -1,7 +1,7 @@
 // Two Kolab server processes on one Postgres database (API5, W2.2; D9): an agent listening on
 // one hears a change made through the other, and a session ended through one closes its
 // streams on the other (D41). Process A runs in this test; process B is
-// `konjir serve` from the compiled dist/, in a child process, as the instance runs it.
+// `kolab serve` from the compiled dist/, in a child process, as the instance runs it.
 import { expect, test } from '@jest/globals';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join, resolve } from 'node:path';
@@ -25,7 +25,7 @@ async function stopChild() {
   }
 }
 
-/** Starts `konjir serve` on the database in a child process, and resolves with its MCP URL. */
+/** Starts `kolab serve` on the database in a child process, and resolves with its MCP URL. */
 async function serveInChild(databaseUrl: string, adminToken: string): Promise<string> {
   const port = 20000 + Math.floor(Math.random() * 20000);
   closeAtEnd({ close: stopChild });

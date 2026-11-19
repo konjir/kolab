@@ -1,7 +1,7 @@
-// nx release's version actions for konjir (W2.6), so nx release versions the CLI without @nx/js.
+// nx release's version actions for kolab (W2.6), so nx release versions the CLI without @nx/js.
 // @nx/js's own would bring Babel into every install, including the instance's (install.sh), and
 // installing it turns on Nx's source-file analysis, which needs TypeScript 5's JavaScript API.
-// konjir has one manifest, apps/cli/package.json, and no workspace dependency nx release must
+// kolab has one manifest, apps/cli/package.json, and no workspace dependency nx release must
 // update: the published package bundles what it uses. Publishing isn't nx release's: the Release
 // CLI workflow publishes the tarball it tested (.github/workflows/release-cli.yml).
 const { join } = require('node:path');

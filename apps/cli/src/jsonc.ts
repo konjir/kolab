@@ -1,8 +1,8 @@
 /**
  * JSON with comments, as OpenCode reads its configuration: `//` and block comments, and trailing
  * commas in objects and arrays. Parsed to a tree that keeps each value's offset and length in the
- * text, so `konjir connect` can edit the text in place and keep everything else in it as it was.
- * Small on purpose: the published konjir bundles nothing it doesn't need.
+ * text, so `kolab connect` can edit the text in place and keep everything else in it as it was.
+ * Small on purpose: the published kolab bundles nothing it doesn't need.
  */
 
 export interface JsonNode {

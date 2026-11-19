@@ -101,7 +101,7 @@ test('a tool call renews the lease; a resource read, what a listen stream prompt
   await shorten();
   for (const uri of ['konjir://inbox/test/technical', 'konjir://answers/test/eng', 'konjir://instructions']) await eng.c.readResource({ uri });
   expect(await left()).toBeLessThan(301);
-  // konjir_whoami is the listen clients' liveness check (the channel bridge's, every 30 s; konjir
+  // konjir_whoami is the listen clients' liveness check (the channel bridge's, every 30 s; kolab
   // watch's, on each reconnect): it renews nothing, so an idle agent with its channel open lapses.
   await kolab.db.query(`update work_package set lease_until = clock_timestamp() + interval '20 seconds' where element_id = 'W1'`);
   for (let i = 0; i < 3; i++) await call(eng.c, 'whoami', {});
@@ -120,7 +120,7 @@ test('a tool call renews the lease; a resource read, what a listen stream prompt
   expect((await answers()).work).toMatchObject({ holding: null, events: [{ work: 'kj:orders-pg#W1', kind: 'lapsed', actor: 'kolab', note: expect.stringMatching(/eng's lease lapsed at/) }] });
 });
 
-test('in a shell: konjir pull_work, list_work and read_work print what MCP returns', async () => {
+test('in a shell: kolab pull_work, list_work and read_work print what MCP returns', async () => {
   const { server, eng } = await planned();
   const out: string[] = [];
   jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
@@ -218,7 +218,7 @@ test('over MCP: a spec change\'s commit lists the marks it set downstream (P18);
   expect(answers.work.events[0]).toMatchObject({ work: W1, kind: 'at_risk', actor: 'kolab' });
 });
 
-test('in a shell: konjir add_evidence and submit_work take evidence as JSON', async () => {
+test('in a shell: kolab add_evidence and submit_work take evidence as JSON', async () => {
   const { server, eng } = await planned();
   const out: string[] = [];
   jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });

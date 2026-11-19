@@ -60,7 +60,7 @@
           "build",
           {
             "projects": [
-              "konjir"
+              "@konjir/kolab"
             ],
             "target": "build"
           }

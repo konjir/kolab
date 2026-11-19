@@ -1,13 +1,13 @@
 /**
- * konjir work deliver and konjir repo register (W5.2a; KON7, PLN16, D98 rulings 1 and 2): the CLI's
+ * kolab work deliver and kolab repo register (W5.2a; KON7, PLN16, D98 rulings 1 and 2): the CLI's
  * side of tying commits to work packages. Kolab never reads or writes git (D36); the CLI runs where
  * git is, reads the local checkout, and sends Kolab what it finds through the same MCP tools any
  * agent calls (konjir_add_evidence, konjir_submit_work, konjir_register_repository).
  *
- *   konjir repo register [--binding <binding>] [--url <https URL>] [--root <sha>] [-C <dir>]
- *   konjir work deliver [<work>] [--submit] [--pr <url>] [--test <url or summary>]… [--check <spec address>=passed|failed]… [--note <text>]
+ *   kolab repo register [--binding <binding>] [--url <https URL>] [--root <sha>] [-C <dir>]
+ *   kolab work deliver [<work>] [--submit] [--pr <url>] [--test <url or summary>]… [--check <spec address>=passed|failed]… [--note <text>]
  *                       [--since <rev>] [--repo <url>] [--dry-run] [-C <dir>]
- *   konjir work deliver <work> --release <run URL> [--commit <rev>] [--title <text>] [--repo <url>] [--dry-run] [-C <dir>]
+ *   kolab work deliver <work> --release <run URL> [--commit <rev>] [--title <text>] [--repo <url>] [--dry-run] [-C <dir>]
  *
  * With --release, after the deploy, it records the package's release instead (konjir_record_release):
  * the deploy run, and the commit it released, HEAD unless --commit names another (PLN16, W7.7).
@@ -70,7 +70,7 @@ export function gitIn(dir: string, env: NodeJS.ProcessEnv = process.env): Git {
       });
     } catch (e) {
       const err = e as { code?: string; stderr?: string; message?: string };
-      if (err.code === 'ENOENT') throw new Error('git isn\'t installed, or isn\'t on PATH: konjir work deliver and konjir repo register read your checkout with it');
+      if (err.code === 'ENOENT') throw new Error('git isn\'t installed, or isn\'t on PATH: kolab work deliver and kolab repo register read your checkout with it');
       throw new Error(`git ${args.join(' ')}: ${(err.stderr || err.message || '').trim()}`);
     }
   };
@@ -251,7 +251,7 @@ function requireCheckoutOf(checkout: Checkout, repo: Repository, named: boolean)
 function namedRepository(registered: Repository[], given: string): Repository {
   const named = canonicalRemote(given) ?? given;
   const repo = registered.find((r) => r.url.toLowerCase() === named.toLowerCase());
-  if (!repo) throw new Error(`${named} isn't a repository registered in this kolab (konjir list_repositories); a person with Maintain registers it, konjir repo register. Nothing was sent.`);
+  if (!repo) throw new Error(`${named} isn't a repository registered in this kolab (kolab list_repositories); a person with Maintain registers it, kolab repo register. Nothing was sent.`);
   return repo;
 }
 
@@ -260,14 +260,14 @@ function trackedRepository(registered: Repository[], checkout: Checkout, besides
   const mine = registered.filter((r) => checkout.roots.includes(r.root_sha) && checkout.tracked === r.url.toLowerCase());
   if (!mine.length) {
     throw new Error(`this checkout (tracking ${checkout.remote}, ${checkout.tracked ?? 'no hosted URL'}) is no repository registered in this kolab${besides}: `
-      + 'a person with Maintain or Admin registers it, konjir repo register, run in a checkout. Nothing was sent.');
+      + 'a person with Maintain or Admin registers it, kolab repo register, run in a checkout. Nothing was sent.');
   }
   if (mine.length > 1) throw new Error(`this checkout is ${mine.map((r) => r.url).join(' and ')}: name one with --repo <url>. Nothing was sent.`);
   return mine[0];
 }
 
 /**
- * The registered repository a checkout is, checked exactly as `konjir work deliver` checks it (W5.4b,
+ * The registered repository a checkout is, checked exactly as `kolab work deliver` checks it (W5.4b,
  * JOB4): `named` (--repo) if given, else the one whose root commit it has and whose URL it tracks;
  * then its root commit, and, unless named, its tracked remote. Throws why not.
  */
@@ -332,7 +332,7 @@ async function packageCheckout(call: Call, git: Git, pkg: Pick<Round, 'work' | '
 }
 
 /**
- * `konjir work deliver <work> --release <run> [--commit <rev>]` (PLN16, W7.7): records, after the
+ * `kolab work deliver <work> --release <run> [--commit <rev>]` (PLN16, W7.7): records, after the
  * deploy, that the run at `run` released the commit `commit` names (HEAD by default) of the
  * package's repository, which the checkout must be, as deliver checks it. A package approved and
  * waiting for its release is then Done; Kolab refuses any other package, and a release from its
@@ -340,7 +340,7 @@ async function packageCheckout(call: Call, git: Git, pkg: Pick<Round, 'work' | '
  * named, never found from what the session holds.
  */
 export async function releaseDelivered(call: Call, git: Git, opts: { work?: string; run: string; commit?: string; repo?: string; title?: string; dryRun?: boolean }) {
-  if (!opts.work) throw new Error('name the work package that was released: konjir work deliver kj:<binding>#<id> --release <the deploy run\'s https link, a GitHub Actions run of its registered repository>');
+  if (!opts.work) throw new Error('name the work package that was released: kolab work deliver kj:<binding>#<id> --release <the deploy run\'s https link, a GitHub Actions run of its registered repository>');
   const pkg = await readRound(call, opts.work);
   const repo = await packageCheckout(call, git, pkg, opts.repo);
   const sha = commitOf(git, opts.commit ?? 'HEAD', '--commit takes the one commit the deploy released');
@@ -386,7 +386,7 @@ export function acceptanceChecks(given: string[], tests: string[]): { address: s
 }
 
 /**
- * `konjir work deliver`: finds the commits in the checkout that carry the work package's trailer,
+ * `kolab work deliver`: finds the commits in the checkout that carry the work package's trailer,
  * checks the checkout is the package's registered repository (its root commit, and a remote), and
  * records them as the package's evidence, with a pull request and test runs if given, `PER_CALL` at
  * a time; with `submit`, the last call submits it. Kolab counts a commit it already has, in this
@@ -399,8 +399,8 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
   if (!work) {
     const held = (await call('list_work', { mine: true, state: 'in_progress' }) as { work: { work: string }[] }).work;
     if (held.length !== 1) {
-      throw new Error(held.length ? `you hold ${held.map((w) => w.work).join(', ')} In progress: name the one to deliver, konjir work deliver <work>`
-        : 'you hold no work package In progress: name the one to deliver, konjir work deliver kj:<binding>#<id>');
+      throw new Error(held.length ? `you hold ${held.map((w) => w.work).join(', ')} In progress: name the one to deliver, kolab work deliver <work>`
+        : 'you hold no work package In progress: name the one to deliver, kolab work deliver kj:<binding>#<id>');
     }
     work = held[0].work;
   }
@@ -465,7 +465,7 @@ export async function deliverWork(call: Call, git: Git, opts: DeliverOptions = {
 }
 
 /**
- * `konjir repo register`: registers the checkout's repository in the session's kolab, as its
+ * `kolab repo register`: registers the checkout's repository in the session's kolab, as its
  * person (Kolab refuses an agent, D98): its URL from the `origin` remote (or `url`), without any
  * credential the remote carries, and its root commit (or `root`, which must be one of the
  * checkout's). Outside a checkout, both must be given.

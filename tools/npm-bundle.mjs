@@ -1,4 +1,4 @@
-// What the published one-file packages share: konjir (apps/cli) and konnect (apps/konnect). Each
+// What the published one-file packages share: kolab (@konjir/kolab, apps/cli) and konnect (apps/konnect). Each
 // bundles its client into one .mjs with Bun, checks it carries only the Apache-2.0 code of this
 // repository it may, and lists every package it inlines, with its licence, beside it. The two
 // packages' scripts (apps/cli/scripts/bundle.mjs and package.mjs, apps/konnect/scripts/bundle.mjs
@@ -27,7 +27,7 @@ export const builtinsOnly = (product) => 'var __require=(()=>{const real=createR
 
 /**
  * A finished bundle's text, its require replaced by builtinsOnly's. `required`: the bundle must
- * define its require exactly once (konjir's always does); otherwise it may define none, and never
+ * define its require exactly once (kolab's always does); otherwise it may define none, and never
  * more than one. Throws on an import() of anything but a literal, which would be resolved as it runs.
  */
 export function guardBundle(text, product, { required = true } = {}) {

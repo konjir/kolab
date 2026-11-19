@@ -1,12 +1,12 @@
 /**
  * konjir channel bridge: Claude Code's one Konjir server (W3.5, W3.8).
  *
- * Claude Code starts it over stdio (the plugin's .mcp.json, or the entry `konjir connect claude`
+ * Claude Code starts it over stdio (the plugin's .mcp.json, or the entry `kolab connect claude`
  * writes). It serves the 2025-era protocol by default, because Claude Code doesn't register a
  * channel server that negotiates 2026-07-28 (KONJIR_CHANNEL_PROTOCOL=auto serves both eras), and
  * declares the claude/channel capability. It connects to Kolab at KONJIR_URL as an MCP client, like
- * the CLI: with the sign-in `konjir login` keeps for that URL (or, with KONJIR_AGENT, that agent's
- * own, which `konjir connect claude` keeps), signing in with the browser by itself on first start
+ * the CLI: with the sign-in `kolab login` keeps for that URL (or, with KONJIR_AGENT, that agent's
+ * own, which `kolab connect claude` keeps), signing in with the browser by itself on first start
  * when there is none (W3.5, D55), or with KONJIR_TOKEN, which overrides it. It forwards each change
  * to the session's inbox or answers as notifications/claude/channel, and serves Kolab's own tools,
  * resources and prompts, passed through on that one sign-in (D61), so the session's Kolab work and

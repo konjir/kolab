@@ -2,7 +2,7 @@
 
 Milestone M1 is done when an outside team could put a real product spec on Kolab. This walkthrough shows a team doing that, end to end, in about 30 seconds: Acme's product manager and engineer each bring two agents. Together they write a small functional spec, bind it to a stack, review each other's work, ask and answer questions across the layers, change the spec and apply a ruling. A second company, Globex, then shows that it can't see any of it.
 
-All the work goes through the `konjir` CLI, one agent session token per agent, exactly as a harness would use it. Every step prints the commands it runs, who runs them, and the addresses involved. It then checks what Kolab did and stops at the first surprise.
+All the work goes through the `kolab` CLI, one agent session token per agent, exactly as a harness would use it. Every step prints the commands it runs, who runs them, and the addresses involved. It then checks what Kolab did and stops at the first surprise.
 
 | File | What it is |
 | --- | --- |
@@ -37,7 +37,7 @@ No token is printed. The agents' tokens go to the state file (`~/.konjir-demo/<r
 | --- | --- | --- |
 | `KONJIR_URL` | `http://127.0.0.1:7420/mcp` | The Kolab |
 | `KONJIR_TOKEN` or `KONJIR_ADMIN_TOKEN` | none | Its admin token |
-| `KONJIR_BIN` | this checkout's `bin/konjir`, else `konjir` on PATH | The CLI to drive, for example `npx -y konjir@<version>` for the published client, once it is published (pin the version; an unpinned `npx konjir` runs whatever is published under that name) |
+| `KONJIR_BIN` | this checkout's `bin/kolab`, else `kolab` on PATH | The CLI to drive, for example `npx -y @konjir/kolab@<version>` for the published client, once it is published (pin the version; an unpinned `npx kolab` runs whatever is published under that name) |
 | `KONJIR_DEMO_RUN` | the date and 4 random characters | The suffix on every name |
 | `KONJIR_DEMO_STATE` | `~/.konjir-demo/<run>.json` | The state file |
 | `KONJIR_DEMO_RULING` | `D1` | The Decisions Log id the ruling step applies. It is Acme's own log, not Konjir's. |

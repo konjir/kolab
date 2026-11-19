@@ -1,7 +1,7 @@
 // W3.5's done-when (D55): a person's Claude Code session receives Kolab's channel messages with no
-// hand-issued token. The bridge listens with the sign-in `konjir login` keeps (shared with the CLI,
+// hand-issued token. The bridge listens with the sign-in `kolab login` keeps (shared with the CLI,
 // through @konjir/login), lives through its access token expiring and being refreshed, signs in with
-// the browser by itself when nothing is kept, waits for konjir login once signed out, and never
+// the browser by itself when nothing is kept, waits for kolab login once signed out, and never
 // prints a token. KONJIR_TOKEN still works, and overrides a kept sign-in. The identity provider is a
 // stub in GitHub's place, and the "browser" follows Kolab's redirects with its cookies.
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
@@ -59,7 +59,7 @@ async function call(c: Client, name: string, args: Record<string, unknown> = {})
   return r.structuredContent as Record<string, unknown>;
 }
 
-/** An MCP client of Kolab with a bearer token, or with a kept sign-in, as the konjir CLI connects. */
+/** An MCP client of Kolab with a bearer token, or with a kept sign-in, as the kolab CLI connects. */
 async function kolabClient(url: string, auth: string | StoredLogin) {
   const c = new Client({ name: 'sign-in-test', version: '0' }, { versionNegotiation: { mode: 'auto' } });
   await c.connect(new StreamableHTTPClientTransport(new URL(url), typeof auth === 'string'
@@ -84,7 +84,7 @@ async function kolabWithSignIn() {
   const idp = new StubIdentity();
   const server = await startServer({ adminToken: 'channel-sign-in-admin', kolab, identity: idp, webRoot: null });
   closeAtEnd(server);
-  /** Signs Ann in as `konjir login` does, as an agent of hers, keeping the sign-in in the credentials file. */
+  /** Signs Ann in as `kolab login` does, as an agent of hers, keeping the sign-in in the credentials file. */
   const konjirLogin = (form: Record<string, string>) => {
     idp.next({ subject: '41', login: 'ann' });
     return login(server.url, { log: () => undefined, open: (u) => { void browse(u, { role: 'product', ...form }); } });
@@ -93,7 +93,7 @@ async function kolabWithSignIn() {
 }
 
 /**
- * Ann's agent writes a spec through the kept sign-in, as the konjir CLI would; Ann, who also holds
+ * Ann's agent writes a spec through the kept sign-in, as the kolab CLI would; Ann, who also holds
  * the functional layer, approves it, then asks about it as engineer. Returns her engineer client.
  */
 async function specInReview(url: string, kolab: Awaited<ReturnType<typeof openKolab>>, agent: Client) {
@@ -114,12 +114,12 @@ async function annAs(kolab: Awaited<ReturnType<typeof openKolab>>, role: 'produc
 
 const saved = (url: string) => JSON.parse(readFileSync(credentials, 'utf8'))[url].tokens as { access_token: string; refresh_token: string };
 
-test('with the sign-in konjir login keeps, and no token, the session hears its inbox, through an access token expiring and being refreshed; no token is ever printed', async () => {
+test('with the sign-in kolab login keeps, and no token, the session hears its inbox, through an access token expiring and being refreshed; no token is ever printed', async () => {
   const { kolab, server, konjirLogin } = await kolabWithSignIn();
   await konjirLogin({ as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' });
   const first = saved(server.url);
 
-  // Ann's agent writes a spec through the same sign-in, as the konjir CLI would; Ann herself asks about it, as engineer.
+  // Ann's agent writes a spec through the same sign-in, as the kolab CLI would; Ann herself asks about it, as engineer.
   const agent = await kolabClient(server.url, new StoredLogin(server.url));
   const ann = await specInReview(server.url, kolab, agent);
 
@@ -140,7 +140,7 @@ test('with the sign-in konjir login keeps, and no token, the session hears its i
   const listening = (n: number) => until(`listen #${n}`, () => stderr.split('\n').filter((l) => /\b(re)?connected to Kolab\b/.test(l)).length >= n || undefined, 40_000, more);
 
   await listening(1);
-  expect(stderr).toMatch(/using the sign-in konjir login keeps for/);
+  expect(stderr).toMatch(/using the sign-in kolab login keeps for/);
   expect(stderr).toMatch(/connected to Kolab at .* as ann-cli \(product\); watching konjir:\/\/inbox\/anns\/functional, konjir:\/\/answers\/anns\/ann-cli/);
   await call(ann, 'ask', { address: 'kj:orders#R8', question: 'From which statuses?' });
   const asked = await until('the question', () => messages.find((m) => m.content.includes('"From which statuses?"')), 20_000, more);
@@ -154,9 +154,9 @@ test('with the sign-in konjir login keeps, and no token, the session hears its i
   const next = await until('the question asked while the token had expired', () => messages.find((m) => m.content.includes('"And refunds?"')), 20_000, more);
   expect(next.meta.open_queries).toBe('2');
   const second = saved(server.url);
-  expect(second.refresh_token).not.toBe(first.refresh_token);   // rotated, and kept for konjir too
+  expect(second.refresh_token).not.toBe(first.refresh_token);   // rotated, and kept for kolab too
 
-  // And again: a refresh by another konjir process (the agent's own CLI) rotates the token under the bridge.
+  // And again: a refresh by another kolab process (the agent's own CLI) rotates the token under the bridge.
   await kolab.db.query(`update session set expires_at = now() - interval '1 second' where actor_id = 'ann-cli' and ended_at is null`);
   expect(await call(agent, 'whoami')).toMatchObject({ actor: 'ann-cli' });
   const third = saved(server.url);
@@ -193,7 +193,7 @@ test('with the sign-in konjir login keeps, and no token, the session hears its i
   await server.close();
 }, 180_000);
 
-test('with nothing kept, the bridge signs in with the browser by itself, for konjir too; signed out, it says to run konjir login and picks the new sign-in up with no restart', async () => {
+test('with nothing kept, the bridge signs in with the browser by itself, for kolab too; signed out, it says to run kolab login and picks the new sign-in up with no restart', async () => {
   const { kolab, idp, server, konjirLogin } = await kolabWithSignIn();
   const messages: ChannelMessage[] = [];
   const logs: string[] = [];
@@ -208,11 +208,11 @@ test('with nothing kept, the bridge signs in with the browser by itself, for kon
   expect(page).toContain(CLIENT_NAME);   // Kolab's consent page names the bridge
   const told = messages.find((m) => m.meta.status === 'signing_in')!;
   // Fixed words: the link (its state, PKCE challenge and loopback port) never reaches the model; it is in the log.
-  expect(told.content).toBe(`Konjir needs the user to sign in to Kolab at ${server.url}: a browser window opened at Kolab's sign-in page. If it didn't, the link is in the Konjir channel's log, or the user can run konjir login --url ${server.url} in a terminal. Inbox changes start arriving once that is done. Tell the user.`);
+  expect(told.content).toBe(`Konjir needs the user to sign in to Kolab at ${server.url}: a browser window opened at Kolab's sign-in page. If it didn't, the link is in the Konjir channel's log, or the user can run kolab login --url ${server.url} in a terminal. Inbox changes start arriving once that is done. Tell the user.`);
   expect(logs.join('\n')).toContain(`${new URL(server.url).origin}/oauth/authorize?`);
-  expect(logs.join('\n')).toMatch(/signed in to .* as ann-channel, in kolab anns as product; kept for konjir too/);
+  expect(logs.join('\n')).toMatch(/signed in to .* as ann-channel, in kolab anns as product; kept for kolab too/);
   expect(auth.login).toBeDefined();
-  expect(new StoredLogin(server.url).signedIn).toBe(true);   // the konjir CLI sees the same sign-in
+  expect(new StoredLogin(server.url).signedIn).toBe(true);   // the kolab CLI sees the same sign-in
 
   const bridge = new KolabBridge({ url: server.url, ...auth, forward, log, backoff: { initialMs: 100, maxMs: 300 } });
   let listens = 0;
@@ -227,13 +227,13 @@ test('with nothing kept, the bridge signs in with the browser by itself, for kon
   await kolab.db.query(`update oauth_grant set revoked_at = now(), revoked_by = 'admin' where actor_id = 'ann-channel'`);
   await kolab.endSession({ actor: 'ann-channel' });
   const out = await until('the sign-out', () => messages.find((m) => m.meta.status === 'signed_out'), 20_000, () => logs.join('\n'));
-  expect(out.content).toMatch(/was signed out of Kolab at .*: its sign-in ended or was revoked.* run konjir login --url .* The channel picks the sign-in up by itself, with no restart\./);
+  expect(out.content).toMatch(/was signed out of Kolab at .*: its sign-in ended or was revoked.* run kolab login --url .* The channel picks the sign-in up by itself, with no restart\./);
   await new Promise((r) => setTimeout(r, 800));
   expect(messages.filter((m) => m.meta.status === 'signed_out').length).toBe(1);
 
-  // konjir login signs in again, as the same agent: the bridge listens again, and the session hears its inbox.
+  // kolab login signs in again, as the same agent: the bridge listens again, and the session hears its inbox.
   await konjirLogin({ as: 'agent:ann-channel', kolab: 'kolab:anns' });
-  await until('the listen after konjir login', () => listens === 2 || undefined, 20_000, () => logs.join('\n'));
+  await until('the listen after kolab login', () => listens === 2 || undefined, 20_000, () => logs.join('\n'));
   const agent = await kolabClient(server.url, new StoredLogin(server.url));
   const ann = await specInReview(server.url, kolab, agent);
   await call(ann, 'ask', { address: 'kj:orders#R8', question: 'Which statuses?' });
@@ -245,18 +245,18 @@ test('with nothing kept, the bridge signs in with the browser by itself, for kon
   await server.close();
 }, 120_000);
 
-test('with nothing kept and its own sign-in off, the bridge tells the session to run konjir login, and waits', async () => {
+test('with nothing kept and its own sign-in off, the bridge tells the session to run kolab login, and waits', async () => {
   const { server } = await kolabWithSignIn();
   const messages: ChannelMessage[] = [];
   const logs: string[] = [];
   const forward = async (m: ChannelMessage) => { messages.push(m); };
   const auth = await bridgeAuth(server.url, { KONJIR_CHANNEL_SIGN_IN: 'off' }, { forward, log: (l) => logs.push(l), open: () => { throw new Error('no browser'); } });
-  expect(logs.join('\n')).toMatch(/KONJIR_CHANNEL_SIGN_IN is off: run konjir login --url/);
+  expect(logs.join('\n')).toMatch(/KONJIR_CHANNEL_SIGN_IN is off: run kolab login --url/);
   const bridge = new KolabBridge({ url: server.url, ...auth, forward, log: (l) => logs.push(l), backoff: { initialMs: 100, maxMs: 200 } });
   closeAtEnd({ close: () => bridge.stop() });
   bridge.start();
   const told = await until('the message', () => messages.find((m) => m.meta.status === 'unconfigured'));
-  expect(told.content).toMatch(/has no sign-in to Kolab at .* run konjir login --url/);
+  expect(told.content).toMatch(/has no sign-in to Kolab at .* run kolab login --url/);
   await new Promise((r) => setTimeout(r, 600));
   expect(messages.length).toBe(1);
   // It registered no client while waiting: nothing reached Kolab's registration endpoint.
@@ -271,7 +271,7 @@ test('the bridge masks any Kolab secret in what it prints', () => {
   expect(() => new KolabBridge({ url: 'http://127.0.0.1:9/mcp', forward: async () => undefined, log: () => undefined })).toThrow(/exactly one/);
 });
 
-test('a bridge sign-in that finishes after a konjir login kept one yields: the CLI\'s is kept, and the bridge\'s own grant is revoked', async () => {
+test('a bridge sign-in that finishes after a kolab login kept one yields: the CLI\'s is kept, and the bridge\'s own grant is revoked', async () => {
   const { kolab, idp, server, konjirLogin } = await kolabWithSignIn();
   await konjirLogin({ as: 'new-agent', agent_label: 'cli', kolab: '@new', new_kolab_name: 'anns', new_kolab_title: 'Ann\'s' });
   const cli = saved(server.url);
@@ -282,13 +282,13 @@ test('a bridge sign-in that finishes after a konjir login kept one yields: the C
   const auth = await bridgeAuth(server.url, {}, {
     forward: async () => undefined, log: (l) => logs.push(l),
     open: async (u) => {
-      // While the person is on the bridge's page, konjir login keeps a sign-in (here, the one from before).
+      // While the person is on the bridge's page, kolab login keeps a sign-in (here, the one from before).
       writeFileSync(credentials, JSON.stringify(all));
       idp.next({ subject: '41', login: 'ann' });
       await browse(u, { as: 'new-agent', agent_label: 'channel', kolab: 'kolab:anns', role: 'product' });
     },
   });
-  expect(logs.join('\n')).toMatch(/another konjir signed in to .* meanwhile, as ann-cli: the channel uses that sign-in, and revoked its own/);
+  expect(logs.join('\n')).toMatch(/another kolab process signed in to .* meanwhile, as ann-cli: the channel uses that sign-in, and revoked its own/);
   expect(saved(server.url).refresh_token).toBe(cli.refresh_token);
   expect(new StoredLogin(server.url).saved().client?.client_id).toBe(all[server.url].client.client_id);
   const grants = (await kolab.db.query<{ actor_id: string; revoked: boolean }>(`select actor_id, revoked_at is not null as revoked from oauth_grant order by created_at`)).rows;
@@ -315,18 +315,18 @@ test('one bridge signs in at a time; none signs in over http to another host, or
   await until('the waiting message', () => told[0]);
   await waiting.stop();
   expect(told[0].meta.status).toBe('awaiting_sign_in');
-  expect(told[0].content).toMatch(/waiting for a sign-in to Kolab at .* that another Konjir channel started in the browser, and picks it up by itself once it is done\. If none finishes, tell the user to run konjir login --url/);
+  expect(told[0].content).toMatch(/waiting for a sign-in to Kolab at .* that another Konjir channel started in the browser, and picks it up by itself once it is done\. If none finishes, tell the user to run kolab login --url/);
   marker.release('other-bridge');
   expect((await server.kolab.db.query(`select count(*)::int as n from oauth_client`)).rows).toStrictEqual([{ n: 0 }]);
 
   await expect(bridgeAuth('http://kolab.example/mcp', {}, io)).rejects.toThrow(/only over https, or http on this machine: http:\/\/kolab\.example\/mcp is http to another host/);
   expect((await bridgeAuth('http://kolab.example/mcp', { KONJIR_TOKEN: 'kjs_t' }, io)).token).toBe('kjs_t');   // a hand-issued token, as before
-  // An empty or blank KONJIR_TOKEN is unset (konjir connect claude writes ""): the bridge goes on to sign in, here refused.
+  // An empty or blank KONJIR_TOKEN is unset (kolab connect claude writes ""): the bridge goes on to sign in, here refused.
   for (const blank of ['', '   ']) await expect(bridgeAuth('http://kolab.example/mcp', { KONJIR_TOKEN: blank }, io)).rejects.toThrow(/only over https/);
 
   logs.length = 0;
   await bridgeAuth(server.url, { CI: 'true' }, { ...io, open: undefined });
-  expect(logs.join('\n')).toMatch(/no browser can be opened here \(CI, SSH or no display\): run konjir login --url/);
+  expect(logs.join('\n')).toMatch(/no browser can be opened here \(CI, SSH or no display\): run kolab login --url/);
   expect(browserAvailable({}, 'darwin')).toBe(true);
   expect(browserAvailable({ SSH_CONNECTION: '1 2 3 4' }, 'darwin')).toBe(false);
   expect(browserAvailable({}, 'linux')).toBe(false);
@@ -404,7 +404,7 @@ test('a crashed bridge\'s stale .signing-in marker is broken, and the next bridg
   symlinkSync(join(credentials, '..', 'nowhere'), marker);
   logs.length = 0;
   const refused = await bridgeAuth(server.url, {}, { forward: async () => undefined, log: (l) => logs.push(l), open: () => { throw new Error('opened'); } });
-  expect(logs.join('\n')).toMatch(/the channel can't sign in by itself \(.*is a symbolic link.*\); run konjir login --url/);
+  expect(logs.join('\n')).toMatch(/the channel can't sign in by itself \(.*is a symbolic link.*\); run kolab login --url/);
   expect(refused.awaiting).toBeUndefined();
   unlinkSync(marker);
   await server.close();
@@ -500,9 +500,9 @@ test('a stream lives from when it opens: a catch-up longer than steadyMs counts,
   await server.close();
 }, 60_000);
 
-test('W3.8 done when: with only the bridge configured, as konjir connect claude writes it (KONJIR_AGENT), Claude Code calls Kolab\'s tools and hears its channel on one sign-in, through an access token expiring mid-session, and no session ends another', async () => {
+test('W3.8 done when: with only the bridge configured, as kolab connect claude writes it (KONJIR_AGENT), Claude Code calls Kolab\'s tools and hears its channel on one sign-in, through an access token expiring mid-session, and no session ends another', async () => {
   const { kolab, idp, server } = await kolabWithSignIn();
-  // konjir connect claude signs the entry in as its own agent, kept apart from the CLI's sign-in.
+  // kolab connect claude signs the entry in as its own agent, kept apart from the CLI's sign-in.
   const agentFile = agentCredentialsPath('ann-claude');
   idp.next({ subject: '41', login: 'ann' });
   await login(server.url, {
@@ -584,7 +584,7 @@ test('W3.8: with KONJIR_AGENT, a sign-in kept for that agent that works as anyon
   bridge.start();
   const told = await until('the refusal', () => messages.find((m) => m.meta.status === 'wrong_actor'));
   expect(told.content).toContain('The Konjir channel\'s sign-in for ann-claude works as ann-other, not ann-claude, so it serves no Konjir tools and hears no inbox changes.');
-  expect(told.content).toContain(`KONJIR_CREDENTIALS=${path} konjir login --url ${server.url} --agent ann-claude`);
+  expect(told.content).toContain(`KONJIR_CREDENTIALS=${path} kolab login --url ${server.url} --agent ann-claude`);
   await new Promise((r) => setTimeout(r, 600));   // retried, and said once
   expect(messages.filter((m) => m.meta.status === 'wrong_actor')).toHaveLength(1);
   expect(listens).toBe(0);
@@ -607,14 +607,14 @@ test('W3.8: with KONJIR_AGENT, a sign-in kept for that agent that works as anyon
   await server.close();
 }, 60_000);
 
-test('W3.8: KONJIR_SCOPE keeps only konjir, kolab:, role: and agent: words, never as:self, and with KONJIR_AGENT no other agent', () => {
+test('W3.8: KONJIR_SCOPE keeps only kolab, kolab:, role: and agent: words, never as:self, and with KONJIR_AGENT no other agent', () => {
   expect(scopeFrom({ KONJIR_SCOPE: 'konjir kolab:anns role:product agent:ann-pm as:self openid' })).toBe('konjir kolab:anns role:product agent:ann-pm');
   expect(scopeFrom({ KONJIR_SCOPE: 'konjir kolab:anns agent:ann-dev', KONJIR_AGENT: 'ann-pm' })).toBe('konjir kolab:anns');
   expect(scopeFrom({ KONJIR_SCOPE: 'konjir agent:ann-pm', KONJIR_AGENT: 'ann-pm' })).toBe('konjir agent:ann-pm');
   expect(scopeFrom({})).toBeUndefined();
 });
 
-test('W3.8: konjir keeps an agent\'s sign-in only in an agents/ folder of its own: made 0700, tightened if looser, and refused as a symbolic link', () => {
+test('W3.8: kolab keeps an agent\'s sign-in only in an agents/ folder of its own: made 0700, tightened if looser, and refused as a symbolic link', () => {
   const dir = mkdtempSync(join(tmpdir(), 'konjir-agents-'));
   const env = { KONJIR_CREDENTIALS: join(dir, 'credentials.json') };
   expect(agentCredentials('ann-pm', env)).toBe(join(dir, 'agents', 'ann-pm.json'));

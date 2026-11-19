@@ -1,4 +1,4 @@
-// konjir work and konjir status (W5.4b; JOB4, JOB5, D103), against real git checkouts, a stand-in
+// kolab work and kolab status (W5.4b; JOB4, JOB5, D103), against real git checkouts, a stand-in
 // harness and a fake of W5.4a's job tools: a person's machine, in a checkout of the registered
 // repository, runs two jobs at once, each in its own worktree at the default branch's head (fetched
 // once a round) outside the checkout, with the job's token in the harness's environment alone,
@@ -8,7 +8,7 @@
 // reached, and stops after three jobs in a row can't start; only Kolab refusing a renewal stops a
 // job's harness; and a stop (Ctrl-C) stops every harness and ends its job as stopped. An agent's
 // session, a checkout that isn't the repository, a fork with --repo and no remote at the registered
-// URL, and a harness not on PATH are refused before anything is taken. Inside a job, konjir never
+// URL, and a harness not on PATH are refused before anything is taken. Inside a job, kolab never
 // falls back to a sign-in kept on the machine.
 import { afterEach, expect, jest, test } from '@jest/globals';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -79,7 +79,7 @@ function repository(opts: { fork?: boolean; failWorktrees?: boolean } = {}) {
  * The stand-in harness: it records what it was given (its directory, arguments, environment and
  * prompt) in <its dir>/<job>.json, then does what modes.json says for its job: `wait` (until
  * <job>.go appears, or SIGTERM, when it writes <job>.stopped and exits 143), `commit` (commits a
- * file and exits 0), `deliver` (commits with its trailer, runs konjir from PATH to deliver and submit
+ * file and exits 0), `deliver` (commits with its trailer, runs kolab from PATH to deliver and submit
  * it and its guard hook on a delete, records what they said in <job>.konjir.json, and exits 0), `branch` (commits on a branch of its own, goes back to where it started and
  * exits 0), `leak` (prints its token, split across two writes, and exits 0) or `fail` (prints boom
  * and exits 3). It reads nothing from the environment but what a harness is given.
@@ -123,7 +123,7 @@ process.stdin.on('end', async () => {
   if (mode === 'fail') { console.error('boom'); process.exit(3); }
   if (mode === 'commit') { commit('cancel.ts'); process.exit(0); }
   if (mode === 'deliver') {
-    // As a build job's agent delivers (W7.8): a commit with its trailer, then konjir, as found on
+    // As a build job's agent delivers (W7.8): a commit with its trailer, then kolab, as found on
     // PATH, delivering and submitting it; and the guard hook, as its --settings run it.
     const trailer = /--trailer "([^"]+)"/.exec(prompt)[1];
     writeFileSync('cancel.ts', 'export const cancel = 1;\\n');
@@ -132,7 +132,7 @@ process.stdin.on('end', async () => {
     const run = (args, input) => { const r = spawnSync('konjir', args, { input, encoding: 'utf8' }); return { status: r.status, out: r.stdout + r.stderr, error: r.error && r.error.message }; };
     const hook = JSON.parse(process.argv[process.argv.indexOf('--settings') + 1]).hooks.PreToolUse[0].hooks[0].command;
     const guarded = spawnSync('sh', ['-c', hook], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin :main' } }), encoding: 'utf8' });
-    writeFileSync(out('.konjir.json'), JSON.stringify({ found: execFileSync('sh', ['-c', 'command -v konjir'], { encoding: 'utf8' }).trim(),
+    writeFileSync(out('.konjir.json'), JSON.stringify({ found: execFileSync('sh', ['-c', 'command -v kolab'], { encoding: 'utf8' }).trim(),
       deliver: run(['work', 'deliver', process.env.KONJIR_ITEM, '--submit', '--test', 'stand-in: 1 passed']), hook, guard: { status: guarded.status, out: guarded.stderr } }));
     process.exit(0);
   }
@@ -160,7 +160,7 @@ process.stdin.on('end', async () => {
       mcp: unknown; mcpWasFifo: boolean; mcpGone: boolean; tokenInChildEnv: boolean; filesWithToken: string[] } };
 }
 
-/** A fake of W5.4a's job tools and the reads konjir work makes, for a person `lee` in kolab `test`, recording every call. */
+/** A fake of W5.4a's job tools and the reads kolab work makes, for a person `lee` in kolab `test`, recording every call. */
 function fakeKolab(root: string, opts: { items?: { kind: 'build' | 'review'; item: string; job?: string }[]; kind?: string; cap?: number; noKinds?: boolean } = {}) {
   const items = [...(opts.items ?? [])];
   const calls: [string, Record<string, unknown>][] = [];
@@ -255,7 +255,7 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
     expect(git(s.cwd, 'rev-parse', 'HEAD')).toBe(r.fetched);
     expect(s.env).toMatchObject({ KONJIR_URL: MCP, KONJIR_JOB: job, GH_TOKEN: 'gh-token' });
     // The environment is an allowlist: no cloud credentials, no Kolab admin token or database, no XDG_CONFIG_HOME;
-    // konjir's credentials point at a file that doesn't exist.
+    // kolab's credentials point at a file that doesn't exist.
     for (const k of ['AWS_SECRET_ACCESS_KEY', 'KONJIR_ADMIN_TOKEN', 'KONJIR_DATABASE_URL', 'XDG_CONFIG_HOME']) expect(s.env[k]).toBeUndefined();
     expect(s.env.KONJIR_CREDENTIALS.startsWith(r.jobsDir)).toBe(true);
     expect(existsSync(s.env.KONJIR_CREDENTIALS)).toBe(false);
@@ -268,7 +268,7 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
     expect(s.filesWithToken).toEqual([]);
     expect(s.argv).toEqual(expect.arrayContaining(['-p', '--strict-mcp-config', '--permission-mode', 'acceptEdits', 'Bash(git push *:main)', '--settings']));
   }
-  // A build job's commands get its token, for konjir work deliver; a review job's, its tests among them, find none in their environment (W6.4).
+  // A build job's commands get its token, for kolab work deliver; a review job's, its tests among them, find none in their environment (W6.4).
   expect(j1.env.KONJIR_TOKEN).toBe('kjs_job_token_J1');
   expect(j1.tokenInChildEnv).toBe(true);
   expect(j2.env.KONJIR_TOKEN).toBeUndefined();
@@ -312,7 +312,7 @@ test('done-when: two jobs at once, each in its own worktree at the default branc
   expect(out.lines.join('\n')).not.toContain('kjs_job_token');
 }, 60_000);
 
-test('konjir work reads --once and --jobs from its command line, in either order, and leaves what it doesn\'t know (W7.5)', () => {
+test('kolab work reads --once and --jobs from its command line, in either order, and leaves what it doesn\'t know (W7.5)', () => {
   expect(workOptions(['--once', '--jobs', '4'])).toMatchObject({ once: true, jobs: 4 });
   expect(workOptions(['--jobs', '4', '--once'])).toMatchObject({ once: true, jobs: 4 });
   expect(workOptions([])).toMatchObject({ once: false });
@@ -355,7 +355,7 @@ test('--once with a Kolab that can\'t be reached at the take fails, and takes no
   expect(kolab.items).toHaveLength(1);
 }, 60_000);
 
-test('done-when: konjir work --once against a real Kolab: with nothing to take it says why and exits; with four free slots and three items ready it starts one job, waits for it and exits (W7.5)', async () => {
+test('done-when: kolab work --once against a real Kolab: with nothing to take it says why and exits; with four free slots and three items ready it starts one job, waits for it and exits (W7.5)', async () => {
   const r = repository();
   const h = standIn(r.top);
   const kolab = await openKolab();
@@ -409,7 +409,7 @@ test('done-when: konjir work --once against a real Kolab: with nothing to take i
   expect((await live()).jobs).toEqual([]);
 }, 120_000);
 
-test('done-when: a build job runs konjir from its PATH, the runner\'s own konjir, under Bash(konjir *): konjir work deliver --submit records its commit and submits its package; its guard hook runs it too and denies; the shim goes with the job (W7.8)', async () => {
+test('done-when: a build job runs kolab from its PATH, the runner\'s own kolab, under Bash(kolab *): kolab work deliver --submit records its commit and submits its package; its guard hook runs it too and denies; the shim goes with the job (W7.8)', async () => {
   const r = repository();
   const h = standIn(r.top, { '*': 'deliver' });
   const kolab = await openKolab();
@@ -441,32 +441,32 @@ test('done-when: a build job runs konjir from its PATH, the runner\'s own konjir
 
   process.env = { ...process.env, ...GIT_ENV };
   const out = quiet();
-  // The job's konjir is the CLI as built, as an installed konjir work's would be.
+  // The job's kolab is the CLI as built, as an installed kolab work's would be.
   const built = [process.execPath, join(import.meta.dirname, '..', 'dist', 'main.js')];
-  const reports = await runWork({ call: (verb, args) => call(lead, verb, args), git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal, konjir: built },
+  const reports = await runWork({ call: (verb, args) => call(lead, verb, args), git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal, kolab: built },
     { once: true, machine: 'lead-laptop', harness: h.path, url: server.url });
   expect(reports).toMatchObject([{ kind: 'build', item: 'kj:orders-pg#W1', outcome: 'done', exit: 0 }]);
   const job = reports[0].job;
   const seen = JSON.parse(readFileSync(join(h.dir, `${job}.konjir.json`), 'utf8')) as { found: string; hook: string; deliver: { status: number; out: string }; guard: { status: number; out: string } };
-  // konjir, first on the job's PATH, is a shim of its own, in the jobs directory, that runs the runner's konjir.
+  // kolab, first on the job's PATH, is a shim of its own, in the jobs directory, that runs the runner's kolab.
   const bin = join(r.jobsDir, '.bin', job);
-  expect(seen.found).toBe(join(bin, 'konjir'));
+  expect(seen.found).toBe(join(bin, 'kolab'));
   expect(h.seen(job).env.PATH.split(':')[0]).toBe(bin);
-  // A command a build job's agent runs as written, which Bash(konjir *) lets it run without asking.
-  expect(ALLOWED_TOOLS).toContain('Bash(konjir *)');
+  // A command a build job's agent runs as written, which Bash(kolab *) lets it run without asking.
+  expect(ALLOWED_TOOLS).toContain('Bash(kolab *)');
   expect(seen.deliver).toMatchObject({ status: 0 });
   const w = await call(lead, 'read_work', { work: 'kj:orders-pg#W1' }) as { state: string; evidence: { kind: string }[] };
   expect(w.state).toBe('in_review');
   expect(w.evidence.map((e) => e.kind)).toEqual(expect.arrayContaining(['commit']));
-  // The guard hook runs the same konjir, and denies a delete.
-  expect(seen.hook).toBe(`'${join(bin, 'konjir')}' 'work' 'guard' '--branch' 'main' || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }`);
+  // The guard hook runs the same kolab, and denies a delete.
+  expect(seen.hook).toBe(`'${join(bin, 'kolab')}' 'work' 'guard' '--branch' 'main' || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }`);
   expect(seen.guard).toMatchObject({ status: 2, out: expect.stringMatching(/^Denied in a Konjir job: the refspec :main deletes main/) });
   // The shim goes when its job ends; it never held the token.
   expect(existsSync(bin)).toBe(false);
   expect(h.seen(job).filesWithToken).toEqual([]);
 }, 120_000);
 
-test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on this machine still runs, its modes restored first, and keeps a live runner\'s; the jobs directory then goes with rm -rf (W7.12)', async () => {
+test('sweepJobs removes the kolab, MCP FIFO and marker of each job no runner on this machine still runs, its modes restored first, and keeps a live runner\'s; the jobs directory then goes with rm -rf (W7.12)', async () => {
   const jobs = join(realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-'))), 'jobs');
   // Another runner, still running here: a process of its own.
   const other = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { stdio: 'ignore' });
@@ -486,7 +486,7 @@ test('sweepJobs removes the konjir, MCP FIFO and marker of each job no runner on
     execFileSync('mkfifo', ['-m', '600', join(jobs, '.mcp', 'JFIFO.json')]);
     writeFileSync(join(jobs, '.live', 'JMARK'), 'not a pid\n');
     writeFileSync(join(jobs, '.live', '.hidden'), '1\n');
-    // A person's rm -rf fails on a job's konjir, as it did after a killed runner (#116).
+    // A person's rm -rf fails on a job's kolab, as it did after a killed runner (#116).
     expect(spawnSync('rm', ['-rf', join(jobs, '.bin', 'JDEAD')]).status).not.toBe(0);
     expect(existsSync(join(jobs, '.bin', 'JDEAD', 'konjir'))).toBe(true);
 
@@ -569,12 +569,12 @@ test.each([
 });
 
 test.each([
-  ['its konjir\'s directory a link to a directory outside of mode 500', (jobs: string, outside: string) => {
+  ['its kolab\'s directory a link to a directory outside of mode 500', (jobs: string, outside: string) => {
     chmodSync(outside, 0o500);
     symlinkSync(outside, join(jobs, '.bin', 'JLINK'));
     return join(jobs, '.bin', 'JLINK');
   }],
-  ['the directory its konjir is in a link to a directory outside', (jobs: string, outside: string) => {
+  ['the directory its kolab is in a link to a directory outside', (jobs: string, outside: string) => {
     rmSync(join(jobs, '.bin'), { recursive: true });
     symlinkSync(outside, join(jobs, '.bin'));
     return join(jobs, '.bin', 'JOUT');
@@ -609,17 +609,17 @@ test('sweepJobs keeps a job whose marker names another machine, whose processes 
   expect(thisMachine().boot).toMatch(/^[0-9A-Fa-f-]{36}$/);
 });
 
-test('konjir work sweeps what a killed runner left before it reaches Kolab, so a Kolab out of reach leaves nothing behind (W7.12)', async () => {
+test('kolab work sweeps what a killed runner left before it reaches Kolab, so a Kolab out of reach leaves nothing behind (W7.12)', async () => {
   const jobs = join(realpathSync(mkdtempSync(join(tmpdir(), 'konjir-sweep-offline-'))), 'jobs');
   writeKonjirShim(join(jobs, '.bin', 'JDEAD'), ['/usr/bin/node']);
   const out = quiet();
   await expect(runWork({ call: async () => { throw new Error('Kolab is out of reach'); }, git: () => { throw new Error('no git'); }, jobsDir: jobs, log: out.log },
     { once: true, machine: 'here', harness: 'claude', url: 'http://127.0.0.1:9' })).rejects.toThrow('Kolab is out of reach');
   expect(readdirSync(join(jobs, '.bin'))).toEqual([]);
-  expect(out.lines).toContain(`konjir work: swept what a job no runner here still runs left in ${jobs} (JDEAD)`);
+  expect(out.lines).toContain(`kolab work: swept what a job no runner here still runs left in ${jobs} (JDEAD)`);
 });
 
-test('done-when: a konjir work that was killed leaves its job\'s konjir behind; the next konjir work on the machine sweeps it, keeps what another runner there still runs, and the jobs directory then goes with rm -rf (W7.12)', async () => {
+test('done-when: a kolab work that was killed leaves its job\'s kolab behind; the next kolab work on the machine sweeps it, keeps what another runner there still runs, and the jobs directory then goes with rm -rf (W7.12)', async () => {
   const r = repository();
   const h = standIn(r.top);
   const kolab = await openKolab();
@@ -649,7 +649,7 @@ test('done-when: a konjir work that was killed leaves its job\'s konjir behind; 
     ...[1, 2].map((n) => ({ id: `W${n}`, text: `Build part ${n}.`, work: {} }))], links: [1, 2].map((n) => ({ source_element: `W${n}`, target: 'kj:orders-pg@1#b1' })) });
   await call(lead.c, 'submit_for_review', { node: 'orders-pg', version: 2 });
 
-  // Two konjir works as the person runs them, each a process of its own, the CLI as built.
+  // Two kolab works as the person runs them, each a process of its own, the CLI as built.
   // Their git reaches the bare repository as r.shell's does, but for reading the remote's URL, which stays the registered one.
   const bare = join(r.top, 'orders.git');
   const gitBin = join(r.top, 'git-bin');
@@ -678,19 +678,19 @@ test('done-when: a konjir work that was killed leaves its job\'s konjir behind; 
     const gone = started().find((j) => j !== live)!;
     expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
     expect(readFileSync(join(r.jobsDir, '.live', gone), 'utf8')).toBe(markerText(killed.p.pid!));
-    // The second is killed outright: nothing of it runs to remove its job's konjir. Its harness, left running, finishes.
+    // The second is killed outright: nothing of it runs to remove its job's kolab. Its harness, left running, finishes.
     killed.p.kill('SIGKILL');
     await killed.exited;
     h.go(gone);
     expect(existsSync(join(r.jobsDir, '.bin', gone, 'konjir'))).toBe(true);
     expect(spawnSync('rm', ['-rf', join(r.jobsDir, '.bin', gone)]).status).not.toBe(0);
 
-    // The next konjir work on the machine sweeps the killed runner's job, and keeps the live one's.
+    // The next kolab work on the machine sweeps the killed runner's job, and keeps the live one's.
     process.env = { ...process.env, ...GIT_ENV };
     const out = quiet();
     expect(await runWork({ call: (verb, args) => call(lead.c, verb, args), git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: out.log, signal: stopper().signal },
       { once: true, machine: 'lead-laptop', harness: h.path, url: server.url })).toEqual([]);
-    expect(out.lines).toContain(`konjir work: swept what a job no runner here still runs left in ${r.jobsDir} (${gone})`);
+    expect(out.lines).toContain(`kolab work: swept what a job no runner here still runs left in ${r.jobsDir} (${gone})`);
     expect(existsSync(join(r.jobsDir, '.bin', gone))).toBe(false);
     expect(existsSync(join(r.jobsDir, '.live', gone))).toBe(false);
     expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
@@ -711,20 +711,25 @@ test('done-when: a konjir work that was killed leaves its job\'s konjir behind; 
   }
 }, 180_000);
 
-test('konjirCommand runs konjir as this process runs: node with its own options, which bin/konjir\'s tsx loads the source through, and its script; the shim it writes runs the source as bin/konjir does, guard and all (W7.8)', () => {
+test('konjirCommand runs kolab as this process runs: node with its own options, which bin/kolab\'s tsx loads the source through, and its script; the shim it writes runs the source as bin/kolab does, guard and all (W7.8)', () => {
   const tsx = ['--require', '/n/tsx/dist/preflight.cjs', '--import', 'file:///n/tsx/dist/loader.mjs', '--conditions=@konjir/source'];
   const main = join(import.meta.dirname, '..', 'src', 'main.ts');
   expect(konjirCommand({ execPath: '/usr/bin/node', execArgv: tsx, argv: ['/usr/bin/node', main, 'work'] })).toEqual(['/usr/bin/node', ...tsx, main]);
   expect(konjirCommand({ execPath: '/usr/bin/node', execArgv: [], argv: ['/usr/bin/node', main] })).toEqual(['/usr/bin/node', main]);
-  // A compiled konjir, whose script is inside it, runs alone.
-  expect(konjirCommand({ execPath: '/usr/local/bin/konjir', execArgv: [], argv: ['/usr/local/bin/konjir', '/$bunfs/root/konjir'] })).toEqual(['/usr/local/bin/konjir']);
+  // A compiled kolab, whose script is inside it, runs alone.
+  expect(konjirCommand({ execPath: '/usr/local/bin/kolab', execArgv: [], argv: ['/usr/local/bin/kolab', '/$bunfs/root/konjir'] })).toEqual(['/usr/local/bin/kolab']);
 
   const top = realpathSync(mkdtempSync(join(tmpdir(), 'konjir-shim-')));
   const shim = writeKonjirShim(join(top, "b'in"), ['/usr/bin/node', "/opt/kon'jir/main.js"], { TSX_TSCONFIG_PATH: '/k/tsconfig.json' });
-  expect(readFileSync(shim, 'utf8')).toBe(`#!/bin/sh\n# konjir, as the konjir work that started this job runs it (W7.8).\nTSX_TSCONFIG_PATH='/k/tsconfig.json' exec '/usr/bin/node' '/opt/kon'\\''jir/main.js' "$@"\n`);
+  expect(readFileSync(shim, 'utf8')).toBe(`#!/bin/sh\n# kolab, as the kolab work that started this job runs it (W7.8).\nTSX_TSCONFIG_PATH='/k/tsconfig.json' exec '/usr/bin/node' '/opt/kon'\\''jir/main.js' "$@"\n`);
   // Read and run only, in a directory nothing can be added to, and edits to it are denied: the guard hook runs it.
   expect(statSync(shim).mode & 0o777).toBe(0o555);
   expect(statSync(join(top, "b'in")).mode & 0o777).toBe(0o500);
+  // Named kolab, and konjir beside it, the same script, while Kolab's own texts still tell a job to run konjir.
+  expect(shim).toBe(join(top, "b'in", 'kolab'));
+  expect(readFileSync(join(top, "b'in", 'konjir'), 'utf8')).toBe(readFileSync(shim, 'utf8'));
+  expect(statSync(join(top, "b'in", 'konjir')).mode & 0o777).toBe(0o555);
+  expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(kolab *)', 'Bash(konjir *)']));
   expect(deniedTools('main', '/home/lee/.config/konjir', join(top, "b'in"))).toContain(`Edit(/${join(top, "b'in")}/**)`);
   expect(deniedTools('main', '/home/lee/.config/konjir')).not.toContainEqual(expect.stringContaining(top));
   // Written again over a job's earlier one, and removed, all the same.
@@ -737,7 +742,7 @@ test('konjirCommand runs konjir as this process runs: node with its own options,
   const failed = spawnSync('sh', ['-c', missing], { encoding: 'utf8', input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } }) });
   expect({ status: failed.status, stderr: failed.stderr }).toEqual({ status: 2, stderr: expect.stringMatching(/Denied in a Konjir job: its guard could not check this command/) });
 
-  // From the source, as bin/konjir runs it: a runner started under tsx writes a shim that runs the
+  // From the source, as bin/kolab runs it: a runner started under tsx writes a shim that runs the
   // same source, with no TSX_TSCONFIG_PATH in its environment (a job's has none), and its guard denies.
   const root = join(import.meta.dirname, '..', '..', '..');
   const script = join(top, 'runner.mts');
@@ -877,7 +882,7 @@ test('the token is redacted from a job\'s log and note, however its output cuts 
   expect(ended(kolab, 'J1')!.note).not.toContain('kjs_job_token');
   expect(by.J2).toMatchObject({ outcome: 'done', kept: '1 commit(s) not pushed' });
   expect(by['../evil']).toMatchObject({ outcome: 'failed' });
-  expect(ended(kolab, '../evil')!.note).toMatch(/konjir work couldn't start it: Kolab gave the job id "..\/evil"/);
+  expect(ended(kolab, '../evil')!.note).toMatch(/kolab work couldn't start it: Kolab gave the job id "..\/evil"/);
   expect(readdirSync(r.top).sort()).toEqual(['checkout', 'jobs', 'orders.git', 'seed', 'standin']);
 }, 60_000);
 
@@ -895,13 +900,13 @@ test('jobs that can\'t start back the runner off, and three in a row stop it tak
   expect(out.lines.filter((l) => /waiting .* a job couldn't start/.test(l)).length).toBe(2);
 }, 60_000);
 
-test('konjir work refuses an agent\'s session, a checkout that isn\'t the registered repository, a fork with no remote at the registered URL and a harness not on PATH, taking nothing; with --repo it starts jobs from the registered URL\'s remote, never the fork\'s (JOB4, M7)', async () => {
+test('kolab work refuses an agent\'s session, a checkout that isn\'t the registered repository, a fork with no remote at the registered URL and a harness not on PATH, taking nothing; with --repo it starts jobs from the registered URL\'s remote, never the fork\'s (JOB4, M7)', async () => {
   const r = repository();
   process.env = { ...process.env, ...GIT_ENV };
   const h = standIn(r.top);
   const base = { git: gitIn(r.dir), shell: r.shell, jobsDir: r.jobsDir, log: () => undefined };
   const agent = fakeKolab(r.root, { kind: 'agent', items: [{ kind: 'build', item: 'kj:test/p#W1' }] });
-  expect(await rejection(runWork({ ...base, call: agent.call }, { url: MCP, once: true, harness: h.path }))).toMatch(/lee-bot, an agent: konjir work runs as a person/);
+  expect(await rejection(runWork({ ...base, call: agent.call }, { url: MCP, once: true, harness: h.path }))).toMatch(/lee-bot, an agent: kolab work runs as a person/);
   const other = fakeKolab('a'.repeat(40), { items: [{ kind: 'build', item: 'kj:test/p#W1' }] });
   expect(await rejection(runWork({ ...base, call: other.call }, { url: MCP, once: true, harness: h.path }))).toMatch(/is no repository registered in this kolab/);
   expect(await rejection(runWork({ ...base, call: other.call }, { url: MCP, jobs: 0 }))).toMatch(/--jobs is a whole number/);
@@ -931,16 +936,16 @@ test('konjir work refuses an agent\'s session, a checkout that isn\'t the regist
   expect(out.lines).toContain('nothing taken: nothing is ready (your jobs 0/4, the kolab\'s 0/8)');
 }, 60_000);
 
-test('inside a job, konjir never falls back to a sign-in kept on this machine: an empty --token, or none, is refused before anything is read (H1)', async () => {
+test('inside a job, kolab never falls back to a sign-in kept on this machine: an empty --token, or none, is refused before anything is read (H1)', async () => {
   process.env = { ...process.env, KONJIR_JOB: 'J1', KONJIR_URL: 'http://127.0.0.1:9/mcp' };
   delete process.env.KONJIR_TOKEN;
   for (const argv of [['whoami', '--token', ''], ['whoami'], ['help', 'whoami'], ['work', 'deliver']]) {
     expect(await rejection(main(argv))).toMatch(/this is a Konjir job \(KONJIR_JOB is set\), which works as its agent with KONJIR_TOKEN, never with a sign-in kept on this machine/);
   }
-  for (const cmd of ['login', 'logout', 'connect', 'work']) expect(await rejection(main([cmd]))).toMatch(new RegExp(`konjir ${cmd} doesn't run inside a Konjir job`));
+  for (const cmd of ['login', 'logout', 'connect', 'work']) expect(await rejection(main([cmd]))).toMatch(new RegExp(`kolab ${cmd} doesn't run inside a Konjir job`));
 });
 
-test('the harness\'s command: Claude Code headless, Kolab its only MCP server, edits and git, npm, npx, gh and konjir only, or --allow-all; the denials and the environment (JOB4, M5, M6)', () => {
+test('the harness\'s command: Claude Code headless, Kolab its only MCP server, edits and git, npm, npx, gh and kolab only, or --allow-all; the denials and the environment (JOB4, M5, M6)', () => {
   const job: TakenJob = { job: 'J9', kind: 'build', item: 'kj:k/p#W1', agent: 'lee-engineer-1', token: 'kjs_secret', lease_until: '', instructions: 'Build it.' };
   const c = harnessCommand(job, { url: 'https://kolab.example.com/mcp', worktree: '/w', branch: 'main', credentials: '/jobs/.no-credentials/J9/credentials.json',
     mcpConfig: '/jobs/.mcp/J9.json', guard: ['/usr/bin/node', "/opt/kon'jir/main.js"], env:{ PATH: '/bin', HOME: '/home/lee', KONJIR_AGENT: 'lee-product', KONJIR_CREDENTIALS: '/home/lee/.config/konjir/credentials.json', AWS_PROFILE: 'p', LC_ALL: 'C', ANTHROPIC_API_KEY: 'k', CLAUDE_CONFIG_DIR: '/c', GIT_SSH_COMMAND: 'ssh' } });
@@ -953,7 +958,7 @@ test('the harness\'s command: Claude Code headless, Kolab its only MCP server, e
   expect(JSON.parse(c.args[c.args.indexOf('--settings') + 1])).toEqual({ disableAllHooks: false, hooks: { PreToolUse: [{ matcher: 'Bash|Monitor', hooks: [{ type: 'command',
     command: `'/usr/bin/node' '/opt/kon'\\''jir/main.js' 'work' 'guard' '--branch' 'main' || { echo 'Denied in a Konjir job: its guard could not check this command' >&2; exit 2; }` }] }] } });
   expect(c.args).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits', '--allowedTools', ...ALLOWED_TOOLS, '--disallowedTools', ...deniedTools('main', '/home/lee/.config/konjir')]));
-  expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(konjir *)', 'mcp__konjir']));
+  expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(kolab *)', 'mcp__konjir']));
   expect(deniedTools('main', '/home/lee/.config/konjir')).toEqual(expect.arrayContaining(['Bash(gh api*)', 'Bash(gh pr merge*)', 'Bash(git -c*)', 'Bash(git push --force*)', 'Bash(git push * +*)',
     'Bash(git push *:main)', 'Bash(git push * main)', 'Read(//home/lee/.config/konjir/**)', 'Edit(//home/lee/.config/konjir/**)']));
   // Rules Claude Code warns of and ignores (found running it): a trailing :* is its old prefix syntax, and only Edit(path) covers editing tools.
@@ -986,7 +991,7 @@ test('the harness\'s command: Claude Code headless, Kolab its only MCP server, e
   expect(red.push('a kjs_') + red.push('secr') + red.push('et b kjs') + red.end()).toBe('a [job token] b kjs');
 });
 
-test('konjir status: the queue by kind, every live job across pages, and the caller\'s room under the caps, cleaned of control characters (JOB5)', async () => {
+test('kolab status: the queue by kind, every live job across pages, and the caller\'s room under the caps, cleaned of control characters (JOB5)', async () => {
   const pages: Record<string, unknown>[] = [];
   const job = (n: number, since: string) => ({ job: `J${n}`, person: 'lee', machine: 'lee-laptop', agent: `lee-engineer-${n}`, kind: 'build', item: `kj:test/p#W${n}`, started_at: since, lease_until: since });
   const call = async (verb: string, args: Record<string, unknown>) => {
