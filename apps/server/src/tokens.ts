@@ -17,6 +17,11 @@ export interface ServerOptions {
   handIssuedTokens?: boolean;
   /** The clock agents' states are judged by (AgentStates), in ms since the epoch: Date.now unless a test sets it. */
   agentStateClock?: () => number;
+  /**
+   * Where each MCP client that connects is logged, by the name and version it gives (event
+   * mcp_client, McpClients): `konjir serve` gives Kolab's logger. Without one, none is logged.
+   */
+  clientLog?: import('@konjir/log').Logger;
 }
 
 /** Who this server says it is, in its MCP metadata and in the listen results it sends itself. */

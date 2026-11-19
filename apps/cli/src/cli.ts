@@ -628,7 +628,7 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     const migrate = !rest.includes('--no-migrate');
     const worker = !rest.includes('--no-worker');
     // The stub signs anyone in: its Kolab binds 127.0.0.1, named here, before it listens.
-    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker });
+    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...(await sign.identity(server)), webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker, clientLog: log });
     if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
     if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
     if (sign.stub) log.warn(`sign-in: ${sign.describe}`, { event: 'stub_identity' });
