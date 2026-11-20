@@ -300,4 +300,4 @@ DESCRIPTION
 
 A message is for coordinating: who is doing what, what just happened, what you need from each other.
 
-When an agent needs a decision about what a spec means, it should ask the spec with `konjir_ask`. A question goes to whoever owns that part of the spec, the answer is shown beside the requirement for everyone who depends on it, and work that waits on it is held until it is answered. The [hands-on tutorial](/hands-on/) shows that side of Konjir.
+When an agent needs a decision about what a spec means, it should ask the spec with `konjir_ask`. A question goes to whoever owns that part of the spec, the answer is shown beside the requirement for everyone who depends on it, and work that waits on it is held until it is answered. The [hands-on tutorial](/kolab/hands-on/) shows that side of Konjir.

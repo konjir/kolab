@@ -1,9 +1,19 @@
-// konjir.com's viewer-request function (cloudfront-js-2.0): www answers with a 301 to the apex,
-// keeping the path and the query string exactly as the browser sent them. On the apex, a folder's
-// page is its index.html (S3 behind OAC has no index documents, and default_root_object covers only
-// "/"): a path ending in "/" is served from <path>index.html, and a path whose last segment has no
-// "." (/hands-on) answers with a 301 to the same path with "/" added. A path that starts "//" or
-// holds "\" is neither. Every other request passes.
+// konjir.com's viewer-request function (cloudfront-js-2.0). www.konjir.com is canonical by the
+// pages' canonical links, sitemap and Open Graph URLs, but the apex serves the same pages and
+// doesn't redirect: until this split the function answered www with a 301 to the apex, with no
+// Cache-Control, and browsers may keep that 301 for good, so an apex redirected back to www would
+// loop for them. Redirecting the apex is a later, deliberate change, once those have aged out.
+//
+// On both hosts the pages that moved when the site was split by product answer with a 301 to where
+// they are now on www, path below them and query kept: /hands-on and /hands-on/… to
+// /kolab/hands-on/…, and /messages and /messages/… to /konnect/guide/… Their new URLs never existed
+// before, so no cached redirect leads back. A browser keeps a link's #fragment through a redirect,
+// so old links to a heading still land on it. Every 301 here may be cached a day, no longer, so a
+// later change of direction reaches browsers.
+// A folder's page is its index.html (S3 behind OAC has no index documents, and
+// default_root_object covers only "/"): a path ending in "/" is served from <path>index.html, and
+// a path whose last segment has no "." (/kolab) answers with a 301 to the same path with "/" added.
+// A path that starts "//" or holds "\" is none of these. Every other request passes.
 // Tested in apps/cli/test/site-www-redirect.test.ts.
 function handler(event) {
   var request = event.request;
@@ -16,14 +26,19 @@ function handler(event) {
     return {
       statusCode: 301,
       statusDescription: 'Moved Permanently',
-      headers: { location: { value: location + (query ? '?' + query : '') } }
+      headers: {
+        location: { value: location + (query ? '?' + query : '') },
+        'cache-control': { value: 'public, max-age=86400' }
+      }
     };
   };
-  if (host === '${www}') return redirect('https://${apex}' + request.uri);
   var uri = request.uri;
   // A path holding "\" is never rewritten or redirected (a browser may read "\" as "/", so "/\x"
   // could name another host): it passes as it came, to be a 404.
   if (uri.indexOf('\\') >= 0) return request;
+  var moved = movedTo(uri);
+  // From the apex, straight to www's new path, in one hop; on www, relative to it.
+  if (moved) return redirect(host === '${apex}' ? 'https://${www}' + moved : moved);
   if (uri.charAt(uri.length - 1) === '/') {
     if (uri !== '/') request.uri = uri + 'index.html';
     return request;
@@ -32,4 +47,16 @@ function handler(event) {
   // A path redirected relative to this host, so "//evil.example" can't become another host's URL.
   if (last.indexOf('.') < 0 && uri.charAt(0) === '/' && uri.charAt(1) !== '/') return redirect(uri + '/');
   return request;
+}
+
+// Where a page that moved is now, or null. Each old folder's own path gains its "/" here, so it
+// takes one redirect, not two. The new path always starts with its folder, so it stays on this host.
+function movedTo(uri) {
+  var moves = [['/hands-on', '/kolab/hands-on'], ['/messages', '/konnect/guide']];
+  for (var i = 0; i < moves.length; i++) {
+    var from = moves[i][0];
+    if (uri === from) return moves[i][1] + '/';
+    if (uri.indexOf(from + '/') === 0) return moves[i][1] + uri.slice(from.length);
+  }
+  return null;
 }

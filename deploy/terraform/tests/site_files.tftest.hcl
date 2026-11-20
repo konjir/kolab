@@ -39,12 +39,20 @@ run "site_publishes_only_the_build" {
     error_message = "site/README.md and dotfiles aren't uploaded"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "hands-on/index.html", "messages/index.html", "robots.txt", "favicon.svg"] : contains(output.files, f)])
-    error_message = "the built pages are uploaded, the hands-on tutorial's and the messages guide's included"
+    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/hands-on/index.html", "konnect/index.html", "konnect/guide/index.html", "robots.txt", "sitemap.xml", "favicon.svg", "og/www.jpg"] : contains(output.files, f)])
+    error_message = "the built pages are uploaded, each product's section included, with the sitemap and the Open Graph image"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "hands-on/index.html", "messages/index.html"] : output.objects[f].content_type == "text/html; charset=utf-8" && output.objects[f].cache_control == "public, max-age=60"])
-    error_message = "every page, the hands-on tutorial's and the messages guide's included, is uploaded as HTML and cached a minute"
+    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/hands-on/index.html", "konnect/index.html", "konnect/guide/index.html"] : output.objects[f].content_type == "text/html; charset=utf-8" && output.objects[f].cache_control == "public, max-age=60"])
+    error_message = "every page, in every section, is uploaded as HTML and cached a minute"
+  }
+  assert {
+    condition     = length([for f in output.files : f if startswith(f, "hands-on/") || startswith(f, "messages/")]) == 0
+    error_message = "the pages that moved aren't uploaded at their old paths, where the CloudFront Function redirects"
+  }
+  assert {
+    condition     = output.objects["sitemap.xml"].content_type == "application/xml" && output.objects["og/www.jpg"].content_type == "image/jpeg" && output.objects["og/www.jpg"].cache_control == "public, max-age=60"
+    error_message = "the sitemap is uploaded as XML, and the Open Graph image as a JPEG under a name that doesn't change, cached a minute"
   }
   assert {
     condition     = alltrue([for f, o in output.objects : o.cache_control == "public, max-age=31536000, immutable" if can(regex("^assets/site\\.[0-9a-f]{10}\\.css$", f))]) && length([for f, o in output.objects : f if can(regex("^assets/site\\.[0-9a-f]{10}\\.css$", f)) && o.content_type == "text/css; charset=utf-8"]) > 0

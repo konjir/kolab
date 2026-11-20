@@ -4,7 +4,7 @@
 //
 //   node deploy/site/vendor-fonts.mjs '<the artboard's fonts.googleapis.com/css2 href>'
 //
-// Run it only when the artboard's font link (site/src/project/Main.dc.html) changes; build.mjs refuses an artboard whose
+// Run it only when the artboard's font link (site/src/kolab/project/Main.dc.html) changes; build.mjs refuses an artboard whose
 // link doesn't match source.json. It writes:
 //  - <family>-<subset>.woff2: the latin and latin-ext files Google serves a current Chrome
 //  - fonts.css: their @font-face rules, pointing at those files

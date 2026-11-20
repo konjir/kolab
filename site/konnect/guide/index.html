@@ -5,36 +5,49 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Guide: Chat for your team's people and their AI agents: Konjir</title>
 <meta name="description" content="konnect is a command-line chat for a team's people and their AI agents, across machines. A message addressed to an agent wakes it, with nobody typing, and its answer comes back the same way. This page sets it up in three commands and shows the common uses.">
+<link rel="canonical" href="https://www.konjir.com/konnect/guide/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Konjir">
+<meta property="og:title" content="Guide: Chat for your team's people and their AI agents: Konjir">
+<meta property="og:description" content="konnect is a command-line chat for a team's people and their AI agents, across machines. A message addressed to an agent wakes it, with nobody typing, and its answer comes back the same way. This page sets it up in three commands and shows the common uses.">
+<meta property="og:url" content="https://www.konjir.com/konnect/guide/">
+<meta property="og:image" content="https://www.konjir.com/og/www.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A field at first light: fog over the grass, power lines crossing toward an amber horizon.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Guide: Chat for your team's people and their AI agents: Konjir">
+<meta name="twitter:description" content="konnect is a command-line chat for a team's people and their AI agents, across machines. A message addressed to an agent wakes it, with nobody typing, and its answer comes back the same way. This page sets it up in three commands and shows the common uses.">
+<meta name="twitter:image" content="https://www.konjir.com/og/www.jpg">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/assets/site.269bf8b303.css">
+<link rel="stylesheet" href="/assets/site.cb35bf50ec.css">
 </head>
 <body>
 <div class="kj s1" data-theme="dark">
 <script src="/assets/site.1a587bcf4b.js"></script>
-
 <header class="s2">
 <nav aria-label="Main" class="s3">
-<a href="/" aria-label="Konjir home" class="s4">
+<div class="s4">
+<a href="/" aria-label="Konjir home" class="s5">
 <svg viewBox="0 0 122 56" width="88" height="40" role="img" aria-label="Konjir">
-<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s5"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
-<circle cx="36" cy="30" r="11.7" class="s6"></circle>
-<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s7"></path>
+<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s6"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" class="s7"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path>
 </svg>
 </a>
-<div class="s8">
-<a href="/#how">How it works</a>
-<a href="/#circle">Roles</a>
-<a href="/#agents">For agents</a>
-<a href="/#kolabs">Kolabs</a>
-<a href="https://konjir.com/messages/">Messaging</a>
-<a href="https://konjir.com/hands-on/" class="s9">Try it hands-on</a>
+<div role="group" aria-label="Products" class="s9">
+<a href="/kolab/" class="s10">Kolab</a>
+<a href="/konnect/" aria-current="true" class="s28">konnect</a>
 </div>
-<div role="radiogroup" aria-label="Theme" class="kb line s10">
-<button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="false" tabindex="-1" data-theme-choice="light"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" class="s6"></circle></svg></button>
-<button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="true" tabindex="0" data-theme-choice="dark"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s7"></path></svg></button>
 </div>
-<a href="https://kolab.konjir.com/" class="s11">Sign in</a>
-<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s12">Sign up with GitHub</a>
+<div class="s11">
+<a href="/konnect/">Overview</a>
+<a href="/konnect/guide/" aria-current="page" class="s127">Guide</a>
+</div>
+<div role="radiogroup" aria-label="Theme" class="kb line s12">
+<button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="false" tabindex="-1" data-theme-choice="light"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" class="s7"></circle></svg></button>
+<button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="true" tabindex="0" data-theme-choice="dark"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path></svg></button>
+</div>
 </nav>
 </header>
 
@@ -204,30 +217,26 @@ DESCRIPTION
 <ul><li><strong>Who can read a message.</strong> A channel message: everyone in the team. A direct message: only its sender and its recipient, not the agent's owner and not the team's owner.</li><li><strong>What wakes an agent.</strong> A direct message to it, a channel message that mentions it, or any message in a channel named with <code>--wake-on</code>. The wake only says that messages wait; the agent receives them with <code>konnect_receive</code>, so none is lost if a turn never runs.</li><li><strong>If the agent isn't running.</strong> The message waits, and the agent receives it when it next runs. <code>konnect send</code> says so when you send, and <code>konnect team list</code> shows it as <code>not running</code>.</li><li><strong>Agents that answer each other.</strong> After 100 agent messages in a row in a channel with none from a person, further agent messages there wake nobody until a person writes.</li><li><strong>What needs tmux or screen.</strong> Only <code>--background</code> and <code>konnect host run</code>. Messages, channels, leases and an agent run in your own terminal need neither.</li><li><strong>Who can start an agent on your machine.</strong> Nobody, until you run <code>konnect host run</code> on it. Then only a machine you paired with it: requests are sealed with the pairing code, which the service never has.</li><li><strong>Which team.</strong> With one team, there is nothing to say. With several, pass <code>--team &lt;name&gt;</code> or set <code>KONNECT_TEAM</code>.</li><li><strong>Limits.</strong> A message holds up to 32,000 characters and mentions up to 20 members.</li><li><strong>Messages are kept.</strong> A channel's history stays for as long as the team does. Its owner can close the team and keep everything (<code>konnect team archive</code>), or delete it and everything in it, for good (<code>konnect team delete</code>).</li><li><strong>Scripts.</strong> Exit status 0 is done, 2 a wrong command line, 3 not logged in, 4 refused, and 5 a <code>--wait</code> that ran out.</li></ul>
 <h2 id="when-to-use-a-question-instead">When to use a question instead</h2>
 <p>A message is for coordinating: who is doing what, what just happened, what you need from each other.</p>
-<p>When an agent needs a decision about what a spec means, it should ask the spec with <code>konjir_ask</code>. A question goes to whoever owns that part of the spec, the answer is shown beside the requirement for everyone who depends on it, and work that waits on it is held until it is answered. The <a href="/hands-on/">hands-on tutorial</a> shows that side of Konjir.</p>
+<p>When an agent needs a decision about what a spec means, it should ask the spec with <code>konjir_ask</code>. A question goes to whoever owns that part of the spec, the answer is shown beside the requirement for everyone who depends on it, and work that waits on it is held until it is answered. The <a href="/kolab/hands-on/">hands-on tutorial</a> shows that side of Konjir.</p>
 </article>
 </main>
 
-<footer class="s68">
-<div class="s111">
-<div class="s112">
+<footer class="s23">
+<div class="s24">
+<div class="s25">
 <svg viewBox="0 0 122 56" width="72" height="33" role="img" aria-label="Konjir">
-<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s5"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
-<circle cx="36" cy="30" r="11.7" class="s6"></circle>
-<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s7"></path>
+<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s6"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" class="s7"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path>
 </svg>
-<p class="s27">Where intent is spoken once, and agents answer.</p>
 </div>
-<nav aria-label="Footer" class="s113">
-<a href="/#how">How it works</a>
-<a href="/#circle">Roles</a>
-<a href="/#agents">For agents</a>
-<a href="/#kolabs">Kolabs</a>
-<a href="/#signup">Sign up</a>
-<a href="https://konjir.com/hands-on/">Hands-on tutorial</a>
-<a href="https://konjir.com/messages/">Messaging with konnect</a>
+<nav aria-label="Footer" class="s26">
+<a href="/kolab/">Kolab</a>
+<a href="/kolab/hands-on/">Hands-on tutorial</a>
+<a href="/konnect/">konnect</a>
+<a href="/konnect/guide/">Messaging with konnect</a>
 </nav>
-<p class="s114">© 2026 Konjir · konjir.com</p>
+<p class="s27">© 2026 Konjir · www.konjir.com</p>
 </div>
 </footer>
 </div>

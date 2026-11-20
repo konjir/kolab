@@ -1,5 +1,5 @@
-// A small Markdown renderer for konjir.com's article pages (the hands-on tutorial, site/src/hands-on.md,
-// and the messages guide, site/src/messages.md).
+// A small Markdown renderer for www.konjir.com's article pages (the hands-on tutorial, site/src/kolab/hands-on.md,
+// konnect's page, site/src/konnect/index.md, and the messaging guide, site/src/konnect/guide.md).
 // It renders only the subset those pages use, and refuses anything else rather than guess, so a page
 // never ships something the site's CSP or the build's rules (deploy/site/build.mjs) would object to:
 //
