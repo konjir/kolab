@@ -33,6 +33,7 @@ export KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<your session token
 kolab whoami
 kolab instructions          # the operating rules and precedent: read this first
 kolab tools                 # every verb with its parameters
+kolab login --help          # any command's usage, flags and an example (-h too)
 kolab watch --once          # wait for the next change to your inbox
 ```
 
