@@ -160,7 +160,8 @@ test('konnect host run makes a machine start your agents when you ask from one p
   // The desk hosts, in the folder it was told to in, until it is ended; it shows its code, which goes nowhere else.
   const deskErr: string[] = [];
   const hosting = desk.run(['host', 'run', 'desk'], { exec: there.exec, self, pause: soon, err: (l) => deskErr.push(l) });
-  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])), 'the desk hosts');
+  // Listed once the service has its word, which can be before the desk has its answer and says so: both are waited for.
+  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])) && deskErr.length > 0, 'the desk hosts, and says so');
   expect(deskErr[0]).toMatch(/^This machine hosts for you \(@ann\) in team hub as desk, in ~\/work\.\nTo ask it from another machine of yours, pair that machine once, there:\n {2}konnect host pair desk [0-9A-Z]{4}(-[0-9A-Z]{4}){5}\nThen, from it: konnect agent run --on desk <name> claude\nIt starts claude, codex or opencode as an agent of yours, with konnect's own options, and only for a machine paired with it; what the agent may do here is set in its harness\. Ctrl-C ends hosting\.$/);
   const code = /konnect host pair desk (\S+)/.exec(deskErr[0])![1];
   expect(JSON.parse(await laptop.run(['host', 'list', '--json']))).toMatchObject([{ name: 'desk', folder: '~/work', serving: true, agents: [], running: [] }]);
@@ -305,7 +306,9 @@ test('konnect host run makes a machine start your agents when you ask from one p
   expect(there.sessions.has('konnect_hub_helper')).toBe(true);
   expect(await laptop.run(['host', 'list'])).toBe('No machine of yours hosts in team hub. On one that should: konnect host run');
   expect(await fails(laptop.run(['host', 'stop', 'desk'], { pause: soon, exec: tmux().exec }))).toBe('no machine of yours hosts as desk in team hub: konnect host list shows yours');
-});
+  // Some hundred konnect commands, each its own sign-in to the service: twice konnect's next longest
+  // test, it took 25 s of the default 30 on a machine as busy as CI's runner, and ran out of it there.
+}, 90_000);
 
 test('hosting under one name: another machine can\'t take a name that is hosting, a newer konnect host run on the same machine takes over, and --background keeps it in tmux', async () => {
   const { server, idp, signIn, ann: annId } = await teams();
@@ -322,7 +325,7 @@ test('hosting under one name: another machine can\'t take a name that is hosting
 
   const firstErr: string[] = [];
   const first = desk.run(['host', 'run', 'desk'], { exec: there.exec, self, pause: soon, err: (l) => firstErr.push(l) });
-  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])), 'the desk hosts');
+  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])) && firstErr.length > 0, 'the desk hosts, and says so');
   const code = /konnect host pair desk (\S+)/.exec(firstErr[0])![1];
   await laptop.run(['host', 'pair', 'desk', code]);
   // Said where hosting starts, and again to whoever starts Claude Code there: it would wait at its question, with nobody to answer.
@@ -339,7 +342,9 @@ test('hosting under one name: another machine can\'t take a name that is hosting
   const second = desk.run(['host', 'run', 'desk'], { exec: there.exec, self, pause: soon, waking: (end) => { endSecond = end; }, err: (l) => secondErr.push(l) });
   await first;
   expect(firstErr.at(-1)).toMatch(/another konnect host run hosts as desk on this machine now: this one ends$/);
-  expect(await laptop.run(['host', 'list'])).toMatch(/^desk\s+hosting/);
+  // The first ends as soon as the second claims the name here, which is before the second has told
+  // the service it hosts and said so: so that is waited for, not assumed.
+  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])) && secondErr.length > 0, 'the newer one hosts, and says so');
   expect(secondErr[0]).toContain(`konnect host pair desk ${code}\n`);
   // Ended there (Ctrl-C), it says so to the service, and is listed no more.
   endSecond();
@@ -350,7 +355,7 @@ test('hosting under one name: another machine can\'t take a name that is hosting
   let endThird: () => void = () => undefined;
   const thirdErr: string[] = [];
   const third = desk.run(['host', 'run', '--new-code', 'desk'], { exec: there.exec, self, pause: soon, waking: (end) => { endThird = end; }, err: (l) => thirdErr.push(l) });
-  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])), 'the desk hosts again');
+  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])) && thirdErr.length > 0, 'the desk hosts again, and says so');
   const renewed = /konnect host pair desk (\S+)/.exec(thirdErr[0])![1];
   expect(renewed).not.toBe(code);
   expect(thirdErr[0]).toContain(`konnect host pair desk ${renewed}\nThis is a new code: a machine paired with the old one is refused until it is paired again.\n`);

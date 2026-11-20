@@ -78,8 +78,14 @@ export async function watch(ctx: Ctx, rest: string[]): Promise<void> {
         catalog: false, channelName: 'konnect',
         describe: {
           change(uri: string, before: unknown, after: unknown) { if (uri.startsWith('konjir://answers/') && isAnswers(after)) changed(isAnswers(before) ? before : undefined, after); return null; },
-          // What waited as watching started stays for receive: only what comes after is printed.
-          startup() { return null; },
+          // What waited as watching started stays for receive: only what comes after is printed. That
+          // includes what came while the subscription was opening, which its first read takes as
+          // already there: so once it is open, each place is looked at once.
+          startup() {
+            const places = [...channels.map((c) => () => lookAt(c)), ...(direct ? [lookDirect] : [])];
+            for (const look of places) queue = queue.then(look).catch((e: unknown) => ctx.err(`konnect watch: ${(e as Error)?.message ?? e}`));
+            return null;
+          },
         },
         loginCommand: 'konnect login',
         forward: async () => undefined,

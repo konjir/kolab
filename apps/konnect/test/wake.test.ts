@@ -307,3 +307,33 @@ test('a running agent says what it is doing, and the lists and konnect send say 
   // Its harness ended: said as it goes, so nobody waits a minute and a half to learn it.
   expect(await helperLine()).toBe('@ann/helper    agent   not running');
 });
+
+test('a service slower to answer than the agent says its state gathers no backlog of says: the last word, that it has ended, is still said as it closes', async () => {
+  const { server, idp, signIn, ann: annId, bo: boId } = await teams();
+  const ann = machine(server.url, 'ann');
+  const bo = machine(server.url, 'bo');
+  await signIn(ann, annId, 'hub');
+  await signIn(bo, boId, 'hub');
+  await ann.run(['agent', 'add', 'helper'], { open: (u) => { idp.next(annId); void browse(u, pressing('decision=allow')); }, self: () => ({ command: 'node', args: ['k.mjs'] }) });
+  const file = `${ann.env.KONNECT_CONFIG_DIR}/agents/hub/helper.json`;
+  const helperLine = async () => (await bo.run(['team', 'list'])).split('\n').find((l) => l.startsWith('@ann/helper'));
+  // Each say takes longer than the agent waits between says, as on a busy machine.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (typeof init?.body === 'string' && init.body.includes('"name":"konjir_say_state"')) await new Promise((r) => setTimeout(r, 150));
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const s = await serveMcp({ team: 'hub', url: server.url, file, label: 'helper', wake: false, state: () => 'idle', stateEveryMs: 60 }, b);
+    const c = new Client({ name: 'harness-stand-in', version: '0' });
+    await c.connect(a);
+    try {
+      for (let i = 0; i < 100 && await helperLine() !== '@ann/helper    agent   idle'; i++) await new Promise((r) => setTimeout(r, 50));
+      expect(await helperLine()).toBe('@ann/helper    agent   idle');
+      // Long enough for says queued one behind another to outlast the 3 s close gives the last one.
+      await new Promise((r) => setTimeout(r, 2_000));
+    } finally { await c.close(); await s.close(); }
+  } finally { globalThis.fetch = realFetch; }
+  expect(await helperLine()).toBe('@ann/helper    agent   not running');
+});
