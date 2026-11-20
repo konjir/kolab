@@ -23,6 +23,7 @@ const read = (r: string, page: string) => readFileSync(join(r, 'site', page), 'u
 const PAGES: [string, string][] = [
   ['index.html', 'https://www.konjir.com/'],
   ['kolab/index.html', 'https://www.konjir.com/kolab/'],
+  ['kolab/how-it-works/index.html', 'https://www.konjir.com/kolab/how-it-works/'],
   ['kolab/hands-on/index.html', 'https://www.konjir.com/kolab/hands-on/'],
   ['konnect/index.html', 'https://www.konjir.com/konnect/'],
   ['konnect/guide/index.html', 'https://www.konjir.com/konnect/guide/'],
@@ -100,7 +101,7 @@ test("the messages guide is built into konnect/guide/index.html as the tutorial 
   const r = copy('messages');
   const b = build(r);
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
-  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, 404.html');
+  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, 404.html');
   const home = read(r, 'kolab/index.html');
   const page = read(r, 'konnect/guide/index.html');
   expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Chat for your team\'s people and their AI agents</h1></header>');
@@ -137,7 +138,7 @@ test("the hands-on tutorial is built into kolab/hands-on/index.html, inside the 
   // page; the article's own contents stay on the page.
   expect(headerOf(page)).not.toMatch(/href="\/?#|href="\/kolab\/#/);
   expect(headerOf(page)).toContain('<a href="/kolab/">Overview</a>');
-  expect(page).toContain('href="/kolab/#how"');
+  expect(page).toContain('href="/kolab/#circle"');
   expect(page).not.toMatch(/href="\/#|href="#(how|circle|agents|kolabs|signup|top)"/);
   expect(page).toMatch(/<nav class="toc" aria-label="Steps">[\s\S]*href="#before-you-start"/);
   // Code is escaped and kept as written, `$` and all, in a labelled box.
@@ -146,6 +147,27 @@ test("the hands-on tutorial is built into kolab/hands-on/index.html, inside the 
   expect(page).toContain('&lt;you&gt;-spec-writer');
   // The Kolab page links to it.
   expect(home).toContain('href="/kolab/hands-on/"');
+});
+
+test("how Kolab works is built into kolab/how-it-works/index.html as the tutorial is, in Kolab's section, and the Kolab page, its footer and the section's header link to it", () => {
+  const r = copy('how-it-works');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const page = read(r, 'kolab/how-it-works/index.html');
+  expect(page).toContain('<header><p class="kicker">How it works</p><h1 id="ho-title">Kolab in five minutes</h1></header>');
+  expect(page).toMatch(/<title>How it works: Kolab in five minutes: Konjir<\/title>/);
+  expect(page).toMatch(/<nav class="toc" aria-label="Sections">[\s\S]*href="#marks"/);
+  expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
+  // Its header is the section's, with itself marked as the current page.
+  expect(headerOf(page)).toMatch(/<a href="\/kolab\/">Overview<\/a>\n<a href="\/kolab\/how-it-works\/" aria-current="page"[^>]*>How it works<\/a>\n<a href="\/kolab\/hands-on\/">Hands-on tutorial<\/a>/);
+  expect(headerOf(read(r, 'kolab/hands-on/index.html'))).toContain('<a href="/kolab/how-it-works/">How it works</a>');
+  // It is short: under 700 words, its contents list aside.
+  const text = /<article[\s\S]*<\/article>/.exec(page)![0].replace(/<nav class="toc"[\s\S]*?<\/nav>/, '').replace(/<[^>]+>/g, ' ');
+  expect(text.split(/\s+/).filter(Boolean).length).toBeLessThan(700);
+  // On the Kolab page, "How it works" goes here wherever it is: the header, the hero's button and the footer.
+  const home = read(r, 'kolab/index.html');
+  expect(home).not.toContain('href="#how"');
+  expect(home.match(/<a href="\/kolab\/how-it-works\/"[^>]*>(How it works|See how it works)<\/a>/g)).toHaveLength(3);
 });
 
 test("the build refuses a tutorial with Markdown it doesn't render, rather than guess, and escapes any HTML in its text", () => {
@@ -211,7 +233,9 @@ test('the build checks each finished page whole: a description holding markup is
   writeFileSync(md, original);
   const b = build(r);
   expect(b.status).toBe(1);
-  expect(b.stderr).toContain('site/kolab/hands-on/index.html would have a <head> other than the one the build writes');
+  // The first article in PAGES is refused, and nothing is written.
+  expect(b.stderr).toContain('site/kolab/how-it-works/index.html would have a <head> other than the one the build writes');
+  expect(existsSync(join(r, 'site/kolab/how-it-works/index.html'))).toBe(false);
   expect(existsSync(join(r, 'site/kolab/hands-on/index.html'))).toBe(false);
 });
 
@@ -221,7 +245,7 @@ test("every page has the one header: the mark links to /, the product switcher m
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
   // The switcher's entry says "page" only on a page none of the section's own links names: on
   // /konnect/ its "Overview" link is the current page, so the switcher's konnect is just current.
-  const current: Record<string, string> = { 'kolab/index.html': 'page', 'kolab/hands-on/index.html': 'true', 'konnect/index.html': 'true', 'konnect/guide/index.html': 'true' };
+  const current: Record<string, string> = { 'kolab/index.html': 'page', 'kolab/how-it-works/index.html': 'true', 'kolab/hands-on/index.html': 'true', 'konnect/index.html': 'true', 'konnect/guide/index.html': 'true' };
   for (const file of [...PAGES.map(([f]) => f), '404.html']) {
     const head = headerOf(read(r, file));
     expect(head).toMatch(/<a href="\/" aria-label="Konjir home"[^>]*>/);
@@ -237,9 +261,10 @@ test("every page has the one header: the mark links to /, the product switcher m
     expect(head.includes('<a href="https://kolab.konjir.com/" class=')).toBe(signIn);
     expect(head.includes('<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill')).toBe(signIn);
   }
-  // The Kolab page's header keeps its in-page links, and leads to the tutorial.
+  // The Kolab page's header keeps its in-page links, and leads to how it works and the tutorial.
   const kolab = headerOf(read(r, 'kolab/index.html'));
-  for (const id of ['how', 'circle', 'agents', 'kolabs']) expect(kolab).toContain(`<a href="#${id}">`);
+  for (const id of ['circle', 'agents', 'kolabs']) expect(kolab).toContain(`<a href="#${id}">`);
+  expect(kolab).toContain('<a href="/kolab/how-it-works/">How it works</a>');
   expect(kolab).toMatch(/<a href="\/kolab\/hands-on\/" class="[^"]*">Try it hands-on<\/a>/);
   // konnect's pages link to each other, the current one marked.
   expect(headerOf(read(r, 'konnect/guide/index.html'))).toMatch(/<a href="\/konnect\/">Overview<\/a>\n<a href="\/konnect\/guide\/" aria-current="page"[^>]*>Guide<\/a>/);

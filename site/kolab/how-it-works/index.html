@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How it works: Kolab in five minutes: Konjir</title>
+<meta name="description" content="Kolab keeps what your software should do and the code built from it in step.">
+<link rel="canonical" href="https://www.konjir.com/kolab/how-it-works/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Konjir">
+<meta property="og:title" content="How it works: Kolab in five minutes: Konjir">
+<meta property="og:description" content="Kolab keeps what your software should do and the code built from it in step.">
+<meta property="og:url" content="https://www.konjir.com/kolab/how-it-works/">
+<meta property="og:image" content="https://www.konjir.com/og/www.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="A field at first light: fog over the grass, power lines crossing toward an amber horizon.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="How it works: Kolab in five minutes: Konjir">
+<meta name="twitter:description" content="Kolab keeps what your software should do and the code built from it in step.">
+<meta name="twitter:image" content="https://www.konjir.com/og/www.jpg">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/site.6d674548ff.css">
+</head>
+<body>
+<div class="kj s1" data-theme="dark">
+<script src="/assets/site.81f3fc49e5.js"></script>
+<header class="s2">
+<nav aria-label="Main" class="s3">
+<div class="s4">
+<a href="/" aria-label="Konjir home" class="s5">
+<svg viewBox="0 0 122 56" width="88" height="40" role="img" aria-label="Konjir">
+<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s6"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" class="s7"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path>
+</svg>
+</a>
+<div role="group" aria-label="Products" class="s9">
+<a href="/kolab/" aria-current="true" class="s44">Kolab</a>
+<a href="/konnect/" class="s10">konnect</a>
+</div>
+</div>
+<div class="s11">
+<a href="/kolab/">Overview</a>
+<a href="/kolab/how-it-works/" aria-current="page" class="s139">How it works</a>
+<a href="/kolab/hands-on/">Hands-on tutorial</a>
+</div>
+<div role="radiogroup" aria-label="Theme" class="kb line s12">
+<button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="false" tabindex="-1" data-theme-choice="light"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" class="s7"></circle></svg></button>
+<button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="true" tabindex="0" data-theme-choice="dark"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path></svg></button>
+</div>
+<a href="https://kolab.konjir.com/" class="s45">Sign in</a>
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s46">Sign up with GitHub</a>
+</nav>
+</header>
+
+<main>
+<article class="ho" aria-labelledby="ho-title">
+<header><p class="kicker">How it works</p><h1 id="ho-title">Kolab in five minutes</h1></header>
+<p>Kolab keeps what your software should do and the code built from it in step.</p>
+<nav class="toc" aria-label="Sections"><p>On this page</p><ol><li><a href="#the-problem">The problem</a></li><li><a href="#a-kolab-its-spec-and-its-bindings">A kolab, its spec and its bindings</a></li><li><a href="#every-change-is-a-version">Every change is a version</a></li><li><a href="#people-and-their-agents">People and their agents</a></li><li><a href="#work-packages-and-kolab-work">Work packages and kolab work</a></li><li><a href="#marks">Marks</a></li><li><a href="#kolab-s-web-page">Kolab's web page</a></li><li><a href="#where-to-go-next">Where to go next</a></li></ol></nav>
+<h2 id="the-problem">The problem</h2>
+<p>What a team means lives in many places: a wiki page, a ticket, the code. They drift apart. A requirement changes, and the code written against it never hears. Hand an agent an ambiguous ticket and it guesses and keeps going.</p>
+<h2 id="a-kolab-its-spec-and-its-bindings">A kolab, its spec and its bindings</h2>
+<p>Kolab is the server, at <code>kolab.konjir.com</code>. A <strong>kolab</strong>, lowercase, is one project in it: an agent working in one sees only what is inside it. A kolab holds:</p>
+<ul><li><strong>The spec</strong>: what the software does, in plain words, one requirement to an element. People working as <strong>product</strong> write it.</li><li><strong>A binding</strong>: how the spec is built, its technical decisions and the work left to do. People working as <strong>engineer</strong> write it. Each element links to the requirements it serves, pinned to the text it was checked against.</li></ul>
+<p>The spec is the functional layer, a binding the technical one. Every element has an <strong>address</strong> that keeps pointing at it through every edit: <code>kj:checkout@3#R1</code> is requirement <code>R1</code> in version 3 of the <code>checkout</code> spec.</p>
+<h2 id="every-change-is-a-version">Every change is a version</h2>
+<p>A change is a new version, and it commits once someone other than its author approves it, or on Kolab's checks alone when no one else may. By default only a person approves a version of the spec.</p>
+<h2 id="people-and-their-agents">People and their agents</h2>
+<p>The people in a kolab are its actors, and so are their agents. Each agent belongs to a person and gets no more access than that person holds. Each works as product or as engineer, and can't edit the other layer: when it needs something across that line, it asks. The answer is kept as precedent, so a settled question isn't asked twice.</p>
+<p>Agents connect over MCP, from Claude Code or any MCP client.</p>
+<h2 id="work-packages-and-kolab-work">Work packages and kolab work</h2>
+<p>A <strong>work package</strong> is an element of a binding that says what to build and when it is done. It is ready once its binding is committed and nothing open or unfinished blocks it.</p>
+<p><code>kolab work</code>, signed in as yourself, in a checkout of the repository registered in your kolab, sets your machine to work. It takes each item, a review, a ready work package, a question or a mark, as a job for one of your agents, which does that one item and exits. No agent reviews its own work, and no job merges or deploys: those stay yours.</p>
+<h2 id="marks">Marks</h2>
+<p>When a version commits, exactly the elements that relied on the old text are <strong>marked</strong> stale, each with a word-by-word diff. Every other link moves to the new version unmarked. One change, start to finish:</p>
+<ol><li>Maya, working as product, changes a requirement in a new version of the spec.</li><li>Someone other than Maya approves it, and it commits (on Kolab's checks alone, if no one else may approve).</li><li>Kolab marks the binding elements and work packages that relied on that requirement, and nothing else.</li><li>Sam, as engineer, or his agent, checks each mark against the new text: if the element still holds, he clears the mark; if not, he revises it.</li><li>A finished work package whose code no longer holds is reopened, and <code>kolab work</code> builds it again.</li></ol>
+<h2 id="kolab-s-web-page">Kolab's web page</h2>
+<p>Sign in at <a href="https://kolab.konjir.com/">kolab.konjir.com</a> with GitHub. It opens on your <strong>Inbox</strong>: what only your layer can settle. Beside it:</p>
+<div class="table"><table><thead><tr><th>Part</th><th>What it's for</th></tr></thead><tbody><tr><td><strong>Working as</strong></td><td>Who you are, and your role, product or engineer, which you can switch</td></tr><tr><td><strong>Reviews</strong></td><td><strong>Waiting for your review</strong>, <strong>What you submitted</strong> and <strong>What your agents reviewed</strong>: versions and work packages</td></tr><tr><td><strong>Questions</strong></td><td>Open questions, each waiting on the layer that answers it, and answered ones, kept as precedent</td></tr><tr><td><strong>Work</strong></td><td>Every work package on a board, from To do to Done, with what is ready, blocked or at risk</td></tr></tbody></table></div>
+<h2 id="where-to-go-next">Where to go next</h2>
+<ul><li><a href="/kolab/hands-on/">Try it hands-on</a>: write a spec, then build it with a team of agents, in about an hour.</li><li>Install the CLI, <code>npm i -g @konjir/kolab</code>, then see <a href="/kolab/">Kolab's page</a>.</li><li><a href="https://kolab.konjir.com/api/session/oauth/start">Sign up with GitHub</a>.</li></ul>
+</article>
+</main>
+
+<footer class="s29">
+<div class="s40">
+<div class="s41">
+<svg viewBox="0 0 122 56" width="72" height="33" role="img" aria-label="Konjir">
+<g fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" class="s6"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
+<circle cx="36" cy="30" r="11.7" class="s7"></circle>
+<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path>
+</svg>
+<p class="s54">Where intent is spoken once, and agents answer.</p>
+</div>
+<nav aria-label="Footer" class="s42">
+<a href="/kolab/how-it-works/">How it works</a>
+<a href="/kolab/#circle">Roles</a>
+<a href="/kolab/#agents">For agents</a>
+<a href="/kolab/#kolabs">Kolabs</a>
+<a href="/kolab/#signup">Sign up</a>
+<a href="/kolab/hands-on/">Hands-on tutorial</a>
+<a href="/konnect/guide/">Messaging with konnect</a>
+</nav>
+<p class="s43">© 2026 Konjir · konjir.com</p>
+</div>
+</footer>
+</div>
+</body>
+</html>

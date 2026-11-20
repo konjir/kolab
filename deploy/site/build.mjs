@@ -10,6 +10,7 @@
 //   /kolab/           site/src/kolab/project/Main.dc.html, the artboard (the "Konjir Marketing Page"
 //                     artifact is published from site/src/kolab/), with the images it names as
 //                     /_blob/<id> in site/src/kolab/images/<id>.<ext>
+//   /kolab/how-it-works/  site/src/kolab/how-it-works.md, how Kolab works, for someone new to it
 //   /kolab/hands-on/  site/src/kolab/hands-on.md, the hands-on tutorial
 //   /konnect/         site/src/konnect/main.html, konnect's page (its <main>, until it has an artboard)
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
@@ -70,6 +71,7 @@ const SECTIONS = {
   kolab: {
     links: [
       { href: '/kolab/', text: 'Overview' },
+      { href: '/kolab/how-it-works/', text: 'How it works' },
       { href: '/kolab/hands-on/', text: 'Hands-on tutorial' },
     ],
     signIn: true,
@@ -86,6 +88,7 @@ const SECTIONS = {
 // The footer of a section without an artboard of its own (and of the 404 page).
 const FOOTER_LINKS = [
   { href: '/kolab/', text: 'Kolab' },
+  { href: '/kolab/how-it-works/', text: 'How Kolab works' },
   { href: '/kolab/hands-on/', text: 'Hands-on tutorial' },
   { href: '/konnect/', text: 'konnect' },
   { href: '/konnect/guide/', text: 'Messaging with konnect' },
@@ -104,13 +107,14 @@ const PAGES = [
     artboard: 'kolab/project/Main.dc.html',
     images: 'kolab/images',
     links: [
-      { href: '#how', text: 'How it works' },
+      { href: '/kolab/how-it-works/', text: 'How it works' },
       { href: '#circle', text: 'Roles' },
       { href: '#agents', text: 'For agents' },
       { href: '#kolabs', text: 'Kolabs' },
       { href: '/kolab/hands-on/', text: 'Try it hands-on', accent: true },
     ],
   },
+  { path: '/kolab/how-it-works/', section: 'kolab', article: 'kolab/how-it-works.md', kicker: 'How it works', contents: 'Sections', what: 'how-it-works page' },
   { path: '/kolab/hands-on/', section: 'kolab', article: 'kolab/hands-on.md', kicker: 'Hands-on', contents: 'Steps', what: 'tutorial' },
   { path: '/konnect/', section: 'konnect', main: 'konnect/main.html', title: 'konnect: chat for your team’s people and their AI agents' },
   { path: '/konnect/guide/', section: 'konnect', article: 'konnect/guide.md', kicker: 'Guide', contents: 'Sections', what: 'guide' },
