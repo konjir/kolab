@@ -9,8 +9,10 @@
 /** One command's help: its usage lines, what it does, its flags and examples. */
 interface CommandHelp {
   usage: string[]; does: string; flags?: [string, string][]; examples: string[];
-  /** It talks to Kolab, so the connection flags apply. */
-  connects?: boolean;
+  /** It talks to Kolab, so the connection flags apply: true for the usual footer, or its own. */
+  connects?: boolean | string;
+  /** Its flags that take a value: a --help or -h after one is that value, not a request for help. */
+  values?: string[];
   /** The verb Kolab serves that it calls, whose own form (key=value, --json) it also takes. */
   verb?: string;
 }
@@ -21,19 +23,20 @@ const CONNECTION = 'Connection: --url <kolab> and --token <token> (or KONJIR_URL
 export const COMMANDS: Record<string, CommandHelp> = {
   login: {
     usage: ['kolab login [--kolab <name>] [--role product|engineer] [--agent <label|agent>] [--url <kolab>]'],
-    does: 'Signs in with your browser (GitHub, through Kolab): on Kolab\'s page you choose who this CLI works as (an agent of yours, by default), the kolab and the role. Every later command uses that sign-in, renewing it by itself. With no --url, it signs in to the Kolab the project\'s .konjir.json names, else this build\'s default.',
+    does: 'Signs in with your browser (GitHub, through Kolab): on Kolab\'s page you choose who this CLI works as (an agent of yours, by default), the kolab and the role. Every later command uses that sign-in, renewing it by itself. It signs in to the Kolab --url names, else KONJIR_URL, else the project\'s .konjir.json, else this build\'s default.',
     flags: [
       ['--kolab <name>', 'preselects the kolab (over the project\'s .konjir.json)'],
       ['--role product|engineer', 'preselects the role'],
       ['--agent <label|agent>', 'preselects one agent of yours, by its label as kolab connect takes it (product, for <you>-product) or its full name, and refuses a sign-in as anyone else'],
-      ['--url <kolab>', 'the Kolab to sign in to; give one a project\'s .konjir.json names once, here, to trust it'],
+      ['--url <kolab>', 'the Kolab to sign in to (over KONJIR_URL); give one a project\'s .konjir.json names once, here, to trust it'],
     ],
     examples: ['kolab login --kolab anns --role engineer --agent cli'],
+    values: ['--role', '--agent'],
   },
   logout: {
     usage: ['kolab logout [--forget] [--url <kolab>]'],
     does: 'Revokes the sign-in kolab login kept for the Kolab, and forgets it here.',
-    flags: [['--forget', 'forgets the sign-in here without contacting Kolab (it lapses within 30 days unused)'], ['--url <kolab>', 'the Kolab whose sign-in to end']],
+    flags: [['--forget', 'forgets the sign-in even if Kolab can\'t be reached or refuses to revoke it (unrevoked, it lapses within 30 days unused)'], ['--url <kolab>', 'the Kolab whose sign-in to end']],
     examples: ['kolab logout', 'kolab logout --forget --url https://kolab.example.com/mcp'],
   },
   connect: {
@@ -52,6 +55,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ['--url <kolab>', 'the Kolab, by default the project\'s (.konjir.json), else https://kolab.konjir.com/mcp'],
     ],
     examples: ['kolab connect claude --kolab anns', 'kolab connect claude --kolab anns --agent pm:product --agent dev:engineer --dry-run'],
+    values: ['--agent'],
   },
   claude: {
     usage: ['kolab claude <label> [claude\'s arguments…]'],
@@ -78,6 +82,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     ],
     examples: ['kolab work --once', 'kolab work --jobs 2 -C ~/src/orders'],
     connects: true,
+    values: ['--jobs', '--machine', '--harness', '--repo', '-C'],
   },
   'work deliver': {
     usage: [
@@ -103,16 +108,18 @@ export const COMMANDS: Record<string, CommandHelp> = {
     examples: ['kolab work deliver kj:orders-pg#W1 --submit --pr https://github.com/acme/orders/pull/7 --test "npm test: 212 passed"',
       'kolab work deliver kj:orders-pg#W1 --release https://github.com/acme/orders/actions/runs/123'],
     connects: true,
+    values: ['--pr', '--test', '--check', '--note', '--since', '--release', '--commit', '--title', '--repo', '-C'],
   },
   'work guard': {
     usage: ['kolab work guard --branch <the default branch>'],
     does: 'A job\'s guard hook: Claude Code runs it before each shell command in a job, with the command on stdin, and it denies (exit 2) a push that deletes, forces, mirrors or reaches the default branch, merging, gh api and terraform. It talks to no Kolab. kolab work writes it into each job\'s settings; it isn\'t run by hand.',
     flags: [['--branch <branch>', 'the repository\'s default branch']],
     examples: ['echo \'{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}\' | kolab work guard --branch main'],
+    values: ['--branch'],
   },
   'repo register': {
     usage: ['kolab repo register [--binding <binding>] [--url <url>] [--root <sha>] [-C <dir>]'],
-    does: 'In a checkout, as a person with Maintain or Admin (never an agent): registers its repository for the binding, pinned by its root commit. Its own --url is the repository\'s: Kolab\'s comes from KONJIR_URL, the project\'s .konjir.json, or a --url before repo.',
+    does: 'In a checkout, as a person with Maintain or Admin (never an agent): registers its repository for the binding, pinned by its root commit. Its own --url is the repository\'s: Kolab\'s comes from a --url before repo, KONJIR_URL or the project\'s .konjir.json.',
     flags: [
       ['--binding <binding>', 'the binding the repository builds'],
       ['--url <url>', 'the repository\'s URL (its remote\'s by default)'],
@@ -120,7 +127,9 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ['-C <dir>', 'the checkout (this folder by default)'],
     ],
     examples: ['kolab repo register --binding orders-pg'],
-    connects: true,
+    // After repo, --url is the repository's.
+    connects: 'Connection: Kolab\'s URL is a --url given before repo (kolab --url <kolab> repo register …), else KONJIR_URL, else the project\'s .konjir.json, else this build\'s default; --token <token> or KONJIR_TOKEN, and with no token, the sign-in kolab login keeps for that URL.',
+    values: ['--binding', '--url', '--root', '-C'],
   },
   status: {
     usage: ['kolab status [--json]'],
@@ -135,6 +144,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     flags: [['--dry-run', 'writes nothing and says what it would do'], ['--update', 'drafts the file\'s version of a node whose latest committed version differs, as a new version reviewed as any is']],
     examples: ['kolab import kolab.json --dry-run'],
     connects: true,
+    values: ['--json'],
     verb: 'import',
   },
   serve: {
@@ -151,6 +161,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ['--quiet', 'doesn\'t print the admin token a local Kolab makes'],
     ],
     examples: ['bin/kolab serve', 'bin/kolab serve --database-url postgres://localhost/kolab --no-migrate --no-worker'],
+    values: ['--port', '--data', '--database-url', '--admin-token', '--public-host', '--review'],
   },
   watch: {
     usage: ['kolab watch [--once]'],
@@ -171,6 +182,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     flags: [['reviewer', 'the reviewer\'s instructions instead']],
     examples: ['kolab instructions', 'kolab instructions reviewer'],
     connects: true,
+    values: ['--json'],
     verb: 'instructions',
   },
   help: {
@@ -183,6 +195,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     does: 'Resolves an address, kj:[<kolab>/]<node>[@<version>][#<element>]: konjir_resolve address=<address>.',
     examples: ['kolab resolve kj:orders#R1'],
     connects: true,
+    values: ['--json'],
     verb: 'resolve',
   },
   read: {
@@ -190,6 +203,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     does: 'Reads a node, at its latest committed version or the one given: konjir_read_node node=<node> [version=<n>].',
     examples: ['kolab read orders', 'kolab read orders 3'],
     connects: true,
+    values: ['--json'],
     verb: 'read_node',
   },
   stale: {
@@ -197,6 +211,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     does: 'Lists what is stale on your layer, or with all on every layer: konjir_list_stale [all_layers=true].',
     examples: ['kolab stale all'],
     connects: true,
+    values: ['--json'],
     verb: 'list_stale',
   },
   queries: {
@@ -204,6 +219,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     does: 'Lists the open questions and notes on your layer, or with all on every layer: konjir_list_queries [all_layers=true].',
     examples: ['kolab queries'],
     connects: true,
+    values: ['--json'],
     verb: 'list_queries',
   },
 };
@@ -221,25 +237,24 @@ export function commandHelp(name: string): string {
     h.examples.length === 1 ? 'Example:' : 'Examples:',
     ...h.examples.map((e) => `  ${e}`),
     ...(h.verb ? ['', `It calls the verb konjir_${h.verb}, and takes its own form too, key=value or --json: kolab help konjir_${h.verb} gives its parameters.`] : []),
-    ...(h.connects ? ['', CONNECTION] : []),
+    ...(h.connects ? ['', typeof h.connects === 'string' ? h.connects : CONNECTION] : []),
   ].join('\n');
 }
 
 /** `kolab <verb> --help` with no sign-in and no token: how to see the verb's parameters, said without asking Kolab. */
 export function verbHelpOffline(verb: string): string {
   const name = verb.replace(/^konjir_/, '');
+  // kolab help import is the command's help: the verb's is kolab help konjir_import.
+  const asked = Object.hasOwn(COMMANDS, name) ? `konjir_${name}` : name;
   return [
     `kolab ${name} [key=value …]   (or --json '{…}')`,
     '',
-    `Calls the verb konjir_${name} on Kolab. Its parameters are Kolab's, and kolab keeps no sign-in or token to ask Kolab for them: sign in (kolab login, or set KONJIR_TOKEN), then run kolab help ${name}, or kolab tools for every verb. docs/verbs.md in github.com/konjir/kolab lists them too.`,
+    `Calls the verb konjir_${name} on Kolab. Its parameters are Kolab's, and kolab keeps no sign-in or token to ask Kolab for them: sign in (kolab login, or set KONJIR_TOKEN), then run kolab help ${asked}, or kolab tools for every verb. docs/verbs.md in github.com/konjir/kolab lists them too.`,
   ].join('\n');
 }
 
 const HELP = ['--help', '-h'];
-/** The flags, any command's, that take a value: a --help or -h after one is that value, not a request for help. */
-const TAKES_VALUE = new Set(['--url', '--token', '--kolab', '--role', '--agent', '--port', '--data', '--admin-token', '--public-host', '--database-url', '--review',
-  '--binding', '--root', '--pr', '--test', '--check', '--note', '--since', '--repo', '--release', '--commit', '--title', '--jobs', '--machine', '--harness', '--branch', '--json', '-C']);
-/** The flags kolab takes for every command, before or after it. */
+/** The flags kolab takes for every command, before or after it; each takes a value. */
 const GLOBAL = ['--url', '--token', '--kolab'];
 
 /** The command `words` name, two words for the subcommands (work deliver, work guard, repo register), or undefined for a verb Kolab serves. */
@@ -278,9 +293,10 @@ export function helpRequest(argv: string[]): { command: string } | { verb: strin
   }
   if (cmd === 'claude') return HELP.includes(rest[0]) ? { command: 'claude' } : undefined;
   if (cmd === '--version') return undefined;
-  const asked = rest.some((a, k) => HELP.includes(a) && !TAKES_VALUE.has(rest[k - 1]));
-  if (!asked) return undefined;
   const command = commandOf([cmd, ...rest]);
+  // A verb Kolab serves takes key=value, or --json and its object.
+  const values = new Set([...GLOBAL, ...(command ? COMMANDS[command].values ?? [] : ['--json'])]);
+  if (!rest.some((a, k) => HELP.includes(a) && !values.has(rest[k - 1]))) return undefined;
   if (command) return { command };
   return { verb: cmd, argv: [...argv.slice(0, at), ...globals(rest), 'help', cmd] };
 }

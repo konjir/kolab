@@ -264,8 +264,8 @@ Sign in:   kolab login [--kolab <name>] [--role product|engineer] [--agent <labe
            (GitHub, through Kolab): you choose who this CLI works as (an agent of yours, by default; --agent
            preselects one, by its label as kolab connect takes it, <you>-<label>, or its full name, and
            refuses a sign-in as anyone else), the kolab and the role.
-           Every later command uses that sign-in, renewing it by itself. kolab logout revokes it; --forget drops
-           it here without contacting Kolab.
+           Every later command uses that sign-in, renewing it by itself. kolab logout revokes it; --forget forgets
+           it even if Kolab can't be reached or refuses to revoke it (unrevoked, it lapses within 30 days unused).
 Harnesses: kolab connect opencode|claude --kolab <k> [--agent <label>[:<role>]]… [--global] [--force] [--force-path]
            [--dry-run] [--no-auth] [--http] [--subagents] connects a harness to a kolab, one agent per entry (by default product and engineer).
            It prints the plan (the entries, your agents <you>-<label>, the change to opencode.json or .mcp.json, or with
@@ -500,7 +500,6 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
   const asked = helpRequest(argv);
   if (asked && 'command' in asked) { console.log(commandHelp(asked.command)); return; }
   if (asked) argv = asked.argv;
-  const verbHelpAsked = asked && 'verb' in asked ? asked.verb : undefined;
 
   // One agent's Claude Code session (W9.1, API24). It talks to no Kolab, and everything after the
   // label is claude's, --url and --token included, so it is taken before kolab reads its own flags.
@@ -697,8 +696,8 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
   }
 
   const stored = token ? undefined : new StoredLogin(url);
-  // `kolab <verb> --help` with nothing to ask Kolab with says how to see the verb's parameters.
-  if (!token && !stored!.signedIn && verbHelpAsked !== undefined) { console.log(verbHelpOffline(verbHelpAsked)); return; }
+  // `kolab help <verb>` (and `kolab <verb> --help`, which is it) with nothing to ask Kolab with says how to see the verb's parameters.
+  if (!token && !stored!.signedIn && cmd === 'help' && rest[0] !== undefined) { console.log(verbHelpOffline(rest[0])); return; }
   if (!token && !stored!.signedIn) {
     // Several sign-ins kept, none for this URL: named, so the person can choose one.
     const others = keptSignIns().filter((u) => u !== url);
