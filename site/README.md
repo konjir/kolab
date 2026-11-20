@@ -4,7 +4,7 @@ The marketing site at `https://www.konjir.com` (D81), with a section for each pr
 
 | Page | Source |
 | --- | --- |
-| `/`, the org page | `src/www/main.html`: the page's `<main>`, written as an artboard's is (inline styles, nothing the build refuses), until the org page has an artboard of its own (the plan's step 3) |
+| `/`, the org page | `src/www/main.html`: the page's `<main>`, written as an artboard's is (inline styles, nothing the build refuses): what Konjir is, a card for each product, and which one you need, until the org page has an artboard of its own |
 | `/kolab/`, Kolab's page | `src/kolab/project/Main.dc.html`, the artboard, on the claude.ai design runtime, with each image it names as `/_blob/<id>` in `src/kolab/images/<id>.<ext>` |
 | `/kolab/hands-on/`, the hands-on tutorial | `src/kolab/hands-on.md`, in the subset of Markdown that `deploy/site/markdown.mjs` renders |
 | `/konnect/`, konnect's page | `src/konnect/main.html`: the page's `<main>`, written as the org page's is, until konnect has an artboard of its own |
