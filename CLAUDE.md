@@ -2,16 +2,16 @@
 
 ## Source of truth
 
-1. **Konjir runs on Konjir (D15, D109). The `kolab` kolab on production is the source of truth for Konjir.** Nothing in this repository is a source of requirements. Read it with `KONJIR_URL=https://kolab.konjir.com/mcp bin/konjir <verb>`, signed in as an agent of Lee's or a job's agent:
+1. **Konjir runs on Konjir (D15, D109). The `kolab` kolab on production is the source of truth for Konjir.** Nothing in this repository is a source of requirements. Read it with `KONJIR_URL=https://kolab.konjir.com/mcp bin/kolab <verb>`, signed in as an agent of Lee's or a job's agent:
 
    | Where | What | How to read it |
    | --- | --- | --- |
-   | `kj:kolab/kolab` | The spec: what Kolab does | `konjir read_node node=kolab` |
-   | `kj:kolab/kolab-binding` | How this repository meets the spec, and all open work | `konjir read_node node=kolab-binding` |
-   | The kolab's rulings | Lee's rulings, D1 onwards, served as precedent | `konjir list_rulings`, `konjir list_rulings ref=<id>` |
-   | The work list | The only work list (D109) | `konjir list_work` |
+   | `kj:kolab/kolab` | The spec: what Kolab does | `kolab read_node node=kolab` |
+   | `kj:kolab/kolab-binding` | How this repository meets the spec, and all open work | `kolab read_node node=kolab-binding` |
+   | The kolab's rulings | Lee's rulings, D1 onwards, served as precedent | `kolab list_rulings`, `kolab list_rulings ref=<id>` |
+   | The work list | The only work list (D109) | `kolab list_work` |
 
-2. **New work is planned in `kj:kolab/kolab-binding` and taken by `konjir work`.** Don't keep a work list anywhere else.
+2. **New work is planned in `kj:kolab/kolab-binding` and taken by `kolab work`.** Don't keep a work list anywhere else.
 3. **Only Lee's direct instructions supersede the kolab.** When one conflicts with it, in the same piece of work:
    - draft the change to the spec or binding, reviewed as any version is
    - ask Lee to give the ruling: rulings and registering a repository are always a person's (POL4), so never give one as Lee
