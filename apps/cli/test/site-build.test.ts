@@ -248,6 +248,27 @@ test("every page has the one header: the mark links to /, the product switcher m
   expect(read(r, 'konnect/index.html')).toContain('npm i -g @konjir/konnect');
 });
 
+test("konnect's page is its <main>, in the shared header and footer: the install line, the three commands, an agent woken by a message, what it needs, and its links", () => {
+  const r = copy('konnect');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const page = read(r, 'konnect/index.html');
+  expect(page).toMatch(/<h1 id="konnect-title"[^>]*>Chat for your team’s people and their AI agents\.<\/h1>/);
+  expect(page).toMatch(/<meta name="description" content="konnect works from the command line, across machines\. [^"]*">/);
+  // The same stylesheet and script as every page, and no inline style or other script.
+  expect(assetsOf(r)).toStrictEqual([...page.matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort());
+  expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
+  expect([...page.matchAll(/<script\b/g)]).toHaveLength(1);
+  for (const command of ['konnect team create acme', 'konnect team invite sam', 'konnect login', 'konnect receive', 'konnect send @sam/reviewer', 'konnect agent run reviewer claude', 'npx @konjir/konnect']) expect(page).toContain(command);
+  // Output as konnect prints it, escaped.
+  expect(page).toContain('Invite people with: konnect team invite &lt;github-user&gt;');
+  expect(page).toContain('Sent to @sam/reviewer.');
+  for (const harness of ['Claude Code', 'Codex', 'OpenCode']) expect(page).toContain(`>${harness}</h3>`);
+  for (const href of ['/konnect/guide/', 'https://github.com/konjir/kolab/blob/main/apps/konnect/man/konnect.1', 'https://www.npmjs.com/package/@konjir/konnect']) expect(page).toContain(`<a href="${href}"`);
+  // It ends with the shared footer, as the guide does.
+  expect(page).toContain('<nav aria-label="Footer"');
+});
+
 test('every page names its canonical URL on www, with Open Graph and Twitter tags; the sitemap lists them all, robots.txt names it, and the 404 page is noindex', () => {
   const r = copy('seo');
   const b = build(r);
@@ -262,10 +283,12 @@ test('every page names its canonical URL on www, with Open Graph and Twitter tag
     expect(html).toContain(`<meta name="twitter:title" content="${title}">`);
     expect(html).toContain(`<meta property="og:description" content="${description}">`);
     expect(html).toContain(`<meta name="twitter:description" content="${description}">`);
-    expect(html).toContain('<meta property="og:image" content="https://www.konjir.com/og/www.jpg">');
+    // konnect's pages name konnect's own image; every other page the org page's.
+    expect(html).toContain(`<meta property="og:image" content="https://www.konjir.com/og/${file.startsWith('konnect/') ? 'konnect' : 'www'}.jpg">`);
     expect(html).toContain('<meta name="twitter:card" content="summary_large_image">');
   }
-  expect(readFileSync(join(r, 'site/og/www.jpg')).subarray(0, 3)).toStrictEqual(Buffer.from([0xff, 0xd8, 0xff]));
+  for (const og of ['www', 'konnect']) expect(readFileSync(join(r, `site/og/${og}.jpg`)).subarray(0, 3)).toStrictEqual(Buffer.from([0xff, 0xd8, 0xff]));
+  expect(read(r, 'konnect/index.html')).toContain('<meta property="og:image:alt" content="konnect: chat for your team’s people and their AI agents, from the command line. npm i -g @konjir/konnect">');
   expect(read(r, 'sitemap.xml')).toBe(
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${PAGES.map(([, url]) => `<url><loc>${url}</loc></url>\n`).join('')}</urlset>\n`,
   );

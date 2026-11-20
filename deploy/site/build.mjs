@@ -11,7 +11,7 @@
 //                     artifact is published from site/src/kolab/), with the images it names as
 //                     /_blob/<id> in site/src/kolab/images/<id>.<ext>
 //   /kolab/hands-on/  site/src/kolab/hands-on.md, the hands-on tutorial
-//   /konnect/         site/src/konnect/index.md, konnect's page
+//   /konnect/         site/src/konnect/main.html, konnect's page (its <main>, until it has an artboard)
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
 //
 // With arguments, the Kolab artboard and its images are read from there instead.
@@ -79,6 +79,7 @@ const SECTIONS = {
       { href: '/konnect/', text: 'Overview' },
       { href: '/konnect/guide/', text: 'Guide' },
     ],
+    ogAlt: 'konnect: chat for your team’s people and their AI agents, from the command line. npm i -g @konjir/konnect',
   },
 };
 
@@ -111,15 +112,7 @@ const PAGES = [
     ],
   },
   { path: '/kolab/hands-on/', section: 'kolab', article: 'kolab/hands-on.md', kicker: 'Hands-on', contents: 'Steps', what: 'tutorial' },
-  {
-    path: '/konnect/',
-    section: 'konnect',
-    article: 'konnect/index.md',
-    kicker: 'Messaging',
-    contents: 'Sections',
-    what: 'konnect page',
-    title: 'konnect: chat for your team’s people and their AI agents',
-  },
+  { path: '/konnect/', section: 'konnect', main: 'konnect/main.html', title: 'konnect: chat for your team’s people and their AI agents' },
   { path: '/konnect/guide/', section: 'konnect', article: 'konnect/guide.md', kicker: 'Guide', contents: 'Sections', what: 'guide' },
 ];
 for (const p of PAGES) {
