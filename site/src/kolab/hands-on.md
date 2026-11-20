@@ -1,6 +1,6 @@
 # Write a spec, then build it with a team of agents
 
-In about an hour you put a small product on Konjir and build it with AI agents: one writes the functional spec, one reviews it for you to approve, and one binds it to a stack and plans the work. Then your machine builds it: `konjir work` takes each piece of work from Kolab as a job, a build, a review, a mark to settle, and gives it to an agent of yours that does that one item and exits. Then you change one requirement and watch Konjir mark exactly the part of the binding, and the finished work, that relied on it.
+In about an hour you put a small product on Konjir and build it with AI agents: one writes the functional spec, one reviews it for you to approve, and one binds it to a stack and plans the work. Then your machine builds it: `kolab work` takes each piece of work from Kolab as a job, a build, a review, a mark to settle, and gives it to an agent of yours that does that one item and exits. Then you change one requirement and watch Konjir mark exactly the part of the binding, and the finished work, that relied on it.
 
 The product is **Linkly**, a link shortener whose links expire. Every command and prompt here is meant to be pasted as it is. Each step says what you should see. The agents' wording will differ from run to run, but what Konjir does won't.
 
@@ -10,22 +10,22 @@ You need:
 
 - a GitHub account, to sign up, and the [GitHub CLI](https://cli.github.com), `gh`, signed in to it (`gh auth login`): the jobs push their branches to a repository of yours and open pull requests there
 - [Claude Code](https://code.claude.com), signed in with a claude.ai account (channels, which push each agent's inbox into its session, don't work with an API key; everything else does). The jobs run it too, headless, on your account
-- macOS or Linux: `konjir work` doesn't run on Windows yet
+- macOS or Linux: `kolab work` doesn't run on Windows yet
 - Node.js 22.13 or later (the code uses `node:sqlite`, which earlier releases of Node 22 keep behind a flag), git, and `jq`
 
-The `konjir` CLI is on npm. Install the version this tutorial was written for into a folder of its own, with nothing global and nothing to clone:
+The `kolab` CLI is on npm, as `@konjir/kolab`. Install the version this tutorial was written for into a folder of its own, with nothing global and nothing to clone:
 
 ```sh
-npm install --prefix ~/.konjir konjir@0.8.0
+npm install --prefix ~/.konjir @konjir/kolab@0.9.0
 ```
 
-Step 1 puts it on your `PATH`. A quick `npx konjir@0.8.0 …` runs the same package, but this tutorial keeps `konjir work` running for a long time and stops it with Ctrl-C, which reaches a konjir started by `npx` twice and so stops its jobs without giving back what they held. An installed konjir gets it once.
+Step 1 puts it on your `PATH`. A quick `npx @konjir/kolab@0.9.0 …` runs the same package, but this tutorial keeps `kolab work` running for a long time and stops it with Ctrl-C, which reaches a kolab started by `npx` twice and so stops its jobs without giving back what they held. An installed kolab gets it once.
 
 ## 1. Make the repository
 
 A kolab holds one project: its one spec, the bindings built on it, each holding its decisions and the work packages that build it, and the questions between them. You don't make yours on the web: step 2 makes it, with your agents, on one page. Choose its name now: `linkly-` and your GitHub login, for example `linkly-ada`. Names are unique across Konjir.
 
-Make the code repository, and a small file that sets up each terminal you'll use: your names, Kolab's URL, the `konjir` command (for you, and for the agents' shells and the jobs), and the `agent` command that starts an agent's session (step 2):
+Make the code repository, and a small file that sets up each terminal you'll use: your names, Kolab's URL, the `kolab` command (for you, and for the agents' shells and the jobs), and the `agent` command that starts an agent's session (step 2):
 
 ```sh
 mkdir ~/linkly && cd ~/linkly && git init
@@ -34,8 +34,8 @@ cat > konjir.sh <<'EOF'
 export ME=ada              # your Konjir name
 export KOLAB=linkly-ada    # your kolab
 export KONJIR_URL=https://kolab.konjir.com/mcp
-export PATH="$HOME/.konjir/node_modules/.bin:$PATH"   # konjir, here and in the agents' shells
-# Where konjir connect keeps each agent's sign-in, one file per agent
+export PATH="$HOME/.konjir/node_modules/.bin:$PATH"   # kolab, here and in the agents' shells
+# Where kolab connect keeps each agent's sign-in, one file per agent
 export KJ_AGENTS="${XDG_CONFIG_HOME:-$HOME/.config}/konjir/agents"
 # agent <label>: Claude Code with only that agent's Konjir server, and its channel
 agent() {
@@ -70,31 +70,31 @@ Each agent is an actor of its own, owned by you. It gets no more access than you
 | `<you>-architect` | engineer | binds the spec to a stack and plans the work |
 | `<you>-engineer-1`, `-2`, … | engineer | your pool: Kolab makes them as your machine's jobs need them (step 6); each job builds, reviews or settles one item, then exits |
 
-You talk to the first three in Claude Code sessions of your own. You never start the pool's: `konjir work` does, one job per item.
+You talk to the first three in Claude Code sessions of your own. You never start the pool's: `kolab work` does, one job per item.
 
 One command makes your kolab and the three agents you talk to, and connects them to the repository:
 
 ```sh
 cd ~/linkly
-konjir connect claude --kolab $KOLAB \
+kolab connect claude --kolab $KOLAB \
   --agent spec-writer:product --agent spec-reviewer:product --agent architect:engineer
 ```
 
-konjir prints what it will do, then opens your browser once. Nothing is asked in the terminal.
+kolab prints what it will do, then opens your browser once. Nothing is asked in the terminal.
 
 1. **Sign in with GitHub**, if this browser isn't signed in already. The first time, that signs you up to Konjir.
-2. **Kolab's setup page**, “Set up 3 agents in linkly-ada”, names everything konjir asked for, with nothing to choose: the kolab, marked **New: made now, private, yours**, and each agent with its role, marked **New: made now**. Check them, then choose **Allow**.
+2. **Kolab's setup page**, “Set up 3 agents in linkly-ada”, names everything kolab asked for, with nothing to choose: the kolab, marked **New: made now, private, yours**, and each agent with its role, marked **New: made now**. Check them, then choose **Allow**.
 
 You should see:
 
 ```output
-konjir connect claude: kolab linkly-ada at https://kolab.konjir.com/mcp, 3 agents, one entry each (<you> is the name you sign in to Kolab as):
+kolab connect claude: kolab linkly-ada at https://kolab.konjir.com/mcp, 3 agents, one entry each (<you> is the name you sign in to Kolab as):
   konjir-spec-writer  as <you>-spec-writer, product
   konjir-spec-reviewer  as <you>-spec-reviewer, product
   konjir-architect  as <you>-architect, engineer
 
 Will write /Users/ada/linkly/.mcp.json: 3 entries, konjir-spec-writer, konjir-spec-reviewer, konjir-architect.
-Will write /Users/ada/linkly/.konjir.json: kolab linkly-ada at https://kolab.konjir.com/mcp, and no token, so later konjir commands here need no --kolab or --url, and it may be committed.
+Will write /Users/ada/linkly/.konjir.json: kolab linkly-ada at https://kolab.konjir.com/mcp, and no token, so later kolab commands here need no --kolab or --url, and it may be committed.
 
 Opening your browser at Kolab's setup page: sign in, check it names kolab linkly-ada and these 3 agents, then Allow. If it doesn't open, go to:
   https://kolab.konjir.com/oauth/authorize?…
@@ -104,14 +104,14 @@ Wrote /Users/ada/linkly/.mcp.json. It holds no token.
 Each agent is signed in, in its own file under /Users/ada/.config/konjir/agents.
 ...
 Start each agent's own Claude Code session, one terminal each, from /Users/ada/linkly:
-konjir claude spec-writer
-konjir claude spec-reviewer
-konjir claude architect
+kolab claude spec-writer
+kolab claude spec-reviewer
+kolab claude architect
 ```
 
 Those last lines start an agent's session too; this tutorial starts each with the `agent` command from step 1, which does the same.
 
-`Set up for ada` names you: if it isn't the name you put in `konjir.sh`, put this one there and load it again. `.mcp.json` now holds one Konjir server per agent, each the Konjir channel bridge, already signed in as its agent: no more pages open when you start them. It names paths on this machine, which is why `.gitignore` keeps it out of git. `.konjir.json` names only your kolab and Kolab's URL, so later `konjir` commands in this folder know both; it holds no path and no token, and you may commit it. Running the same command again is safe: it reuses the kolab and the agents, and signs them in afresh.
+`Set up for ada` names you: if it isn't the name you put in `konjir.sh`, put this one there and load it again. `.mcp.json` now holds one Konjir server per agent, each the Konjir channel bridge, already signed in as its agent: no more pages open when you start them. It names paths on this machine, which is why `.gitignore` keeps it out of git. `.konjir.json` names only your kolab and Kolab's URL, so later `kolab` commands in this folder know both; it holds no path and no token, and you may commit it. Running the same command again is safe: it reuses the kolab and the agents, and signs them in afresh.
 
 To see the kolab in the web page, open [kolab.konjir.com](https://kolab.konjir.com) and choose **Sign in with GitHub**: you own it, with Admin.
 
@@ -242,21 +242,21 @@ The answer comes back to the element that waited on it, as a `query_answered` ma
 
 ## 6. Build it
 
-Work is built in a git repository that the kolab knows, by jobs your machine runs. Kolab never reads git: you register the repository, pinned by its first commit, and `konjir work` and `konjir work deliver` refuse any other checkout. Only a person registers one, never an agent. Open a fourth terminal:
+Work is built in a git repository that the kolab knows, by jobs your machine runs. Kolab never reads git: you register the repository, pinned by its first commit, and `kolab work` and `kolab work deliver` refuse any other checkout. Only a person registers one, never an agent. Open a fourth terminal:
 
 ```sh
 . ~/linkly/konjir.sh && cd ~/linkly
-konjir login --kolab $KOLAB --role engineer
-konjir repo register --binding short-links-binding
-konjir work
+kolab login --kolab $KOLAB --role engineer
+kolab repo register --binding short-links-binding
+kolab work
 ```
 
-On Kolab's page, under **Work as**, choose **Yourself**, then **Allow**. This is your terminal's session; you hold one on each machine you sign in from, and your browser keeps its own, so the web page stays signed in. `konjir repo register` answers with the repository, `https://github.com/<your login>/linkly`, `"binding": "short-links-binding"` and `"confirmed": false`.
+On Kolab's page, under **Work as**, choose **Yourself**, then **Allow**. This is your terminal's session; you hold one on each machine you sign in from, and your browser keeps its own, so the web page stays signed in. `kolab repo register` answers with the repository, `https://github.com/<your login>/linkly`, `"binding": "short-links-binding"` and `"confirmed": false`.
 
-`konjir work` sets this machine to work, and keeps it working until you stop it with Ctrl-C. It checks that this checkout is the registered repository and fetches it from GitHub, then takes items from Kolab, up to 4 jobs at once: a review first, then a ready work package, then a question, note or mark on the technical layer, then a requirement no binding element serves yet. Each job is one of your pool agents, made the first time a job needs it, and runs Claude Code headless on your account, in a git worktree of its own under `~/.konjir/jobs`, with Kolab as its only MCP server. It does its one item and exits. It may edit files and run git, npm, npx, gh and konjir; it never merges, never pushes to the default branch and never deploys: those stay yours. You should see:
+`kolab work` sets this machine to work, and keeps it working until you stop it with Ctrl-C. It checks that this checkout is the registered repository and fetches it from GitHub, then takes items from Kolab, up to 4 jobs at once: a review first, then a ready work package, then a question, note or mark on the technical layer, then a requirement no binding element serves yet. Each job is one of your pool agents, made the first time a job needs it, and runs Claude Code headless on your account, in a git worktree of its own under `~/.konjir/jobs`, with Kolab as its only MCP server. It does its one item and exits. It may edit files and run git, npm, npx, gh and kolab; it never merges, never pushes to the default branch and never deploys: those stay yours. You should see:
 
 ```output
-konjir work: ada in kolab linkly-ada, on ada-laptop, in /Users/ada/linkly (https://github.com/ada/linkly, from origin); up to 4 jobs at once.
+kolab work: ada in kolab linkly-ada, on ada-laptop, in /Users/ada/linkly (https://github.com/ada/linkly, from origin); up to 4 jobs at once.
 job …: build kj:short-links-binding#W1 as ada-engineer-1, in /Users/ada/.konjir/jobs/…
 job …: mark … as ada-engineer-2, in /Users/ada/.konjir/jobs/…
 ...
@@ -270,10 +270,10 @@ waiting 30 s: …
 A job takes a few minutes. What each does:
 
 - **The mark.** The `query_answered` mark from step 5 is an item too. Its job checks the element against the answer: the binding already counts every visit, so it clears the mark, saying why.
-- **The build.** `W1` is ready: its binding is committed, and nothing open blocks it. Its job reads it, writes `server.js`, `package.json` and the tests, runs `npm test` until it passes, and commits on a branch of its own with the trailer that ties the commit to the package, `Konjir-Work: kj:linkly-ada/short-links-binding#W1` in our run. It pushes the branch and opens a pull request, then runs `konjir work deliver --submit`, which finds the commits that carry the trailer, checks that its checkout is the registered repository, records them and the pull request as the package's evidence and submits it. `W1` is In review.
-- **The review.** Another pool agent, never the one that built it, takes the review: it checks out the pull request, runs the tests, tries to break what they pin, and gives its verdict with a note saying what it ran. By default an agent may approve a work package. A request for changes sends `W1` back to the agent that built it, In progress, and the next job `konjir work` starts is that agent's, making the change the note asks for.
+- **The build.** `W1` is ready: its binding is committed, and nothing open blocks it. Its job reads it, writes `server.js`, `package.json` and the tests, runs `npm test` until it passes, and commits on a branch of its own with the trailer that ties the commit to the package, `Konjir-Work: kj:linkly-ada/short-links-binding#W1` in our run. It pushes the branch and opens a pull request, then runs `kolab work deliver --submit`, which finds the commits that carry the trailer, checks that its checkout is the registered repository, records them and the pull request as the package's evidence and submits it. `W1` is In review.
+- **The review.** Another pool agent, never the one that built it, takes the review: it checks out the pull request, runs the tests, tries to break what they pin, and gives its verdict with a note saying what it ran. By default an agent may approve a work package. A request for changes sends `W1` back to the agent that built it, In progress, and the next job `kolab work` starts is that agent's, making the change the note asks for.
 
-To see where things stand, run `konjir status` in another terminal: the queue, the jobs running and who runs them. In [kolab.konjir.com](https://kolab.konjir.com), as **engineer**, `W1` shows its done-when, who built it, and its evidence: the commit by its SHA, the pull request and the test run. You can review it there too: you hold Write on the technical layer, so its review waits for you as well, and the first verdict counts.
+To see where things stand, run `kolab status` in another terminal: the queue, the jobs running and who runs them. In [kolab.konjir.com](https://kolab.konjir.com), as **engineer**, `W1` shows its done-when, who built it, and its evidence: the commit by its SHA, the pull request and the test run. You can review it there too: you hold Write on the technical layer, so its review waits for you as well, and the first verdict counts.
 
 Once it's approved, `W1` is Done. If a review job approved it, the page says the repository is confirmed: an approval by someone other than its registrant (you) and the package's builder confirms it. If you approved it yourself, it stays unconfirmed, since you registered it. The code points at the binding by address, never by copying it. Read the change, then merge it yourself, since a job never merges; it is the repository's first pull request, so its number is 1:
 
@@ -285,11 +285,11 @@ grep -n "kj:" server.js
 git log -1 --format='%h %s%n%(trailers:key=Konjir-Work)' HEAD^2
 ```
 
-`W1` was Done at its approval because nothing deploys Linkly. A work package whose work field says `release: true`, one that counts as done only once it is deployed, stays In review, approved, until its release is recorded: after the deploy, someone with Write on the technical layer other than its assignee (the agent that built it) runs `konjir work deliver kj:short-links-binding#W1 --release <the deploy run's URL>` in a checkout of the repository, from an engineer session outside any job (your terminal's, say). The run is a GitHub Actions run of the registered repository, and the release names it and the commit it deployed. That makes it Done.
+`W1` was Done at its approval because nothing deploys Linkly. A work package whose work field says `release: true`, one that counts as done only once it is deployed, stays In review, approved, until its release is recorded: after the deploy, someone with Write on the technical layer other than its assignee (the agent that built it) runs `kolab work deliver kj:short-links-binding#W1 --release <the deploy run's URL>` in a checkout of the repository, from an engineer session outside any job (your terminal's, say). The run is a GitHub Actions run of the registered repository, and the release names it and the commit it deployed. That makes it Done.
 
 ## 7. Change the spec
 
-First stop `konjir work`: press Ctrl-C in its terminal. It stops any job still running and gives back what that job held. Left running, it would take each mark this step makes as a job of its own and settle it; stopped, the marks wait for you to see them, and step 8 settles them in order.
+First stop `kolab work`: press Ctrl-C in its terminal. It stops any job still running and gives back what that job held. Left running, it would take each mark this step makes as a job of its own and settle it; stopped, the marks wait for you to see them, and step 8 settles them in order.
 
 Product decides that a link with no chosen duration lasts 1 day, not 7. In the **spec-writer** session:
 
@@ -321,12 +321,12 @@ You are the engineer for Linkly. You work in Konjir through your konjir tools, a
 The spec changed. Run konjir_list_stale and settle every mark on your layer. For a binding element, read what changed with konjir_read_node; where it still holds, konjir_clear_mark it; where it doesn't, revise it with a delta that keeps its ID, and submit the new version of short-links-binding for review. For a work package that is Done and at risk, look at the files its revisit names: if the code still holds, clear its mark; if it doesn't, reopen it with konjir_reopen_work, and don't rebuild it until the binding it builds is committed. Tell me, for each mark, what you did and why.
 ```
 
-A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 on Kolab's page, as **engineer**: next to **Working as**, switch to **engineer**, open **Reviews**, then `short-links-binding` version 2 under **Waiting for your review**, read what changed, and choose **Approve**. (Had `konjir work` been running, a review job could have given that approval.)
+A marked decision that still holds (in our run, the one about storage) has its mark cleared. The one that said the default was 7 days is revised, keeping its ID, and `short-links-binding` version 2 goes into review. The code no longer holds either, so it reopens `W1`, which settles its mark and puts it back to To do. Approve version 2 on Kolab's page, as **engineer**: next to **Working as**, switch to **engineer**, open **Reviews**, then `short-links-binding` version 2 under **Waiting for your review**, read what changed, and choose **Approve**. (Had `kolab work` been running, a review job could have given that approval.)
 
 Then set your machine to work again, in its terminal:
 
 ```sh
-konjir work
+kolab work
 ```
 
 `W1` is ready again, so a build job takes it, starting from the code you merged: it changes the default and its test, commits with the same trailer, opens a second pull request and delivers it. Only this round's commits are sent; the first round's stay recorded as they were. A review job approves it, or sends it back. When `W1` is Done, merge the second pull request as before:
@@ -341,56 +341,56 @@ That's the loop: intent stated once, a binding pinned to it, work packages built
 
 ## Troubleshooting
 
-- **The browser didn't open.** konjir prints the sign-in URL; open it yourself.
-- **`--kolab …: a kolab's name is lowercase letters, digits and '-'`.** konjir refuses a name no kolab can have before it opens anything. Use lowercase letters, digits and `-`, starting with a letter or digit, at most 40 for a new kolab.
-- **The setup page says `This setup can't be allowed`, with only Deny.** It says why, and so does `konjir connect` once you choose **Deny**; nothing is made or written. The usual one: `a kolab named linkly-ada already exists, and you can't reach it`. Kolab names are unique across Konjir, so someone has it. The page lists the kolabs you do reach, and if one of yours has that name as its title, it says so: use that kolab's name instead. Otherwise choose another name, put it in `konjir.sh` as `KOLAB`, and run `konjir connect` again.
-- **`you denied the setup on Kolab's page`.** You chose **Deny**. Nothing was made or written; run `konjir connect` again and choose **Allow**.
-- **`you have … live agents, and this would make … more`.** A person holds at most 10 live agents. The message names yours, least recently used first, with the day each last used Kolab; `konjir list_agents` lists them too, with their kolabs and whether one is signed in now. Archive ones you no longer use (`konjir archive_agent label=<label>`, signed in as yourself), or name fewer.
-- **Kolab's sign-in page says `It asks for the kolab …, and you can't reach a kolab of that name`.** `--kolab` takes a kolab's name, not its title. If one of yours has that title, the page asks `Did you mean …?`: choose that kolab on the page, or deny and run `konjir login --kolab <its name>` again.
+- **The browser didn't open.** kolab prints the sign-in URL; open it yourself.
+- **`--kolab …: a kolab's name is lowercase letters, digits and '-'`.** kolab refuses a name no kolab can have before it opens anything. Use lowercase letters, digits and `-`, starting with a letter or digit, at most 40 for a new kolab.
+- **The setup page says `This setup can't be allowed`, with only Deny.** It says why, and so does `kolab connect` once you choose **Deny**; nothing is made or written. The usual one: `a kolab named linkly-ada already exists, and you can't reach it`. Kolab names are unique across Konjir, so someone has it. The page lists the kolabs you do reach, and if one of yours has that name as its title, it says so: use that kolab's name instead. Otherwise choose another name, put it in `konjir.sh` as `KOLAB`, and run `kolab connect` again.
+- **`you denied the setup on Kolab's page`.** You chose **Deny**. Nothing was made or written; run `kolab connect` again and choose **Allow**.
+- **`you have … live agents, and this would make … more`.** A person holds at most 10 live agents. The message names yours, least recently used first, with the day each last used Kolab; `kolab list_agents` lists them too, with their kolabs and whether one is signed in now. Archive ones you no longer use (`kolab archive_agent label=<label>`, signed in as yourself), or name fewer.
+- **Kolab's sign-in page says `It asks for the kolab …, and you can't reach a kolab of that name`.** `--kolab` takes a kolab's name, not its title. If one of yours has that title, the page asks `Did you mean …?`: choose that kolab on the page, or deny and run `kolab login --kolab <its name>` again.
 - **`you ran 3 setups that made agents in the last 10 minutes`.** One setup makes as many agents as you name, but at most 3 setups that make agents run in 10 minutes. Wait, then run it again: it reuses what it already made.
 - **`a product session may not write the technical layer` when you approve the binding.** Switch to **engineer** next to **Working as**, then approve.
 - **A version waits and nobody is asked.** A review request reaches only those who work in the layer's role, and whom the kolab's policy lets approve it: a spec is a person's to approve by default. “Nobody else can review the functional layer yet” means no one who may is working as product: review it yourself in that role.
-- **`kolab …'s policy keeps reviewing functional versions for a person` when the spec-reviewer reviews.** By default only a person approves a spec. Have it tell you its verdict, and give it yourself on Kolab's page, as in step 3. An Admin of the kolab can change that (`konjir set_policy approve_functional=agent`, signed in as yourself), but the default keeps intent with you.
+- **`kolab …'s policy keeps reviewing functional versions for a person` when the spec-reviewer reviews.** By default only a person approves a spec. Have it tell you its verdict, and give it yourself on Kolab's page, as in step 3. An Admin of the kolab can change that (`kolab set_policy approve_functional=agent`, signed in as yourself), but the default keeps intent with you.
 - **`an agent answers a question on the functional layer only by citing`, or `is not its own source`.** An agent answered a question about the spec without citing a committed source other than the requirement it asks about. Answer it yourself on Kolab's page, as product, as in step 5, or have the agent cite the other requirement or ruling that settles it.
-- **An agent says its channel has no sign-in.** It names the command that signs it in, `KONJIR_CREDENTIALS=… konjir login --url https://kolab.konjir.com/mcp --agent <agent>`. Run it in another terminal; the channel picks the sign-in up by itself.
-- **Agents keep signing each other out.** An agent holds one session at a time. Don't also add Kolab's HTTP server (`claude mcp add … /mcp`) as the same agent, and don't run `konjir login` as an agent that a session uses.
+- **An agent says its channel has no sign-in.** It names the command that signs it in, `KONJIR_CREDENTIALS=… kolab login --url https://kolab.konjir.com/mcp --agent <agent>`. Run it in another terminal; the channel picks the sign-in up by itself.
+- **Agents keep signing each other out.** An agent holds one session at a time. Don't also add Kolab's HTTP server (`claude mcp add … /mcp`) as the same agent, and don't run `kolab login` as an agent that a session uses.
 - **No `← konjir:` messages arrive.** Channels need Claude Code signed in with a claude.ai account, the development-channels flag, and an interactive session; on Team and Enterprise plans an admin enables channels first. The tools work without them: ask the agent to check its inbox with `konjir_list_reviews`, `konjir_list_queries` and `konjir_list_stale`.
-- **`this checkout tracks …, not …` or `is no repository registered in this kolab`.** `konjir work` and `konjir work deliver` run only in a checkout whose first commit and remote are the registered repository's. Check that `git remote -v` shows the GitHub repository you made in step 1, and run them in `~/linkly`.
-- **`this session is …, an agent: konjir work runs as a person`.** `konjir work` runs as you, and your pool agents do the jobs. Run `konjir login --kolab $KOLAB --role engineer` and choose **Yourself** on Kolab's page, with no `KONJIR_TOKEN` or `KONJIR_CREDENTIALS` set.
-- **`konjir work couldn't fetch origin`.** It fetches the repository before it takes anything, with your own git credentials. Check that `git fetch origin` works in `~/linkly`, and that step 1's `gh repo create` pushed.
-- **`the harness claude isn't on PATH`.** The jobs run Claude Code. Install it, or start `konjir work` from a terminal whose `PATH` finds `claude`.
-- **`konjir work` says `nothing taken: …` or `waiting 30 s: …`.** Nothing is ready for a job, and it says why: `W1` waits while a question on a requirement it builds is open, say. It looks again by itself, at once when your inbox changes.
-- **A job ended `failed`, or `released`.** Its item went back to Kolab for another job, or, when it needs a person, to you, with the job's note saying what you must decide. Each job's log is `~/.konjir/jobs/<job>.log`, and `konjir status` shows the queue and the jobs running.
-- **`every pool agent of yours that could take it is busy, and you have … live agents`.** Your pool agents count among your 10 live agents. Archive agents you no longer use (`konjir archive_agent label=<label>`, signed in as yourself), or wait for a job to end.
-- **`a person with Maintain or Admin registers it` when an agent tries.** Registering a repository is always a person's act. Run `konjir repo register` yourself, signed in as yourself (step 6).
-- **`konjir repo register`, `konjir work` or `konjir set_work_lease` acts on the wrong kolab.** A sign-in works in one kolab, and these act in that one. In `~/linkly`, `.konjir.json` names `$KOLAB`, and konjir refuses a sign-in that works in another, saying so. To act in another kolab, sign in there first, as yourself, and name it: `konjir login --kolab <its name>`, then the step with `--kolab <its name>`. The terminal keeps one sign-in to Kolab, so that one replaces its sign-in to `$KOLAB` (your browser's is its own): sign back in to `$KOLAB` afterwards.
+- **`this checkout tracks …, not …` or `is no repository registered in this kolab`.** `kolab work` and `kolab work deliver` run only in a checkout whose first commit and remote are the registered repository's. Check that `git remote -v` shows the GitHub repository you made in step 1, and run them in `~/linkly`.
+- **`this session is …, an agent: kolab work runs as a person`.** `kolab work` runs as you, and your pool agents do the jobs. Run `kolab login --kolab $KOLAB --role engineer` and choose **Yourself** on Kolab's page, with no `KONJIR_TOKEN` or `KONJIR_CREDENTIALS` set.
+- **`kolab work couldn't fetch origin`.** It fetches the repository before it takes anything, with your own git credentials. Check that `git fetch origin` works in `~/linkly`, and that step 1's `gh repo create` pushed.
+- **`the harness claude isn't on PATH`.** The jobs run Claude Code. Install it, or start `kolab work` from a terminal whose `PATH` finds `claude`.
+- **`kolab work` says `nothing taken: …` or `waiting 30 s: …`.** Nothing is ready for a job, and it says why: `W1` waits while a question on a requirement it builds is open, say. It looks again by itself, at once when your inbox changes.
+- **A job ended `failed`, or `released`.** Its item went back to Kolab for another job, or, when it needs a person, to you, with the job's note saying what you must decide. Each job's log is `~/.konjir/jobs/<job>.log`, and `kolab status` shows the queue and the jobs running.
+- **`every pool agent of yours that could take it is busy, and you have … live agents`.** Your pool agents count among your 10 live agents. Archive agents you no longer use (`kolab archive_agent label=<label>`, signed in as yourself), or wait for a job to end.
+- **`a person with Maintain or Admin registers it` when an agent tries.** Registering a repository is always a person's act. Run `kolab repo register` yourself, signed in as yourself (step 6).
+- **`kolab repo register`, `kolab work` or `kolab set_work_lease` acts on the wrong kolab.** A sign-in works in one kolab, and these act in that one. In `~/linkly`, `.konjir.json` names `$KOLAB`, and kolab refuses a sign-in that works in another, saying so. To act in another kolab, sign in there first, as yourself, and name it: `kolab login --kolab <its name>`, then the step with `--kolab <its name>`. The terminal keeps one sign-in to Kolab, so that one replaces its sign-in to `$KOLAB` (your browser's is its own): sign back in to `$KOLAB` afterwards.
 - **A deltas draft says `cannot override …: not in parent`.** Deltas apply to the node's latest committed version. A first version that came back with changes requested never committed, so draft the full element list again. If the node has a committed version, the refusal lists its element ids: check the one you gave.
-- **`konjir login` says the sign-in took too long.** It waits 20 minutes for your browser, as long as Kolab's sign-in page lasts. Run it again.
-- **A build job asks a question about the spec instead of building.** Its playbook tells it to ask in Konjir, with `konjir_ask`, rather than guess, so the question reaches the functional layer's inbox as in step 5, and it gives the package back. Answer it on Kolab's page: an open question blocks the work that serves its requirement until it is answered, and then `konjir work` builds it.
-- **`konjir connect` says it has no bridge, or that the channel runs from a checkout.** That is a konjir older than 0.7.0, which didn't carry the channel. Check `konjir --version`, and that `which konjir` is the one under `~/.konjir`.
+- **`kolab login` says the sign-in took too long.** It waits 20 minutes for your browser, as long as Kolab's sign-in page lasts. Run it again.
+- **A build job asks a question about the spec instead of building.** Its playbook tells it to ask in Konjir, with `konjir_ask`, rather than guess, so the question reaches the functional layer's inbox as in step 5, and it gives the package back. Answer it on Kolab's page: an open question blocks the work that serves its requirement until it is answered, and then `kolab work` builds it.
+- **`kolab: command not found`, or a command this page names isn't there.** The command `kolab` comes from `@konjir/kolab`; the older package `konjir`, up to 0.8.0, installs `konjir` instead. Check that `kolab --version` says 0.9.0, and that `which kolab` is the one under `~/.konjir`.
 
 ## Clean up
 
-First stop `konjir work` (Ctrl-C in its terminal) and quit the three Claude Code sessions (`/exit` in each), so no channel is left waiting for a sign-in you're about to revoke. Then, in `konjir work`'s terminal, sign each agent out. Its sign-in is kept in the `agents` folder beside konjir's own (`${XDG_CONFIG_HOME:-$HOME/.config}/konjir`, unless you set `KONJIR_CREDENTIALS`), in a file named after the agent:
+First stop `kolab work` (Ctrl-C in its terminal) and quit the three Claude Code sessions (`/exit` in each), so no channel is left waiting for a sign-in you're about to revoke. Then, in `kolab work`'s terminal, sign each agent out. Its sign-in is kept in the `agents` folder beside kolab's own (`${XDG_CONFIG_HOME:-$HOME/.config}/konjir`, unless you set `KONJIR_CREDENTIALS`), in a file named after the agent:
 
 ```sh
 . ~/linkly/konjir.sh && cd ~/linkly
 for a in spec-writer spec-reviewer architect; do
-  KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-$a.json" konjir logout
+  KONJIR_CREDENTIALS="$KJ_AGENTS/$ME-$a.json" kolab logout
 done
 ```
 
-Each prints `the sign-in is revoked and forgotten`. Then archive the agents, which frees their places among your 10, and sign out. This terminal is still signed in as yourself from step 6; if it isn't, run `konjir login --kolab $KOLAB` first and choose **Yourself**.
+Each prints `the sign-in is revoked and forgotten`. Then archive the agents, which frees their places among your 10, and sign out. This terminal is still signed in as yourself from step 6; if it isn't, run `kolab login --kolab $KOLAB` first and choose **Yourself**.
 
 ```sh
-for a in spec-writer spec-reviewer architect; do konjir archive_agent label=$a; done
-konjir list_agents
-konjir logout
+for a in spec-writer spec-reviewer architect; do kolab archive_agent label=$a; done
+kolab list_agents
+kolab logout
 rm -rf .mcp.json .konjir.json .claude
 ```
 
 To remove the CLI itself, `rm -rf ~/.konjir`.
 
-`konjir list_agents` lists the agents you have left: your pool, `<you>-engineer-1` and on. They do the jobs of any kolab you set a machine to work in, so you can keep them; to free their places too, archive each the same way (`konjir archive_agent label=engineer-1`, before the `konjir logout`). The last line removes the Konjir entries, the project's note of its kolab and, if you took the subagent route, `.claude/agents/`. The jobs' worktrees under `~/.konjir/jobs` are removed as each job ends, unless one left work that isn't pushed, and the GitHub repository stays yours.
+`kolab list_agents` lists the agents you have left: your pool, `<you>-engineer-1` and on. They do the jobs of any kolab you set a machine to work in, so you can keep them; to free their places too, archive each the same way (`kolab archive_agent label=engineer-1`, before the `kolab logout`). The last line removes the Konjir entries, the project's note of its kolab and, if you took the subagent route, `.claude/agents/`. The jobs' worktrees under `~/.konjir/jobs` are removed as each job ends, unless one left work that isn't pushed, and the GitHub repository stays yours.
 
 An archived agent's name stays yours, and what it wrote stays in the kolab under its name. You can't archive the kolab yourself yet; only a Konjir admin can. It stays private to you, and you can reuse it. A person owns at most 10 kolabs.
