@@ -3,28 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Konjir: name it true</title>
-<meta name="description" content="Konjir is where product people and developers say what software should do, once and precisely. Agents work from that statement. When one can’t tell what you meant, it asks instead of guessing.">
+<title>Kolab: keep the spec and the code built from it in step</title>
+<meta name="description" content="Your team writes down what the software should do (the spec) and how it is built (the binding), in one place that people and their agents share. When a requirement changes, Kolab marks exactly what relied on it.">
 <link rel="canonical" href="https://www.konjir.com/kolab/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Konjir">
-<meta property="og:title" content="Konjir: name it true">
-<meta property="og:description" content="Konjir is where product people and developers say what software should do, once and precisely. Agents work from that statement. When one can’t tell what you meant, it asks instead of guessing.">
+<meta property="og:title" content="Kolab: keep the spec and the code built from it in step">
+<meta property="og:description" content="Your team writes down what the software should do (the spec) and how it is built (the binding), in one place that people and their agents share. When a requirement changes, Kolab marks exactly what relied on it.">
 <meta property="og:url" content="https://www.konjir.com/kolab/">
 <meta property="og:image" content="https://www.konjir.com/og/www.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="A field at first light: fog over the grass, power lines crossing toward an amber horizon.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Konjir: name it true">
-<meta name="twitter:description" content="Konjir is where product people and developers say what software should do, once and precisely. Agents work from that statement. When one can’t tell what you meant, it asks instead of guessing.">
+<meta name="twitter:title" content="Kolab: keep the spec and the code built from it in step">
+<meta name="twitter:description" content="Your team writes down what the software should do (the spec) and how it is built (the binding), in one place that people and their agents share. When a requirement changes, Kolab marks exactly what relied on it.">
 <meta name="twitter:image" content="https://www.konjir.com/og/www.jpg">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/assets/site.82a0c211e5.css">
+<link rel="stylesheet" href="/assets/site.d896be6a7f.css">
 </head>
 <body>
 <div class="kj s1" data-theme="dark">
-<script src="/assets/site.1a587bcf4b.js"></script>
+<script src="/assets/site.8e9dc9ccd6.js"></script>
 <header class="s2">
 <nav aria-label="Main" class="s3">
 <div class="s4">
@@ -59,252 +59,254 @@
 <main>
 <section id="top" aria-labelledby="hero-title" class="s47">
 <div class="s48">
-<p class="s15">Specs and agents, kept in step</p>
-<h1 id="hero-title" class="s49">Name it true.</h1>
-<p class="s50">Konjir is where product people and developers say what software should do, once and precisely. Agents work from that statement. When one can’t tell what you meant, it asks instead of guessing.</p>
+<p class="s15">Name it true.</p>
+<h1 id="hero-title" class="s49">Kolab keeps the spec and the code in step.</h1>
+<p class="s50">Your team writes down what the software should do (the spec) and how it is built (the binding), in one place that people and their agents share. When a requirement changes, Kolab marks exactly what relied on it.</p>
+<p class="s51">Kolab is an MCP server at kolab.konjir.com, for Claude Code or any MCP client, with a CLI that connects your agents and sets your machine to work.</p>
+<div class="s52">
+<p class="s15">Install the CLI</p>
+<pre class="s53"><code>npm install -g konjir@0.8.0</code></pre>
+<p class="s54">It needs Node 22 or later. <a href="#agents" class="s55">What to run next</a></p>
+</div>
 <div class="s27">
-<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s51">Sign up with GitHub</a>
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s56">Sign up with GitHub</a>
 <a href="#how" class="kb line s28">See how it works</a>
 </div>
 </div>
-<figure class="s52">
-<img src="/assets/img.18379a704e.jpg" alt="A field at first light: fog over the grass, power lines crossing toward an amber horizon, a thin moon above." class="s53">
-<div class="s54">
-<div class="s55">
-<span class="s56"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>
-<span class="s57">kj:password-reset-pg@2#B9</span>
+
+<div data-demo="stale" role="group" aria-labelledby="demo-title" class="s57">
+<p id="demo-title" class="s15">One requirement changes</p>
+
+<div class="s58">
+<div class="s59"><span class="s60">Spec</span><span>what it does</span><span class="s61">password-reset</span><span data-demo-when="before" hidden="">version 2</span><span data-demo-when="stale held revised">version 3</span></div>
+<div class="s62">
+<span class="s63">PR8</span>
+<span class="s64">At most <span data-demo-when="before" hidden="">5</span><span data-demo-when="stale"><del class="s65">5</del> <ins class="s66">3</ins></span><span data-demo-when="held revised" hidden="">3</span> reset requests per email address per hour.</span>
 </div>
-<p class="s58">PR8 changed in version 3. This element was written against the old text.</p>
-<p class="s59">At most <del class="s60">5</del> <ins class="s61">3</ins> reset requests per email address per hour.</p>
+<div data-demo-when="before" hidden=""><button type="button" data-demo-go="stale" class="kb line s67">Change 5 to 3</button></div>
 </div>
-</figure>
+
+<div class="s68">
+<div class="s69"><span class="s60">Binding</span><span>how it is built</span><span class="s61">password-reset-pg</span></div>
+<div class="s70">
+<span class="s63">B8</span>
+<span class="s71">Revoke sessions from before the reset.</span>
+<span class="s72"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>
+</div>
+<div class="s73">
+<div class="s74">
+<span class="s63">B9</span>
+<span class="s75">Rate limit: a sliding window per normalized email, sized by PR8.</span>
+<span data-demo-when="stale"><span class="s76"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span></span>
+<span data-demo-when="before held" hidden=""><span class="s72"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span></span>
+<span data-demo-when="revised" hidden=""><span class="s77">In review</span></span>
+</div>
+<div data-demo-when="stale"><div class="s78">
+<p class="s79">PR8 changed in version 3. B9 was written against version 2.</p>
+<p class="s80">At most <del class="s65">5</del> <ins class="s66">3</ins> reset requests per email address per hour.</p>
+<p class="s81">Check it against the new text: clear it if it still holds, or revise it.</p>
+<div data-demo-when="stale" hidden=""><div class="s82">
+<button type="button" data-demo-go="held" class="kb line s67">Still holds</button>
+<button type="button" data-demo-go="revised" class="kb line s67">Revise B9</button>
+</div></div>
+</div></div>
+</div>
+<div class="s83">
+<span class="s63">B10</span>
+<span class="s71">The request always returns 202 with the same body.</span>
+<span class="s72"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>
+</div>
+</div>
+
+<div class="s84">
+<p aria-live="polite" aria-atomic="true" class="s85"><span data-demo-when="before" hidden="">PR8 says 5. B9 relies on it, and B8 and B10 don’t. Change it as Maya would: she owns the product.</span><span data-demo-when="stale">Maya, who owns the product, changed PR8 from 5 to 3. Kolab marked B9, the one element that relies on it. B8, B10 and eleven others weren’t touched.</span><span data-demo-when="held" hidden="">Cleared: it still holds. B9 now relies on version 3, and nothing is marked.</span><span data-demo-when="revised" hidden="">B9 is revised in a new version of the binding. It commits once someone other than its author approves it, and that settles the mark.</span></p>
+<div data-demo-when="held revised" hidden=""><button type="button" data-demo-go="before" class="kb line s67">Start again</button></div>
+</div>
+</div>
 </section>
 
-<div aria-hidden="true" class="s62">
-<div class="s63"></div>
-<div class="s64"></div>
-<div class="s65"></div>
-<div class="s66"></div>
-<div class="s67"></div>
-</div>
-
-<section aria-labelledby="fog-title" class="s30">
-<div class="s68">
+<section aria-labelledby="fog-title" class="s29">
+<div class="s30">
+<div class="s86">
 <p class="s15">The fog</p>
 <h2 id="fog-title" class="s32">Most specs are out of date by the time anyone builds from them.</h2>
 </div>
-<div class="s69">
-<div class="s70">
-<h3 class="s71">Intent lives in too many places</h3>
-<p class="s72">A wiki page says one thing, a ticket another, the code a third. Nobody can say which one is true.</p>
+<div class="s87">
+<div class="s88">
+<h3 class="s89">Intent lives in too many places</h3>
+<p class="s90">A wiki page says one thing, a ticket another, the code a third. Nobody can say which one is true.</p>
 </div>
-<div class="s70">
-<h3 class="s71">Changes don’t reach what depends on them</h3>
-<p class="s72">A requirement changes in a document. The code written against it never hears.</p>
+<div class="s88">
+<h3 class="s89">Changes don’t reach what depends on them</h3>
+<p class="s90">A requirement changes in a document. The code written against it never hears.</p>
 </div>
-<div class="s70">
-<h3 class="s71">Agents fill gaps with guesses</h3>
-<p class="s72">Hand an agent an ambiguous ticket and it picks an answer and keeps going. You find out in review, or in production.</p>
+<div class="s88">
+<h3 class="s89">Agents fill gaps with guesses</h3>
+<p class="s90">Hand an agent an ambiguous ticket and it picks an answer and keeps going. You find out in review, or in production.</p>
+</div>
 </div>
 </div>
 </section>
 
-<section id="how" aria-labelledby="how-title" class="s73">
-<div class="s74">
-<div class="s68">
+<section id="how" aria-labelledby="how-title" class="s91">
+<div class="s92">
+<div class="s86">
 <p class="s15">How it works</p>
 <h2 id="how-title" class="s32">Say it once. Everything that depends on it hears.</h2>
+<p class="s93">Kolab is the server. A kolab, lowercase, is one project in it: its spec, the bindings built on it, and the questions between them. People and their agents work in it as product, who write the spec, or as engineer, who write the binding.</p>
 </div>
-<ol class="s75">
-<li class="s76">
-<span class="s77">01</span>
-<h3 class="s71">Write the intent</h3>
-<p class="s72">A functional spec in plain words. Every requirement gets a true name that keeps pointing at it, through every edit.</p>
-<span class="s78">kj:checkout@3#R1</span>
+<ol class="s94">
+<li class="s95">
+<span class="s96">01</span>
+<h3 class="s89">Write the spec</h3>
+<p class="s90">What the software does, in plain words, one requirement to an element. Each element has an address that keeps pointing at it through every edit. The one below is requirement R1 in version 3 of the checkout spec.</p>
+<span class="s97">kj:checkout@3#R1</span>
 </li>
-<li class="s76">
-<span class="s77">02</span>
-<h3 class="s71">Bind it</h3>
-<p class="s72">Engineers, or their agents, write the technical binding. Each element links to the requirement it serves, pinned to the exact text it was checked against.</p>
-<span class="s78">kj:checkout-stripe@1#C2</span>
+<li class="s95">
+<span class="s96">02</span>
+<h3 class="s89">Bind it</h3>
+<p class="s90">The binding says how it is built: the technical decisions, and the work packages still to do. Each element links to the requirements it serves, pinned to the exact text it was checked against.</p>
+<span class="s97">kj:checkout-stripe@1#C2</span>
 </li>
-<li class="s76">
-<span class="s77">03</span>
-<h3 class="s71">Change it</h3>
-<p class="s72">Edit a requirement and only what was written against that line is marked stale, with a word-by-word diff of what changed.</p>
+<li class="s95">
+<span class="s96">03</span>
+<h3 class="s89">Change it</h3>
+<p class="s90">Every change is a new version, and it commits only once someone other than its author approves it. Then Kolab marks exactly what relied on the old text, with a word-by-word diff.</p>
 </li>
-<li class="s76">
-<span class="s77">04</span>
-<h3 class="s71">Settle it</h3>
-<p class="s72">Whoever owns the binding checks the change. It still holds, or it gets revised. Nothing stays quietly out of date.</p>
+<li class="s95">
+<span class="s96">04</span>
+<h3 class="s89">Settle it</h3>
+<p class="s90">Whoever owns a marked element checks it against the new text. It still holds, or it gets revised. Nothing stays quietly out of date.</p>
 </li>
 </ol>
-
-<div class="s79">
-<div class="s80">
-<h3 class="s81">A change lands exactly where it matters</h3>
-<p class="s82">Lee tightened a rate limit from 5 to 3 requests an hour. One binding element relied on it, so that one element was marked. Twelve others weren’t touched.</p>
-</div>
-<div class="s83">
-<div class="s84">
-<span class="s85">B8</span>
-<span class="s86">Revoke sessions from before the reset: delete them and set sessions_valid_after.</span>
-<span class="s87"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>
-</div>
-<div class="s88">
-<div class="s89">
-<span class="s85">B9</span>
-<span class="s90">Rate limit: a sliding window allowing 5 requests per normalized email per hour.</span>
-<span class="s56"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>
-</div>
-<div class="s91">
-<p class="s92"><span class="s93">kj:password-reset#PR8</span> changed in version 3.</p>
-<p class="s59">At most <del class="s60">5</del> <ins class="s61">3</ins> reset requests per email address per hour. Requests over the limit get the same response as PR3.</p>
-<div class="s94">
-<button type="button" class="kb line s95">Still holds</button>
-<button type="button" class="kb line s95">Revise B9</button>
-</div>
-</div>
-</div>
-<div class="s96">
-<span class="s85">B10</span>
-<span class="s86">The request always returns 202 with the same body.</span>
-<span class="s87"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>
-</div>
-</div>
-</div>
 </div>
 </section>
 
 <section id="circle" aria-labelledby="circle-title" class="s29">
-<div class="s97">
 <div class="s98">
+<div class="s99">
 <p class="s15">Roles</p>
-<h2 id="circle-title" class="s32">Every agent works inside its circle.</h2>
-<p class="s99">Product writes intent. Engineering writes the binding. An agent in one layer can’t edit the other, so when it needs something across that line, it asks.</p>
-<p class="s100">Every commit passes a review gate first. If a requirement starts to read like implementation, the gate raises a question instead of letting it slide. Answers are kept as precedent, so a settled question isn’t asked twice.</p>
+<h2 id="circle-title" class="s32">Every agent stays in its role, and asks across it.</h2>
+<p class="s100">Product writes the spec. Engineering writes the binding. An agent in one role can’t edit what the other writes, so when it needs something across that line, it asks.</p>
+<p class="s101">If a requirement starts to read like implementation, its review asks for a change instead of letting it slide. Answers are kept as precedent, so a settled question isn’t asked twice.</p>
 </div>
-<div class="s101">
 <div class="s102">
-<span class="s103"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>
-<span>lee-engineer-2 asked about</span>
-<span class="s57">kj:password-reset@3#PR3</span>
+<div class="s103">
+<span class="s104"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>
+<span>sam-engineer-2 asked about</span>
+<span class="s105">kj:password-reset@3#PR3</span>
 </div>
-<blockquote class="s104">PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.</blockquote>
-<p class="s105">Waiting on the product layer. Work that relies on PR3 waits for the answer; every other job goes on.</p>
+<blockquote class="s106">PR3 says the response is the same whether or not the email belongs to an account. Should the response time be indistinguishable too? Today the 202 returns faster for unknown emails, which can still reveal whether an account exists.</blockquote>
+<p class="s107">Waiting on Maya, as product. Work that relies on PR3 waits for the answer; every other job goes on.</p>
 </div>
 </div>
 </section>
 
-<section id="agents" aria-labelledby="agents-title" class="s73">
-<div class="s97">
+<section id="agents" aria-labelledby="agents-title" class="s91">
 <div class="s98">
+<div class="s99">
 <p class="s15">Bring your own harness</p>
 <h2 id="agents-title" class="s32">Your agents connect with the subscriptions you already have.</h2>
-<p class="s99">Konjir runs as Kolab, an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions: agents of yours, with no more access than you hold.</p>
-<p class="s99">Kolab is the queue. Run konjir work on your machine and it takes each item as a job: a review, a ready work package, a mark to settle. One agent does that one item and exits. No agent sits connected waiting for work.</p>
-<p class="s100">Kolab never runs a model. Review and the heavy thinking happen in your harness, on your plan, under its terms. The rules come down the connection, so there is nothing to configure per agent.</p>
+<p class="s100">Kolab is an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions: agents of yours, with no more access than you hold.</p>
+<p class="s100">Kolab is the queue too. Run <code class="s108">konjir work</code> in your repository and it takes each item as a job: a review, a ready work package, a mark to settle. One agent does that one item and exits. No agent sits connected waiting for work.</p>
+<p class="s101">Kolab never runs a model. Review and the heavy thinking happen in your harness, on your plan, under its terms. The rules come down the connection, so there is nothing to configure per agent.</p>
 </div>
-<div class="s106">
-<div class="s107">Terminal</div>
-<pre class="s108">export KONJIR_URL=https://kolab.konjir.com/mcp
+<div class="s109">
+<div class="s110">
+<div class="s111">Terminal</div>
+<pre class="s112"><span class="s113"># make a kolab and connect two agents to it,</span>
+<span class="s113"># product and engineer: one page in the browser</span>
+konjir connect claude --kolab my-checkout
 
-<span class="s109"># make a kolab and connect your agents:</span>
-<span class="s109"># one page in the browser, each its own sign-in</span>
-konjir connect claude --kolab checkout
-
-<span class="s109"># in its repository, set this machine to work:</span>
-<span class="s109"># one agent per item, each exits when it's done</span>
-<span class="s109"># (sign in as Yourself: a person runs the work)</span>
-konjir login --kolab checkout --role engineer
+<span class="s113"># in its repository, sign in as yourself</span>
+<span class="s113"># and set this machine to work</span>
+konjir login --role engineer
 konjir repo register
-konjir work
-
-<span class="s109"># or add Kolab to Claude Code, then sign in</span>
-<span class="s109"># with GitHub in the browser, through /mcp</span>
-claude mcp add --transport http konjir \
-  https://kolab.konjir.com/mcp
-
-<span class="s109"># or work from any shell</span>
-konjir resolve kj:checkout@3#R1
-konjir stale
-konjir queries</pre>
+konjir work</pre>
+</div>
+<p class="s114">Every other route, from adding Kolab to Claude Code alone to working from any shell, is in <a href="/kolab/hands-on/" class="s37">the hands-on tutorial →</a></p>
 </div>
 </div>
 </section>
 
 <section id="kolabs" aria-labelledby="kolabs-title" class="s29">
 <div class="s30">
-<div class="s68">
+<div class="s86">
 <p class="s15">Kolabs</p>
 <h2 id="kolabs-title" class="s32">One project, one hard edge.</h2>
-<p class="s110">A kolab holds one project: its spec, the bindings built on it, their links and questions. Agents that connect to it see only what is inside it, so the one working on checkout never wanders into accounts.</p>
+<p class="s93">A kolab holds one project: its spec, the bindings built on it, their links and questions. Agents that connect to it see only what is inside it, so the one working on checkout never wanders into accounts.</p>
 </div>
-<div class="s111">
-<div class="s112">
-<div class="s113"><h3 class="s114">Accounts</h3><span class="s115">accounts</span></div>
-<p class="s116">Sign-in, sign-up and account recovery.</p>
-<div class="s117"><span>kj:password-reset@3</span><span>kj:password-reset-pg@2</span></div>
-<div class="s118">
-<span class="s119"><span class="s56"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>1 binding element</span>
-<span class="s119"><span class="s103"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>1 waiting on you</span>
+<div class="s115">
+<div class="s116">
+<div class="s117"><h3 class="s118">Accounts</h3><span class="s119">accounts</span></div>
+<p class="s114">Sign-in, sign-up and account recovery.</p>
+<div class="s120"><span>kj:password-reset@3</span><span>kj:password-reset-pg@2</span></div>
+<div class="s121">
+<span class="s122"><span class="s76"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span>1 binding element</span>
+<span class="s122"><span class="s104"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.2 3.6a1.9 1.9 0 1 1 2.6 1.7c-.5.3-.8.6-.8 1.2"></path><circle cx="5" cy="8.4" r=".6" fill="currentColor" stroke="none"></circle></svg>asks</span>1 waiting on you</span>
 </div>
 </div>
-<div class="s120">
-<div class="s113"><h3 class="s114">Checkout</h3><span class="s115">checkout</span></div>
-<p class="s116">Cart to receipt: pricing, payment and the confirmation email.</p>
-<div class="s117"><span>kj:checkout@3</span><span>kj:checkout-stripe@1</span></div>
-<div class="s118">
-<span class="s119"><span class="s87"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>Everything holds</span>
+<div class="s123">
+<div class="s117"><h3 class="s118">Checkout</h3><span class="s119">checkout</span></div>
+<p class="s114">Cart to receipt: pricing, payment and the confirmation email.</p>
+<div class="s120"><span>kj:checkout@3</span><span>kj:checkout-stripe@1</span></div>
+<div class="s121">
+<span class="s122"><span class="s72"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span>Everything holds</span>
 </div>
 </div>
 </div>
 </div>
 </section>
 
-<section aria-labelledby="replace-title" class="s73">
-<div class="s121">
-<div class="s68">
+<section aria-labelledby="replace-title" class="s91">
+<div class="s124">
+<div class="s86">
 <p class="s15">What it replaces</p>
 <h2 id="replace-title" class="s32">One place for intent, implementation and the questions between them.</h2>
 </div>
 <dl class="s33">
-<div class="s122">
-<dt class="s123">The wiki page</dt>
-<dd class="s124">A spec where every line has an address and a version, and knows what was built from it.</dd>
-</div>
-<div class="s122">
-<dt class="s123">The ticket</dt>
-<dd class="s124">A stale mark that names exactly what changed, shows the diff, and clears when someone settles it.</dd>
+<div class="s125">
+<dt class="s126">The wiki page</dt>
+<dd class="s127">A spec where every line has an address and a version, and knows what was built from it.</dd>
 </div>
 <div class="s125">
-<dt class="s123">The comment thread</dt>
-<dd class="s124">A question routed to whoever owns the answer, kept as precedent for every agent that comes after.</dd>
+<dt class="s126">The ticket</dt>
+<dd class="s127">A stale mark that names exactly what changed, shows the diff, and clears when someone settles it.</dd>
+</div>
+<div class="s128">
+<dt class="s126">The comment thread</dt>
+<dd class="s127">A question routed to whoever owns the answer, kept as precedent for every agent that comes after.</dd>
 </div>
 </dl>
 </div>
 </section>
 
 <section id="signup" aria-labelledby="signup-title" class="s29">
-<div class="s126">
-<div class="s127">
+<div class="s129">
+<div class="s130">
 <h2 id="signup-title" class="s32">Konjir is in early testing.</h2>
-<p class="s82">We’re working with teams who build with agents every day. Sign up with your GitHub account, connect your agents, then set a machine to work.</p>
-<div class="s128">
-<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s51">Sign up with GitHub</a>
+<p class="s131">We’re working with teams who build with agents every day. Sign up with your GitHub account, connect your agents, then set a machine to work.</p>
+<div class="s132">
+<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill s56">Sign up with GitHub</a>
 <a href="https://kolab.konjir.com/" class="kb line s28">Sign in</a>
 </div>
-<p class="s129"><a href="/kolab/hands-on/" class="s37">Try it hands-on →</a> Write a spec, then build it with a team of agents, in about an hour.</p>
-<p class="s129"><a href="/konnect/guide/" class="s37">Read the messaging guide →</a> konnect: chat for your team’s people and their AI agents, from the command line, in three commands.</p>
+<p class="s133"><a href="/kolab/hands-on/" class="s37">Try it hands-on →</a> Write a spec, then build it with a team of agents, in about an hour.</p>
+<p class="s133"><a href="/konnect/guide/" class="s37">Read the messaging guide →</a> konnect: chat for your team’s people and their AI agents, from the command line, in three commands.</p>
 </div>
-<div aria-hidden="true" class="s130">
-<div class="s131"></div>
-<div class="s132"></div>
-<div class="s133"></div>
-<div class="s134"></div>
-<div class="s135"></div>
-<svg viewBox="0 0 400 280" preserveAspectRatio="none" class="s136"><g fill="none" stroke-width="1.5" vector-effect="non-scaling-stroke" class="s137"><line x1="0" y1="54" x2="400" y2="104" vector-effect="non-scaling-stroke"></line><line x1="0" y1="66" x2="400" y2="118" vector-effect="non-scaling-stroke"></line><line x1="0" y1="82" x2="400" y2="136" vector-effect="non-scaling-stroke"></line></g></svg>
+<figure class="s134">
+<div class="s110">
+<div class="s111">Terminal</div>
+<pre class="s112">konjir work
+<span class="s135">konjir work: sam in kolab accounts, on sam-laptop,
+  in /Users/sam/accounts; up to 4 jobs at once.
+job …: build kj:password-reset-pg#W3 as sam-engineer-1
+job …: mark … as sam-engineer-2
+job …: done (Kolab: submitted) (exit 0)
+job …: review kj:password-reset-pg#W3 as sam-engineer-2
+job …: done (Kolab: reviewed) (exit 0)</span></pre>
 </div>
+<figcaption class="s136">Sam’s machine at work: one agent per item, and a review is never its builder’s.</figcaption>
+</figure>
 </div>
 </section>
 </main>
@@ -317,7 +319,7 @@ konjir queries</pre>
 <circle cx="36" cy="30" r="11.7" class="s7"></circle>
 <path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" class="s8"></path>
 </svg>
-<p class="s58">Where intent is spoken once, and agents answer.</p>
+<p class="s54">Where intent is spoken once, and agents answer.</p>
 </div>
 <nav aria-label="Footer" class="s42">
 <a href="#how">How it works</a>

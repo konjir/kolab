@@ -1,4 +1,5 @@
-// konjir.com's only script: the static stand-in for the artifact's component logic (D81).
+// konjir.com's only script: the static stand-in for the artifact's component logic (D81), and
+// the Kolab page's demo of a mark (the second block below).
 // build.mjs places it, hashed, as the first child of the page's .kj root, so it runs
 // before the rest of the page is parsed and the chosen theme paints first.
 //
@@ -58,5 +59,42 @@
         if (on) on.focus();
       });
     }
+  });
+})();
+
+// A page's demo, bound by data- attributes, since the CSP allows no inline script or handler.
+// [data-demo="<state>"] holds it, written in that state; each [data-demo-when="<state> …"] in it
+// shows only in those states; each [data-demo-go="<state>"] button moves to that state. The page
+// hides everything that needs this script (its buttons), so it reads whole without it.
+// A move shows the new state, and its live region says what happened; focus goes to the first
+// button the new state shows, so a keyboard carries on where it was.
+(function () {
+  'use strict';
+  function visible(el, box) {
+    for (var n = el; n && n !== box; n = n.parentElement) if (n.hidden) return false;
+    return true;
+  }
+  function start(box) {
+    var parts = box.querySelectorAll('[data-demo-when]');
+    var buttons = box.querySelectorAll('[data-demo-go]');
+    function show(state, focus) {
+      for (var i = 0; i < parts.length; i++) {
+        parts[i].hidden = (' ' + parts[i].getAttribute('data-demo-when') + ' ').indexOf(' ' + state + ' ') < 0;
+      }
+      if (!focus) return;
+      for (var j = 0; j < buttons.length; j++) {
+        if (visible(buttons[j], box)) { buttons[j].focus(); return; }
+      }
+    }
+    for (var k = 0; k < buttons.length; k++) {
+      buttons[k].addEventListener('click', function (e) {
+        show(e.currentTarget.getAttribute('data-demo-go'), true);
+      });
+    }
+    show(box.getAttribute('data-demo'), false);
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    var boxes = document.querySelectorAll('[data-demo]');
+    for (var i = 0; i < boxes.length; i++) start(boxes[i]);
   });
 })();
