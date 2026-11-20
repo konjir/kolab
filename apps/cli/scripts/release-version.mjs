@@ -24,8 +24,8 @@ function fail(message) {
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const specifier = args.filter((a) => a !== '--dry-run');
-if (specifier.length !== 1 || !/^(patch|minor|major|\d+\.\d+\.\d+)$/.test(specifier[0])) {
-  fail(`usage: release-version.mjs <patch|minor|major|X.Y.Z> [--dry-run] (got '${args.join(' ')}'); no prereleases`);
+if (specifier.length !== 1 || !/^(patch|minor|major|(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))$/.test(specifier[0])) {
+  fail(`usage: release-version.mjs <patch|minor|major|X.Y.Z> [--dry-run] (got '${args.join(' ')}'); no prereleases, and no leading zeros`);
 }
 
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -61,16 +61,28 @@ function tagged(prefix) {
   return highest(tags.map((t) => t.slice(prefix.length + 1)));
 }
 
-// npm view exits non-zero with E404 when the package doesn't exist; any other failure stops the release.
+// @konjir/kolab is on npm, so npm must name at least one version. E404 can only mean a registry
+// other than npm's (npm_config_registry, an .npmrc): like any other failure, it stops the release
+// rather than dropping npm's versions from the floor.
 function published() {
   const npm = spawnSync('npm', ['view', PROJECT, 'versions', '--json'], { encoding: 'utf8' });
+  const registry = () => spawnSync('npm', ['config', 'get', 'registry'], { encoding: 'utf8' }).stdout?.trim() || 'the configured registry';
   if (npm.status !== 0) {
-    if (/E404/.test(`${npm.stdout}${npm.stderr}`)) return null;
     process.stderr.write(npm.stderr);
+    if (/E404/.test(`${npm.stdout}${npm.stderr}`)) {
+      fail(`npm says ${PROJECT} doesn't exist (E404) at ${registry()}, but it is published on npm: check the registry (npm_config_registry, .npmrc) and run again`);
+    }
     fail(`couldn't ask npm which versions of ${PROJECT} it has`);
   }
-  const versions = JSON.parse(npm.stdout || '[]');
-  return highest(Array.isArray(versions) ? versions : [versions]);
+  let versions;
+  try {
+    versions = JSON.parse(npm.stdout);
+  } catch {
+    fail(`npm view ${PROJECT} versions --json didn't print JSON: ${npm.stdout.slice(0, 200)}`);
+  }
+  const version = highest(Array.isArray(versions) ? versions : [versions]);
+  if (version === null) fail(`npm named no version of ${PROJECT} at ${registry()}, but it is published on npm: check the registry and run again`);
+  return version;
 }
 
 const floors = [
