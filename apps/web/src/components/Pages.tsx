@@ -641,14 +641,15 @@ export function SignIn({ onSignedIn, onLeave, error: initial, methods }: {
     <main className="signin">
       <section className="newk" aria-labelledby="si-title">
         <h1 className="section-title" id="si-title">Sign in to Kolab</h1>
+        <p className="signin-lead">{KOLAB_IN_A_LINE}</p>
         {error && !tokens && <p className="err" role="alert">{error}</p>}
         {provider && (
           <>
-            <p className="why-not">Sign in, or sign up, with {provider}. You choose the kolab and role to work in. Kolab keeps your session in this browser’s cookies, out of the page’s reach; it renews itself until you sign out.</p>
             <div className="edit-row"><a className="btn primary" href="/api/session/oauth/start" onClick={onLeave}>Sign in with {provider}</a></div>
+            <p className="why-not">Sign in, or sign up, with {provider}. You choose the kolab and role to work in. Kolab keeps your session in this browser’s cookies, out of the page’s reach; it renews itself until you sign out.</p>
           </>
         )}
-        {!methods && <p className="why-not">Connecting to Kolab…</p>}
+        {!methods && <p className="loading" role="status"><span className="pulse" aria-hidden="true" />Finding out how to sign in…</p>}
         {methods && !provider && !tokens && <p className="why-not">This Kolab has no way to sign in from the web set up yet. Ask whoever runs it.</p>}
         {tokens && (
           <>
@@ -663,6 +664,47 @@ export function SignIn({ onSignedIn, onLeave, error: initial, methods }: {
           </>
         )}
       </section>
+      <LearnMore />
+    </main>
+  );
+}
+
+/** What Kolab is, in a line, for someone who arrives here signed out: the product page says the rest. */
+const KOLAB_IN_A_LINE = 'Kolab keeps a team’s spec and the code built from it in step. People and their agents write down what the software should do and how it’s built, and when a requirement changes, Kolab marks exactly what relied on it.';
+
+/** Where to read about Kolab before signing in: its page and the hands-on tutorial on www.konjir.com. */
+function LearnMore() {
+  return (
+    <nav className="signin-more" aria-label="About Kolab">
+      <p>New to Kolab? <a href="https://www.konjir.com/kolab/">Learn what it does</a>, or <a href="https://www.konjir.com/kolab/hands-on/">try the hands-on tutorial</a>.</p>
+    </nav>
+  );
+}
+
+/**
+ * The page while it learns whether this browser holds a session: a short status under the bar,
+ * never an empty page. `away`: Kolab can't be reached yet, as while it restarts or the browser is
+ * offline. The page keeps trying by itself; `onRetry` tries again at once, and `retrying` is that
+ * try under way, until it is answered or fails.
+ */
+export function Connecting({ away, retrying, onRetry }: { away: boolean; retrying?: boolean; onRetry(): void }) {
+  if (!away) {
+    return (
+      <main className="signin">
+        <h1 className="sr-only">Kolab</h1>
+        <p className="loading" role="status"><span className="pulse" aria-hidden="true" />Connecting to Kolab…</p>
+      </main>
+    );
+  }
+  return (
+    <main className="signin">
+      <section className="newk" aria-labelledby="cx-title">
+        <h1 className="section-title" id="cx-title">Can’t reach Kolab right now</h1>
+        <p className="why-not" role="status">{retrying ? 'Trying again…' : 'Kolab may be restarting, or this browser may be offline. The page keeps trying, and carries on as soon as Kolab answers.'}</p>
+        {/* Stays in place, and keeps focus, while a try is under way: a second press then does nothing. */}
+        <div className="edit-row"><button type="button" className="btn" aria-disabled={retrying || undefined} onClick={() => { if (!retrying) onRetry(); }}>Try again now</button></div>
+      </section>
+      <LearnMore />
     </main>
   );
 }
