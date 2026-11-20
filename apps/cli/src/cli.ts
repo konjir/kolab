@@ -6,6 +6,8 @@
  *                [--database-url postgres://…] [--no-migrate] [--no-worker] [--quiet]
  *                (KONJIR_STUB_IDENTITY=<login>: a local Kolab signs everyone in as <login>, no GitHub)
  *   kolab tools
+ *   kolab <command> --help | -h          -> the command's own usage (help.ts), before anything else is read;
+ *                                           kolab <verb> --help is kolab help <verb>
  *   kolab instructions [reviewer]
  *   kolab resolve <address>
  *   kolab read <node> [version]
@@ -59,6 +61,7 @@ import { guardHook } from './guard.js';
 import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 import { gitIgnored, startClaude } from './claude.js';
 import { toolsListing, verbHelp } from './verbs.js';
+import { commandHelp, helpRequest, verbHelpOffline } from './help.js';
 import { KOLAB_CLIENT, kolabHints, kolabWords } from '@konjir/channel-bridge/words';
 import { importKolab } from './import.js';
 import { findProject, sameKolab, shown, trustedProjectUrl } from './project.js';
@@ -197,6 +200,7 @@ const usage = (canServe: boolean) => `kolab — Kolab from a shell. Same verbs a
   kolab instructions reviewer how to review a version that waits for you
   kolab tools                 every verb with its parameters (name=<type>, [optional]) and what it does
   kolab help <verb>           a verb's description and parameters
+  kolab <command> --help      a command's own usage, flags and an example (-h too), e.g. kolab login --help
   kolab <verb> key=value ...  call a verb; values parse as JSON when they can,
                                e.g. elements='[{"id":"R1","text":"..."}]'
   kolab <verb> --json '{...}' the same, with all arguments as one JSON object
@@ -236,8 +240,8 @@ Work:      kolab work [--jobs <n>] [--once] [--machine <label>] [--allow-all] [-
            kolab's policy caps you, 4 by default, and the kolab, 8), each done by one of your pool agents in its
            own git worktree at the default branch's head (under ~/.konjir/jobs), by Claude Code run headless on your
            own model account, with Kolab as its one MCP server and only edits, git, npm, npx, gh and kolab allowed
-           (--allow-all: every permission). A job never
-           merges or deploys: a hook (kolab work guard) denies a push that deletes (:branch, --delete), forces,
+           (--allow-all: every permission). A job never merges or deploys: a hook (kolab work guard --branch
+           <default branch>) denies a push that deletes (:branch, --delete), forces,
            mirrors or reaches the default branch, merging, gh api and terraform, quoted, wrapped or nested.
            Only a build job's commands get its token, as KONJIR_TOKEN for kolab work deliver; Claude Code reads
            it from a FIFO read once, so a review's tests find it nowhere. It renews each job's lease, ends the
@@ -491,6 +495,13 @@ export function signInsKept(): string[] {
 
 /** `kolab <argv…>`. `io.open` sends kolab login's browser to Kolab: for tests. */
 export async function main(argv: string[], io: { open?: (u: URL) => void | Promise<void> } = {}) {
+  // --help or -h (help.ts), before anything else is read: a command kolab runs itself prints its own
+  // usage and talks to no Kolab; a verb Kolab serves is `kolab help <verb>`, never a call to it.
+  const asked = helpRequest(argv);
+  if (asked && 'command' in asked) { console.log(commandHelp(asked.command)); return; }
+  if (asked) argv = asked.argv;
+  const verbHelpAsked = asked && 'verb' in asked ? asked.verb : undefined;
+
   // One agent's Claude Code session (W9.1, API24). It talks to no Kolab, and everything after the
   // label is claude's, --url and --token included, so it is taken before kolab reads its own flags.
   if (argv[0] === 'claude') {
@@ -686,6 +697,8 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
   }
 
   const stored = token ? undefined : new StoredLogin(url);
+  // `kolab <verb> --help` with nothing to ask Kolab with says how to see the verb's parameters.
+  if (!token && !stored!.signedIn && verbHelpAsked !== undefined) { console.log(verbHelpOffline(verbHelpAsked)); return; }
   if (!token && !stored!.signedIn) {
     // Several sign-ins kept, none for this URL: named, so the person can choose one.
     const others = keptSignIns().filter((u) => u !== url);
