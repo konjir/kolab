@@ -46,7 +46,8 @@ jobs:
   pglite:
     name: Test on PGlite
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
+    # A full run took 28-29 minutes in November 2026, against a limit of 30.
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read # nx-set-shas looks up main's last passing run
@@ -118,7 +119,8 @@ jobs:
   postgres:
     name: Test on Postgres
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # A full run took about 17 minutes in November 2026, against a limit of 20.
+    timeout-minutes: 30
     permissions:
       contents: read
       actions: read # nx-set-shas looks up main's last passing run
