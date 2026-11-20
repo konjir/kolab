@@ -818,7 +818,7 @@ export async function runWork(deps: WorkDeps, opts: WorkOptions): Promise<JobRep
           child.on('close', (code) => resolve(code));
         });
         exited = true;
-        await fed.catch((e: Error) => keep(`\nkonjir work couldn't hand the harness its MCP config: ${clean(e.message)}`));
+        await fed.catch((e: Error) => keep(`\nkolab work couldn't hand the harness its MCP config: ${clean(e.message)}`));
         // How it ended is fixed here: a renewal answered late changes nothing.
         l.finished = true;
         clearTimeout(l.beat);

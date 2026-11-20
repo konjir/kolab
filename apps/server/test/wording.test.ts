@@ -60,3 +60,20 @@ test('a tool\'s error is worded for the request it answers, by McpWording; outsi
   expect(await answer({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: {} })).toContain('(konjir import, signed in as themselves with konjir login).');
   expect(currentWording()).toBe('konjir');
 });
+
+test('requests answered at once, interleaved, each across timers, are each worded for their own client: the wording is the request\'s, never shared', async () => {
+  const error = new AccessError('a person imports a kolab, from their own session (konjir import, signed in as themselves with konjir login)');
+  const call = (name: string) => ({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { _meta: { 'io.modelcontextprotocol/clientInfo': { name, version: '1' } } } });
+  // Each request's answer waits a timer of its own (a macrotask, as a database round trip over the
+  // network is), so the others start and finish meanwhile, in an order the timers decide.
+  const answer = (name: string) => new Promise<string>((resolve) => {
+    mcpWordingMiddleware({ body: call(name) } as never, {} as never, () => {
+      setTimeout(() => { void Promise.resolve().then(() => resolve(fail(error).content[0].text)); }, Math.floor(Math.random() * 20));
+    });
+  });
+  const names = Array.from({ length: 60 }, (_, i) => (i % 3 === 0 ? 'konnect' : i % 3 === 1 ? 'kolab' : 'konjir-cli'));
+  const told = await Promise.all(names.map(answer));
+  expect(told.map((t, i) => [names[i], /\((kolab|konjir) import, signed in as themselves with (kolab|konjir) login\)/.exec(t)?.slice(1)]))
+    .toStrictEqual(names.map((n) => [n, n === 'kolab' ? ['kolab', 'kolab'] : ['konjir', 'konjir']]));
+  expect(currentWording()).toBe('konjir');
+});

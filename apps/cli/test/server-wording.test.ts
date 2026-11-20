@@ -5,7 +5,8 @@
 // konjir (konjir-cli) and konnect (konnect, and konjir-cli as it signs in) call themselves.
 import { expect, test } from '@jest/globals';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { startServer } from '@konjir/server';
+import { WORDED_COMMANDS, startServer } from '@konjir/server';
+import { KOLAB_COMMANDS } from '@konjir/channel-bridge/words';
 import { closeAtEnd, testStore } from '@konjir/engine/testing';
 import { call, connect } from '../src/cli.js';
 
@@ -50,6 +51,19 @@ test('an error names kolab login and kolab import for the kolab CLI, and konjir 
   }
   // A tool's name, and phrasing about kolabs, are the same for every client: only the command's name changes.
   expect(kolab).toContain('AccessError: ann-bot is an agent, and an agent imports nothing');
+});
+
+test('calls from kolab and from konnect at once, interleaved over HTTP, are each worded for their own client', async () => {
+  const { url, token } = await boot();
+  const [kolab, konnect] = [await connect(url, token), await clientAs(url, token, 'konnect', 'auto')];
+  const who = Array.from({ length: 30 }, (_, i) => (i % 2 ? 'konnect' : 'kolab'));
+  const told = await Promise.all(who.map((w) => refusal(w === 'kolab' ? kolab : konnect)));
+  expect(told.map((t, i) => [who[i], /\((kolab|konjir) import, signed in as themselves with (kolab|konjir) login\)/.exec(t)?.slice(1)]))
+    .toStrictEqual(who.map((w) => [w, w === 'kolab' ? ['kolab', 'kolab'] : ['konjir', 'konjir']]));
+});
+
+test('the server words the same commands the kolab CLI rewords itself: one list, held equal here', () => {
+  expect([...WORDED_COMMANDS].sort()).toStrictEqual([...KOLAB_COMMANDS].sort());
 });
 
 test('a 2025-era client says who it is only at initialize, and Kolab is stateless, so even one called kolab gets the old wording on its calls', async () => {

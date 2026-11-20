@@ -127,6 +127,13 @@ test('a package with release set stays In review after its approval, shown as ap
   expect(await rejection(kolab.reviewWork(frank, W('W1.1'), { verdict: 'request_changes', note: 'Not deployed.' })))
     .toMatch(/^GateError: kj:orders-pg#W1\.1 is approved already, and waits for its release \(PLN16\): it takes no other verdict/);
   expect(await rejection(kolab.submitWork(bob, W('W1.1')))).toMatch(/^GateError: kj:orders-pg#W1\.1 is approved, and waits for its release \(PLN16\)/);
+  // As errors, they name the command as every error does, konjir's, which Kolab words for the kolab CLI alone
+  // (apps/server/src/wording.ts); the approval's own next hint, above, says kolab.
+  for (const refused of [kolab.submitWork(bob, W('W1.1')), kolab.reviewWork(frank, W('W1.1'), { verdict: 'approve' })]) {
+    const said = await rejection(refused);
+    expect(said).toContain('or konjir work deliver kj:orders-pg#W1.1 --release <run> from a checkout of that repository');
+    expect(said).not.toContain('kolab work deliver');
+  }
 
   // A session that only reads records no release; a product session neither.
   expect(await rejection(kolab.recordRelease(carol, W('W1.1'), { run: RUN, sha: sha('c') }))).toMatch(/^AccessError: carol may not write the technical layer/);
@@ -239,7 +246,7 @@ test('a release is not a package\'s own evidence: konjir_add_evidence and konjir
   const { kolab, bob } = await planned();
   await kolab.pullWork(bob);
   expect(await rejection(kolab.addEvidence(bob, W('W1.1'), [{ kind: 'release', sha: sha('c'), url: RUN }])))
-    .toBe('GateError: evidence 1 is a release, which is recorded after the deploy with konjir_record_release (or konjir work deliver --release), not as the work\'s own evidence.');
+    .toBe('GateError: evidence 1 is a release, which is recorded after the deploy with konjir_record_release, not as the work\'s own evidence.');
 });
 
 test('a binding version that drops release from a package approved and waiting makes it Done; one that adds it to a Done package leaves it Done (W7.7)', async () => {

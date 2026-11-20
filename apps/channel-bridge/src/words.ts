@@ -8,9 +8,13 @@
  * `konjir://` addresses, `konjir-<label>` entries and `konjir kolab:…` scopes stay as they are.
  */
 
-/** The kolab command's subcommands that the server's and @konjir/login's texts name. */
-const COMMANDS = ['login', 'logout', 'connect', 'import', 'work', 'instructions', 'watch', 'claude', 'bridge', 'repo', 'serve', 'tools', 'help', 'status', 'whoami'];
-const KONJIR_COMMAND = new RegExp(`\\bkonjir (${COMMANDS.join('|')})\\b`, 'g');
+/**
+ * The kolab command's subcommands that the server's and @konjir/login's texts name: the same list as
+ * the server's own wording (apps/server/src/wording.ts, COMMANDS), which
+ * apps/cli/test/server-wording.test.ts holds equal to it.
+ */
+export const KOLAB_COMMANDS = ['login', 'logout', 'connect', 'import', 'work', 'instructions', 'watch', 'claude', 'bridge', 'repo', 'serve', 'tools', 'help', 'status', 'whoami'];
+const KONJIR_COMMAND = new RegExp(`\\bkonjir (${KOLAB_COMMANDS.join('|')})\\b`, 'g');
 
 /** `text` with each `konjir <subcommand>` said as `kolab <subcommand>`. */
 export const kolabWords = (text: string): string => text.replace(KONJIR_COMMAND, 'kolab $1');

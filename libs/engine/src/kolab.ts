@@ -11397,7 +11397,7 @@ export class Kolab {
         const byPerson = (await this.policyIn(tx, s.kolab)).approve_work === 'person';
         const noOther = byPerson ? 'no person other than its assignee holds Write on the technical layer, and the kolab\'s policy keeps reviewing work packages for a person (AUT3)'
           : 'no one other than its assignee holds Write on the technical layer';
-        if (r.approved && !r.removed_in_version_id) throw new GateError(`${at} is approved, and waits for its release (PLN16): ${RELEASE_NEXT(at)}`);
+        if (r.approved && !r.removed_in_version_id) throw new GateError(`${at} is approved, and waits for its release (PLN16): ${RELEASE_NEXT(at, 'konjir')}`);
         if (r.state === 'in_review' && r.assignee_id === s.actor_id && !r.removed_in_version_id && !items.length) {
           // Submitted again while it waits: whoever can review it now is asked, and anyone who no longer can loses theirs.
           await this.syncWorkRequestsIn(tx, binding.id, id, writers);
@@ -11495,7 +11495,7 @@ export class Kolab {
         const lease = await this.workTx(tx, s, 'reviews no work');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
         if (r.state !== 'in_review') throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}: only a work package In review takes a verdict`);
-        if (r.approved) throw new GateError(`${at} is approved already, and waits for its release (PLN16): it takes no other verdict: ${RELEASE_NEXT(at)}`);
+        if (r.approved) throw new GateError(`${at} is approved already, and waits for its release (PLN16): it takes no other verdict: ${RELEASE_NEXT(at, 'konjir')}`);
         if (r.assignee_id === s.actor_id) throw new GateError(`${s.actor_id} is ${at}'s assignee; another actor with Write on the technical layer must review it (PLN16)`);
         // Only a reviewer the kolab's policy allows (AUT3, POL3), as the policy stands now (its lock taken first, below).
         await this.refuseByPolicyIn(tx, s, { work: at, assignee: r.assignee_id! });
@@ -14565,13 +14565,15 @@ const MARK_NOTES = new Set<WorkEventKind>(['confirmed', 'reopened', 'at_risk']);
 const STATE_WORDS: Record<WorkState, string> = { todo: 'To do', in_progress: 'In progress', in_review: 'In review', done: 'Done' };
 /**
  * What to do with a package approved and waiting for its release (PLN16, W7.7, W7.11): who may
- * record it and how, as recordRelease takes it.
+ * record it and how, as recordRelease takes it. `cli` is the command it names: `kolab` in a result's
+ * `next` hint, which every client is told as it is; `konjir` in an error, which Kolab words for the
+ * kolab CLI alone, as every error that names a command (apps/server/src/wording.ts).
  */
-const RELEASE_NEXT = (at: string) =>
+const RELEASE_NEXT = (at: string, cli: 'kolab' | 'konjir' = 'kolab') =>
   `once it is deployed, after this approval, its release is recorded by someone with Write on the technical layer other than its assignee, `
   + `from an engineer session outside any job (a job never merges or deploys, JOB4), naming the deploy run, a GitHub Actions run of the package's registered repository, or for a package with none of its own the registered one its evidence named with repo= `
   + `(<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha `
-  + `(konjir_record_release work=${at} run=<the run's https link> sha=<the full sha>, or kolab work deliver ${at} --release <run> from a checkout of that repository), and that makes it Done`;
+  + `(konjir_record_release work=${at} run=<the run's https link> sha=<the full sha>, or ${cli} work deliver ${at} --release <run> from a checkout of that repository), and that makes it Done`;
 
 /** The git trailer a commit carries for a work package (D98): its full address, kolab included. */
 const workTrailer = (kolab: string, binding: string, id: string) => `Konjir-Work: ${formatAddress({ kolab, node: binding, element: id })}`;
