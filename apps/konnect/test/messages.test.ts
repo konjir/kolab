@@ -139,6 +139,8 @@ test('konnect watch prints messages as they arrive, from what you follow or from
   await until(() => lines.length === 3);
   end();
   await watching;
+  // Each once: looking at every place as the subscription opens prints nothing twice.
+  expect(lines).toHaveLength(3);
   expect(lines[0]).toMatch(/^#general\n\S+ \S+ {2}@ann\n {2}first in general$/);
   expect(lines[1]).toMatch(/^\nDirect, from @ann\n\S+ \S+ {2}@ann\n {2}a direct one$/);
   expect(lines[2]).toMatch(/^\n#general\n\S+ \S+ {2}@ann\n {2}second in general$/);
@@ -157,6 +159,7 @@ test('konnect watch prints messages as they arrive, from what you follow or from
   await until(() => json.length === 1);
   end();
   await one;
+  expect(json).toHaveLength(1);
   expect(JSON.parse(json[0])).toMatchObject({ direct: true, from: 'ann', to: 'bo', message: 'only this' });
   expect(await fails(bo.run(['watch', 'general']))).toMatch(/^say whether general is a member or a channel/);
 });
