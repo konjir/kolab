@@ -4,14 +4,15 @@
 // wait; --wait looks again every 2 seconds until something comes or the time runs out (exit 5);
 // history shows a channel's recent messages and changes nothing; direct-message history waits on
 // the service.
-import { expect, test } from '@jest/globals';
+import { afterEach, expect, test } from '@jest/globals';
 import { exitOf, fails, machine, teams } from './team.js';
 
 const until = async (ok: () => boolean, ms = 10_000) => {
   for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 25))) if (ok()) return;
   throw new Error(`it didn't happen in ${ms} ms`);
 };
-const quiet = () => new Promise((r) => setTimeout(r, 400));
+const realFetch = globalThis.fetch;
+afterEach(() => { globalThis.fetch = realFetch; });
 
 test('konnect receive pages oldest first, at most 20 by default, showing every message it receives, and says how many more wait', async () => {
   const { kolab, server, signIn, ann: annId, bo: boId } = await teams();
@@ -116,13 +117,20 @@ test('konnect watch prints messages as they arrive, from what you follow or from
   await signIn(bo, boId, 'hub');
   await ann.run(['send', '#general', 'before watching']);
   const annSession = await kolab.openSession('ann', 'product', { kolab: 'hub' });
+  // What is asked of the service, as it is asked.
+  const asked: string[] = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (typeof init?.body === 'string') asked.push(init.body);
+    return realFetch(input, init);
+  }) as typeof fetch;
 
   // Bo watches everything: what was there before isn't printed; what arrives is, as it arrives.
   const lines: string[] = [];
   let end: () => void = () => undefined;
   const watching = bo.run(['watch'], { out: (l) => lines.push(l), waking: (e) => { end = e; } });
+  // Said once it knows where each place stands: whatever comes after is printed, even while its
+  // subscription is still opening, so nothing more is waited for.
   await until(() => bo.err.some((l) => l.startsWith('Watching team hub as @bo.')));
-  await quiet();
   await kolab.sendChannelMessage(annSession, 'general', 'first in general');
   await until(() => lines.length === 1);
   await kolab.sendMessage(annSession, 'bo', 'a direct one');
@@ -139,9 +147,11 @@ test('konnect watch prints messages as they arrive, from what you follow or from
 
   // One place alone, as JSON lines.
   const json: string[] = [];
+  // With --json nothing is said as it starts: it has taken where each place stands once it asks for its subscription.
+  const listens = () => asked.filter((b) => b.includes('subscriptions/listen')).length;
+  const before = listens();
   const one = bo.run(['watch', '--json', '@ann'], { out: (l) => json.push(l), waking: (e) => { end = e; } });
-  await quiet();
-  await quiet();
+  await until(() => listens() > before);
   await kolab.sendChannelMessage(annSession, 'general', 'not watched');
   await kolab.sendMessage(annSession, 'bo', 'only this');
   await until(() => json.length === 1);

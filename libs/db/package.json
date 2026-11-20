@@ -20,7 +20,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "@konjir/log": "*",
     "@onivoro/server-pg-notify": "^25.4.0",
-    "kysely": "^0.29.6",
+    "kysely": "^0.29.7",
     "pg": "^8.23.1",
     "pg-listen": "~1.7.0"
   }

@@ -140,11 +140,14 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
   let says = true;
   // One at a time, each after the last: none is ever on its way when the session is closed under it.
   let said: Promise<void> = Promise.resolve();
+  /** How many says are queued or on their way. */
+  let unsaid = 0;
   const say = (state: AgentState | 'gone'): Promise<void> => {
+    unsaid++;
     said = said.then(async () => {
       if (!says || !client) return;
       await client.then((c) => c.sayState(state)).catch((e: unknown) => { if (e instanceof NotYet) says = false; });
-    });
+    }).finally(() => { unsaid--; });
     return said;
   };
   const startSaying = () => {
@@ -156,6 +159,10 @@ export async function serveMcp(opts: McpOptions, transport: Transport): Promise<
     let last: AgentState | undefined;
     let at = 0;
     const look = () => {
+      // Never queued behind one still on its way: a slow service would otherwise gather a backlog
+      // of says, and the last word, gone, would wait behind them all and be given up on as it closes.
+      // The next look says it instead.
+      if (unsaid) return;
       const state = now();
       if (state === last && Date.now() - at < every) return;
       last = state;
