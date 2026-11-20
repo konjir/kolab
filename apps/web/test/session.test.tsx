@@ -2,7 +2,7 @@
 // at all never signs the person out; only Kolab saying, after its own try at a refresh, that the
 // session is gone does, and then the page shows this Kolab's own sign-in, as a fresh load would.
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { WebMe, WebOverview, WebSignInMethods } from '@konjir/types';
 import { App } from '../src/App.js';
 import { clock, transient, ApiError } from '../src/api.js';
@@ -209,4 +209,86 @@ test('a reconnect onto the same build offers no reload', async () => {
   act(() => FakeEventSource.last.send({ type: 'ready' }));
   await waitFor(() => expect(calls).toContain('/'));
   expect(screen.queryByText(/Kolab was updated/)).toBeNull();
+});
+
+// The page before it knows who the session is, and a visitor with none (docs/plans/rebrand-and-site.md, step 6).
+
+test('while the page learns whether there is a session, it shows the bar and a short status, never an empty page or the sign-in', async () => {
+  // Kolab hasn't answered yet.
+  globalThis.fetch = jest.fn(() => new Promise<Response>(() => undefined)) as typeof fetch;
+  render(<App />);
+  expect(screen.getByRole('link', { name: 'Konjir, home' })).toBeTruthy();
+  expect(screen.getByRole('radiogroup', { name: 'Theme' })).toBeTruthy();
+  expect(screen.getByRole('status').textContent).toBe('Connecting to Kolab…');
+  expect(screen.getByRole('heading', { level: 1, name: 'Kolab' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Sign in to Kolab' })).toBeNull();
+  expect(screen.queryByRole('link', { name: /Sign in with/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Try again now' })).toBeNull();
+});
+
+test('a visitor with no session is told what Kolab is, signs in with GitHub, and can read about Kolab on www.konjir.com first', async () => {
+  reply('/api/session/methods', ok(GITHUB));
+  reply('/api/session/present', ok({ present: false }));
+  render(<App />);
+  expect((await screen.findByRole('link', { name: 'Sign in with GitHub' })).getAttribute('href')).toBe('/api/session/oauth/start');
+  expect(screen.getByRole('heading', { level: 1, name: 'Sign in to Kolab' })).toBeTruthy();
+  expect(screen.getByText(/^Kolab keeps a team’s spec and the code built from it in step\./)).toBeTruthy();
+  const about = screen.getByRole('navigation', { name: 'About Kolab' });
+  expect(within(about).getByRole('link', { name: 'Learn what it does' }).getAttribute('href')).toBe('https://www.konjir.com/kolab/');
+  expect(within(about).getByRole('link', { name: 'try the hands-on tutorial' }).getAttribute('href')).toBe('https://www.konjir.com/kolab/hands-on/');
+  // Nothing is said to be wrong, and nothing waits.
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByText('Connecting to Kolab…')).toBeNull();
+  expect(document.title).toBe('Kolab');
+});
+
+test('a visitor whose sign-in methods are still on their way sees the sign-in say so, not a bare connecting line', async () => {
+  globalThis.fetch = jest.fn(async (url: string | URL | Request) => {
+    if (String(url) === '/api/session/present') return { ok: true, status: 200, text: async () => '{"present":false}' } as unknown as Response;
+    return new Promise<Response>(() => undefined);
+  }) as typeof fetch;
+  render(<App />);
+  await screen.findByRole('heading', { name: 'Sign in to Kolab' });
+  expect(screen.getByRole('status').textContent).toBe('Finding out how to sign in…');
+  expect(screen.getByRole('navigation', { name: 'About Kolab' })).toBeTruthy();
+});
+
+test('when Kolab can\'t be reached as the page loads, it says so and keeps trying, and Try again now asks again at once', async () => {
+  // Each wait between tries lasts until the test ends: only the button asks again.
+  clock.wait = () => new Promise<void>(() => undefined);
+  reply('/api/session/present', 'network');
+  reply('/api/session/methods', 'network');
+  render(<App />);
+  expect(await screen.findByRole('heading', { level: 1, name: 'Can’t reach Kolab right now' })).toBeTruthy();
+  expect(screen.getByRole('status').textContent).toMatch(/keeps trying/);
+  expect(screen.queryByRole('heading', { name: 'Sign in to Kolab' })).toBeNull();
+  expect(screen.getByRole('navigation', { name: 'About Kolab' })).toBeTruthy();
+  const asked = calls.length;
+
+  // Still away: the try fails, and the page says so again, the button where it was.
+  const retry = screen.getByRole('button', { name: 'Try again now' });
+  fireEvent.click(retry);
+  expect(screen.getByRole('status').textContent).toBe('Trying again…');
+  expect(retry.getAttribute('aria-disabled')).toBe('true');
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/keeps trying/));
+  expect(calls.length).toBeGreaterThan(asked);
+  expect(screen.getByRole('button', { name: 'Try again now' })).toBe(retry);
+
+  // Kolab is back, and this browser holds no session: the sign-in, with its provider.
+  reply('/api/session/present', ok({ present: false }));
+  reply('/api/session/methods', ok(GITHUB));
+  fireEvent.click(retry);
+  expect(await screen.findByRole('link', { name: 'Sign in with GitHub' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Can’t reach Kolab right now' })).toBeNull();
+});
+
+test('when Kolab comes back by itself after a failed first try, a signed-in page carries on with no retry pressed', async () => {
+  reply('/api/session/methods', ok(GITHUB));
+  reply('/api/session/present', 'network', ok({ present: true }));
+  reply('/api/me', ok(ann));
+  reply('/api/overview', ok(overview));
+  render(<App />);
+  await screen.findByText('Working as');
+  expect(screen.queryByRole('heading', { name: 'Can’t reach Kolab right now' })).toBeNull();
+  expect(screen.queryByRole('navigation', { name: 'About Kolab' })).toBeNull();
 });

@@ -5,7 +5,7 @@ import { ApiError, acceptInvite, api, createKolab, dropInvite, markPushTick, ope
 import { useLive } from './live.js';
 import { Here, Wordmark } from './components/bits.js';
 import { NodeView } from './components/NodeView.js';
-import { ActivityView, ForeignKolabView, KolabsView, LineageView, More, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
+import { ActivityView, Connecting, ForeignKolabView, KolabsView, LineageView, More, QuestionsView, ReviewsView, SignIn } from './components/Pages.js';
 import { CasesView } from './components/Cases.js';
 import { InboxView, RulingsView, SettingsView, WorkView } from './components/Places.js';
 import { ConnectPage, GettingStarted, InviteCard, PeopleView, SessionsView } from './components/Onboarding.js';
@@ -197,6 +197,13 @@ export function App() {
   }, []);
   /** Kolab is away (restarting): the page waits for it, and says so, rather than signing out. */
   const [away, setAway] = useState(false);
+  /**
+   * The page's first asks, of who the session is and how to sign in, start again at once when the
+   * person asks to, rather than at the next try while Kolab is away; `retrying` is that try, until it
+   * is answered or fails.
+   */
+  const [attempt, setAttempt] = useState(0);
+  const [retrying, setRetrying] = useState(false);
   /** Kolab now serves a newer page than this one: it was deployed while this tab was open. */
   const [updated, setUpdated] = useState(false);
   // The next sign-in opens the address as a fresh load does, and waits for no move the session before left unanswered.
@@ -223,16 +230,17 @@ export function App() {
     patiently(() => api<WebSignInMethods>('session/methods'), { alive: () => alive })
       .then((m) => { if (alive) setMethods(m); }, () => { if (alive) setMethods({ provider: null, token: false }); });
     return () => { alive = false; };
-  }, [methods]);
+  }, [methods, attempt]);
 
   useEffect(() => {
     let alive = true;
-    whoAmI({ first: true, alive: () => alive, onWait: () => { if (alive) setAway(true); } }).then(
-      (now) => { if (!alive) return; setAway(false); setMe(now); },
-      (e: unknown) => { if (!alive) return; setAway(false); signedOut((e as Error).message); },
+    whoAmI({ first: true, alive: () => alive, onWait: () => { if (alive) { setAway(true); setRetrying(false); } } }).then(
+      (now) => { if (!alive) return; setAway(false); setRetrying(false); setMe(now); },
+      (e: unknown) => { if (!alive) return; setAway(false); setRetrying(false); signedOut((e as Error).message); },
     );
     return () => { alive = false; };
-  }, [signedOut]);
+    // `attempt` moves only from the retry Connecting offers, before the page knows who the session is.
+  }, [signedOut, attempt]);
 
   /**
    * Something said the session may have ended (a 401, or the event stream closing): Kolab is asked,
@@ -484,11 +492,19 @@ export function App() {
   const updatedNote = updated ? (
     <p className="notice live-note" role="status">Kolab was updated. <button type="button" className="btn" onClick={() => location.reload()}>Reload</button></p>
   ) : null;
-  if (me === undefined) return <p className="empty" style={{ padding: 24 }}>{away ? 'Kolab is restarting: reconnecting…' : 'Connecting to Kolab…'}</p>;
+  const setThemeKept = (t: 'light' | 'dark') => { setTheme(t); store.set(THEME_STORAGE_KEY, t); };
+  if (me === undefined) {
+    return (
+      <>
+        <Bar theme={theme} setTheme={setThemeKept} />
+        <Connecting away={away} retrying={retrying} onRetry={() => { setRetrying(true); setAttempt((a) => a + 1); }} />
+      </>
+    );
+  }
   if (me === null) {
     return (
       <>
-        <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set(THEME_STORAGE_KEY, t); }} />
+        <Bar theme={theme} setTheme={setThemeKept} />
         {(invite?.preview || inviteNote) && <div className="signin-invite">{invite?.preview ? <InviteCard invite={invite.preview} signedIn={false} /> : inviteNote}</div>}
         <SignIn error={signInError} methods={methods} onLeave={keepPlace} onSignedIn={async (token) => {
           signingIn.current = true;
@@ -515,7 +531,7 @@ export function App() {
   return (
     <Here value={me.kolab}>
       <a className="skip" href="#/" onClick={(e) => { e.preventDefault(); mainRef.current?.focus(); }}>Skip to the page’s content</a>
-      <Bar theme={theme} setTheme={(t) => { setTheme(t); store.set(THEME_STORAGE_KEY, t); }} me={me} overview={overview}
+      <Bar theme={theme} setTheme={setThemeKept} me={me} overview={overview}
         onMove={move} busy={busy} onAllKolabs={() => go('kolabs')}
         onSignOut={async () => { leaving.current = true; era.current++; await signOut().catch(() => undefined); signedOut('Signed out. Your session has ended.'); }} />
       <div className="frame">
