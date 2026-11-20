@@ -20,7 +20,7 @@ class KonjirVersionActions extends VersionActions {
   }
 
   async readCurrentVersionFromRegistry() {
-    return null; // the git tag (konjir@<version>) or the manifest is the current version
+    return null; // the newest kolab@<version> tag, or before the first the manifest, is the current version
   }
 
   async readCurrentVersionOfDependency() {

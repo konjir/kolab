@@ -5,23 +5,25 @@ name: Release CLI
 # (Actions > Release CLI > Run workflow). It never runs on its own.
 #
 # Until 0.8.0 the package was konjir and its tags konjir@<version>. @konjir/kolab continues its
-# versions: apps/cli/package.json says 0.8.0, which nx release starts from while no kolab@* tag
-# exists, so the first release is 0.9.0 (minor), and every version must be above the newest
-# konjir@* tag. Its notes start from that tag. The konjir package on npm is left as it is.
+# versions. A bump (patch, minor, major) goes from the semver-highest kolab@* tag; only before the
+# first such tag does it go from apps/cli/package.json, which says 0.8.0 (the first release was
+# 0.9.0, minor). The run never commits the version, so package.json stays at 0.8.0. Any version,
+# bumped or exact, must be above every kolab@* tag, every konjir@* tag and every version of
+# @konjir/kolab on npm (apps/cli/scripts/release-version.mjs). The konjir package on npm is left
+# as it is.
 #
 # Four jobs, each with only the permissions it needs:
-# 1. "Build kolab release" (read-only): validates the version, sets it in the runner, refuses a
-#    version npm or a tag already has, builds the npm tarball and the binaries, checks both carry
-#    LICENSE (Apache-2.0) and the third-party notices and reach a
-#    Kolab started from the checkout, runs npm publish --dry-run on the tarball, and uploads the
-#    files as an artifact. It is the only job that installs dependencies or runs Bun.
+# 1. "Build kolab release" (read-only): validates the version, refuses one not above every release
+#    already made, sets it in the runner, builds the npm tarball and the binaries, checks both
+#    carry LICENSE (Apache-2.0) and the third-party notices and reach a Kolab started from the
+#    checkout, runs npm publish --dry-run on the tarball, and uploads the files as an artifact. It is the only job that installs dependencies or runs Bun.
 # 2. "Draft GitHub release" (contents, attestations): attests the files' build provenance and
 #    creates the release as a draft, with the files and generated notes. A draft has no tag yet.
 # 3. "Publish @konjir/kolab to npm" (id-token, the npm-release environment): publishes the tarball the
 #    first job tested, byte for byte, with provenance, through npm trusted publishing alone. No
 #    checkout, no dependencies and no npm token: @konjir/kolab disallows tokens (tools/npm-trust.sh).
 # 4. "Publish GitHub release" (contents): takes the draft out of draft, which creates the tag
-#    kolab@<version> on the commit the run built. The next run reads the version from that tag.
+#    kolab@<version> on the commit the run built. The next run's bump goes from that tag.
 # With dry-run on (the default), only the first job runs.
 #
 # Set up once (README, "Releasing the CLI"): a GitHub environment named npm-release whose
@@ -104,6 +106,31 @@ jobs:
 
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
+      - name: Set the version
+        id: version
+        env:
+          SPECIFIER: ${{ inputs.version }}
+        run: |
+          # release-version.mjs has nx release compute the version: a bump goes from the
+          # semver-highest kolab@* tag, or before the first from apps/cli/package.json's 0.8.0,
+          # konjir's last. It refuses, before anything is built, a version not above every kolab@*
+          # tag, every konjir@* tag and every version of @konjir/kolab on npm, then writes it to
+          # apps/cli/package.json in the runner. Its last line is the version.
+          set -o pipefail
+          node apps/cli/scripts/release-version.mjs "$SPECIFIER" | tee "$RUNNER_TEMP/release-version.out"
+          version=$(tail -1 "$RUNNER_TEMP/release-version.out")
+          if [ "$version" != "$(node -p 'require("./apps/cli/package.json").version')" ]; then
+            echo "::error::apps/cli/package.json doesn't say $version"
+            exit 1
+          fi
+          # The notes start from the newest kolab@* tag, or before the first from the newest konjir@* tag.
+          latest=$(git -c versionsort.suffix=- tag --list 'kolab@*' --sort=-v:refname | head -1)
+          konjir=$(git -c versionsort.suffix=- tag --list 'konjir@*' --sort=-v:refname | head -1)
+          previous=${latest:-$konjir}
+          echo "::notice title=kolab version::kolab $version, notes from ${previous:-the first commit}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+
       # The Bun apps/cli/bun-runtimes.json pins, checked against its pin: GitHub's zip, or npm's
       # tarball when the zip won't download (W7.18). Not dirname "$(…)": bash -e
       # doesn't stop on a failure inside a command substitution whose outer command succeeds (W7.17).
@@ -111,46 +138,6 @@ jobs:
         run: |
           bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
           dirname "$bun" >> "$GITHUB_PATH"
-
-      - name: Set the version
-        id: version
-        env:
-          SPECIFIER: ${{ inputs.version }}
-        run: |
-          # nx release reads the newest kolab@* tag (nx.json's releaseTag). Before the first there is
-          # none, and it starts from apps/cli/package.json's version, 0.8.0, konjir's last; the
-          # notes then start from the newest konjir@* tag.
-          latest=$(git tag --list 'kolab@*' --sort=-v:refname | head -1)
-          konjir=$(git tag --list 'konjir@*' --sort=-v:refname | head -1)
-          previous=${latest:-$konjir}
-          first=()
-          [ -n "$latest" ] || first=(--first-release)
-          npx nx release version "$SPECIFIER" "${first[@]}"
-          version=$(node -p 'require("./apps/cli/package.json").version')
-          for tag in "kolab@$version" "konjir@$version"; do
-            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-              echo "::error::the tag $tag already exists"
-              exit 1
-            fi
-          done
-          # Versions continue after konjir's: never one at or below the newest konjir@* tag.
-          if [ -n "$konjir" ] && [ "$(printf '%s\n' "${konjir#konjir@}" "$version" | sort -V | tail -1)" != "$version" ] || [ "$konjir" = "konjir@$version" ]; then
-            echo "::error::$version isn't above $konjir: @konjir/kolab continues konjir's versions"
-            exit 1
-          fi
-          # npm view exits 0 with the version if it is published, and E404 if @konjir/kolab or the version isn't.
-          if published=$(npm view "@konjir/kolab@$version" version 2>"$RUNNER_TEMP/npm-view.err"); then
-            if [ -n "$published" ]; then
-              echo "::error::npm already has @konjir/kolab@$version"
-              exit 1
-            fi
-          elif ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
-            cat "$RUNNER_TEMP/npm-view.err"
-            echo "::error::couldn't ask npm whether @konjir/kolab@$version exists"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "previous=$previous" >> "$GITHUB_OUTPUT"
 
       - name: Bundle for npm and compile the binaries
         run: npx nx run-many -t bundle compile -p @konjir/kolab --skip-nx-cache --output-style=static

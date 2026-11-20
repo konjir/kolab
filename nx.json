@@ -84,12 +84,12 @@
       "@konjir/kolab"
     ],
     "releaseTag": {
-      "pattern": "kolab@{version}"
+      "pattern": "kolab@{version}",
+      "checkAllBranchesWhen": true
     },
     "version": {
       "currentVersionResolver": "git-tag",
       "fallbackCurrentVersionResolver": "disk",
-      "conventionalCommits": false,
       "versionActions": "apps/cli/scripts/version-actions.cjs",
       "git": {
         "commit": false,
