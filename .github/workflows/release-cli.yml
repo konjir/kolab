@@ -16,7 +16,8 @@ name: Release CLI
 # 1. "Build kolab release" (read-only): validates the version, refuses one not above every release
 #    already made, sets it in the runner, builds the npm tarball and the binaries, checks both
 #    carry LICENSE (Apache-2.0) and the third-party notices and reach a Kolab started from the
-#    checkout, runs npm publish --dry-run on the tarball, and uploads the files as an artifact. It is the only job that installs dependencies or runs Bun.
+#    checkout, runs npm publish --dry-run on the tarball, and uploads the files as an artifact.
+#    It is the only job that installs dependencies or runs Bun.
 # 2. "Draft GitHub release" (contents, attestations): attests the files' build provenance and
 #    creates the release as a draft, with the files and generated notes. A draft has no tag yet.
 # 3. "Publish @konjir/kolab to npm" (id-token, the npm-release environment): publishes the tarball the
@@ -79,8 +80,8 @@ jobs:
         env:
           SPECIFIER: ${{ inputs.version }}
         run: |
-          if [[ ! "$SPECIFIER" =~ ^(patch|minor|major|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "::error::version must be patch, minor, major or X.Y.Z (got '$SPECIFIER')"
+          if [[ ! "$SPECIFIER" =~ ^(patch|minor|major|(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
+            echo "::error::version must be patch, minor, major or X.Y.Z, with no leading zeros (got '$SPECIFIER')"
             exit 1
           fi
 
