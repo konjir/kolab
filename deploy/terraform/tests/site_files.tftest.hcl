@@ -39,7 +39,7 @@ run "site_publishes_only_the_build" {
     error_message = "site/README.md and dotfiles aren't uploaded"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/hands-on/index.html", "konnect/index.html", "konnect/guide/index.html", "robots.txt", "sitemap.xml", "favicon.svg", "og/www.jpg"] : contains(output.files, f)])
+    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/hands-on/index.html", "konnect/index.html", "konnect/guide/index.html", "robots.txt", "sitemap.xml", "favicon.svg", "og/www.jpg", "og/konnect.jpg"] : contains(output.files, f)])
     error_message = "the built pages are uploaded, each product's section included, with the sitemap and the Open Graph image"
   }
   assert {
