@@ -119,7 +119,7 @@ jobs:
   postgres:
     name: Test on Postgres
     runs-on: ubuntu-24.04-arm
-    # A full run took about 17 minutes in November 2026, against a limit of 20.
+    # A full run took 17-19 minutes in November 2026, against a limit of 20.
     timeout-minutes: 30
     permissions:
       contents: read
