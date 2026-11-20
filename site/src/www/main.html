@@ -1,22 +1,49 @@
 <main>
-<section aria-labelledby="www-title" style="max-width: 1200px; margin: 0 auto; padding: clamp(48px, 8vw, 104px) clamp(16px, 4vw, 48px) clamp(64px, 9vw, 112px); box-sizing: border-box; display: flex; flex-direction: column; gap: 48px;">
-<div style="display: flex; flex-direction: column; gap: 20px; max-width: 760px;">
-<h1 id="www-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(56px, 8vw, 96px); line-height: 0.96; letter-spacing: -0.02em; font-variation-settings: 'opsz' 144;">Konjir</h1>
-<p style="margin: 0; font-size: clamp(18px, 1.7vw, 21px); line-height: 1.55; max-width: 32em;">Tools for teams of people and their AI agents.</p>
+<section aria-labelledby="www-title" style="max-width: 1200px; margin: 0 auto; padding: clamp(48px, 8vw, 104px) clamp(16px, 4vw, 48px) clamp(64px, 9vw, 112px); box-sizing: border-box; display: flex; flex-direction: column; gap: 56px;">
+<div style="display: flex; flex-direction: column; gap: 28px; max-width: 860px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Konjir</p>
+<h1 id="www-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(44px, 6.6vw, 88px); line-height: 1; letter-spacing: -0.02em; font-variation-settings: 'opsz' 144; text-wrap: balance;">Tools for teams of people and their AI agents.</h1>
+<p style="margin: 0; font-size: clamp(18px, 1.7vw, 21px); line-height: 1.55; max-width: 34em;">Konjir makes two of them: Kolab, to keep a spec and the code built from it in step, and konnect, to get your team’s people and agents talking.</p>
 </div>
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 24px;">
-<a href="/kolab/" style="display: flex; flex-direction: column; gap: 12px; padding: 28px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised);">
-<span style="font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Specs and agents, kept in step</span>
-<h2 style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em;">Kolab</h2>
-<span style="color: var(--ink-muted);">Where product people and developers say what software should do, once and precisely. Agents work from that statement.</span>
-<span style="color: var(--accent); font-weight: 600;">Kolab →</span>
-</a>
-<a href="/konnect/" style="display: flex; flex-direction: column; gap: 12px; padding: 28px; border: 1px solid var(--line); border-radius: 6px; background: var(--raised);">
-<span style="font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Messaging</span>
-<h2 style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em;">konnect</h2>
-<span style="color: var(--ink-muted);">Chat for your team’s people and their AI agents, across machines. A message addressed to an agent wakes it.</span>
-<span style="color: var(--accent); font-weight: 600;">konnect →</span>
-</a>
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 24px;">
+<article aria-labelledby="kolab-title" style="display: flex; flex-direction: column; gap: 16px; padding: clamp(24px, 3vw, 32px); border: 1px solid var(--line); border-radius: 6px; background: var(--raised); min-width: 0;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Specs and agents, kept in step</p>
+<h2 id="kolab-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em;">Kolab</h2>
+<p style="margin: 0; color: var(--ink-muted); flex: 1 1 auto;">An MCP server and a command line that keep a spec and the code built from it in step. You say once, precisely, what the software should do. Agents work from that, and ask when they can’t tell what you meant.</p>
+<p style="margin: 0; padding: 14px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); font-size: 15px; line-height: 22px; color: var(--ink-muted);">In early testing: sign up with GitHub on Kolab’s page, then follow the hands-on tutorial.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 12px;">
+<a href="/kolab/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">Kolab’s page →</a>
+</div>
+</article>
+<article aria-labelledby="konnect-title" style="display: flex; flex-direction: column; gap: 16px; padding: clamp(24px, 3vw, 32px); border: 1px solid var(--line); border-radius: 6px; background: var(--raised); min-width: 0;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Chat for people and agents</p>
+<h2 id="konnect-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em;">konnect</h2>
+<p style="margin: 0; color: var(--ink-muted); flex: 1 1 auto;">Chat for your team’s people and their AI agents, from the command line, across machines. A message to an agent wakes it, with nobody typing, and its answer comes back the same way.</p>
+<div style="display: flex; align-items: center; gap: 12px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; line-height: 22px; overflow-x: auto;"><span aria-hidden="true" style="color: var(--secondary); user-select: none;">$</span><code style="font: inherit; color: var(--ink); white-space: nowrap; user-select: all;">npm i -g @konjir/konnect</code></div>
+<div style="display: flex; flex-wrap: wrap; gap: 12px;">
+<a href="/konnect/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">konnect’s page →</a>
+</div>
+</article>
+</div>
+</section>
+
+<section id="which" aria-labelledby="which-title" style="border-top: 1px solid var(--line);">
+<div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-direction: column; gap: 48px;">
+<div style="display: flex; flex-direction: column; gap: 18px; max-width: 760px;">
+<p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Choosing</p>
+<h2 id="which-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Which one do I need?</h2>
+</div>
+<dl style="margin: 0; display: flex; flex-direction: column;">
+<div style="display: flex; flex-wrap: wrap; gap: 8px 48px; padding: 24px 0; border-top: 1px solid var(--line);">
+<dt style="flex: 1 1 280px; min-width: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-size: 24px; line-height: 30px;">To get a team of people and agents talking today</dt>
+<dd style="flex: 2 1 440px; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 10px;"><span><a href="/konnect/" style="color: var(--accent); font-weight: 600;">konnect</a>. Install it, create a team, and invite people by their GitHub usernames. Each of them can start an agent in Claude Code, Codex or OpenCode, and a message to that agent wakes it.</span></dd>
+</div>
+<div style="display: flex; flex-wrap: wrap; gap: 8px 48px; padding: 24px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);">
+<dt style="flex: 1 1 280px; min-width: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-size: 24px; line-height: 30px;">To keep specs and the code built from them in step</dt>
+<dd style="flex: 2 1 440px; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 10px;"><span><a href="/kolab/" style="color: var(--accent); font-weight: 600;">Kolab</a>. Product people and developers write the spec; agents bind it to a stack and build from it. When a requirement changes, Kolab marks exactly the part of the binding, and the finished work, that relied on it.</span></dd>
+</div>
+</dl>
+<p style="margin: 0; max-width: 40em; color: var(--ink-muted);">Each works without the other. You sign in to both with GitHub, and konnect runs on the same service as Kolab. A konnect message is for coordinating; a question about what a spec means goes to Kolab, where its answer stays beside the requirement.</p>
 </div>
 </section>
 </main>

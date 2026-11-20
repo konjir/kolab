@@ -300,3 +300,16 @@ test('every page names its canonical URL on www, with Open Graph and Twitter tag
   expect(notFound).toContain('<meta name="robots" content="noindex">');
   expect(notFound).not.toContain('rel="canonical"');
 });
+
+test("the org page says what Konjir is, gives a card to each product with konnect's install line, and says which one you need", () => {
+  const r = copy('org');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const page = read(r, 'index.html');
+  expect(page).toMatch(/<h1 id="www-title"[^>]*>Tools for teams of people and their AI agents\.<\/h1>/);
+  expect(page).toMatch(/<meta name="description" content="Konjir makes two of them: Kolab, [^"]*konnect, [^"]*">/);
+  expect(page).toMatch(/<h2 id="kolab-title"[^>]*>Kolab<\/h2>[\s\S]*<a href="\/kolab\/" class="kb line[^"]*">Kolab’s page →<\/a>/);
+  expect(page).toMatch(/<h2 id="konnect-title"[^>]*>konnect<\/h2>[\s\S]*npm i -g @konjir\/konnect[\s\S]*<a href="\/konnect\/" class="kb line[^"]*">konnect’s page →<\/a>/);
+  expect(page).toMatch(/<h2 id="which-title"[^>]*>Which one do I need\?<\/h2>/);
+  expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
+});
