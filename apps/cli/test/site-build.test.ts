@@ -259,10 +259,13 @@ test("konnect's page is its <main>, in the shared header and footer: the install
   expect(assetsOf(r)).toStrictEqual([...page.matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort());
   expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
   expect([...page.matchAll(/<script\b/g)]).toHaveLength(1);
-  for (const command of ['konnect team create acme', 'konnect team invite sam', 'konnect login', 'konnect receive', 'konnect send @sam/reviewer', 'konnect agent run reviewer claude', 'npx @konjir/konnect']) expect(page).toContain(command);
+  for (const command of ['konnect team create acme', 'konnect team invite sam-gh', 'konnect login', 'konnect receive', 'konnect send @sam-gh/reviewer', 'konnect agent run reviewer claude', 'npx @konjir/konnect']) expect(page).toContain(command);
   // Output as konnect prints it, escaped.
   expect(page).toContain('Invite people with: konnect team invite &lt;github-user&gt;');
-  expect(page).toContain('Sent to @sam/reviewer.');
+  expect(page).toContain('Sent to @sam-gh/reviewer.');
+  expect(page).toContain('Your agent @sam-gh/reviewer is added to team acme.');
+  // What konnect tells an agent is said to be words, not a permission.
+  expect(page).toContain('That is its system prompt, not a permission');
   for (const harness of ['Claude Code', 'Codex', 'OpenCode']) expect(page).toContain(`>${harness}</h3>`);
   for (const href of ['/konnect/guide/', 'https://github.com/konjir/kolab/blob/main/apps/konnect/man/konnect.1', 'https://www.npmjs.com/package/@konjir/konnect']) expect(page).toContain(`<a href="${href}"`);
   // It ends with the shared footer, as the guide does.
