@@ -273,6 +273,91 @@ test("every page has the one header: the mark links to /, the product switcher m
   expect(read(r, 'konnect/index.html')).toContain('npm i -g @konjir/konnect');
 });
 
+test("on a narrow screen every header is one row, the mark, the product switcher and a menu button, whose <details> holds the section's links, the theme switch and the sign-in; on a wide one they sit in the row", () => {
+  const r = copy('menu');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  for (const file of [...PAGES.map(([f]) => f), '404.html']) {
+    const head = headerOf(read(r, file));
+    // The row: the mark and the switcher, then the menu, closed, so with no script its summary opens it.
+    expect(head).toMatch(/<nav aria-label="Main" class="hd [^"]*">\n<div class="hd-brand">\n<a href="\/" aria-label="Konjir home"[\s\S]*?<div role="group" aria-label="Products"[\s\S]*?<\/div>\n<\/div>\n<details class="menu" data-menu="">\n<summary class="kb line"><svg [^>]*aria-hidden="true"[^>]*>[\s\S]*?<\/svg><span class="menu-label">Menu<\/span><\/summary>\n<div class="menu-panel">/);
+    expect(head.match(/<details\b/g)).toHaveLength(1);
+    expect(head).toMatch(/<\/details>\n<\/nav>\n<\/header>$/);
+    // In the menu: every link but the mark and the switcher's, the theme switch and Kolab's sign-in.
+    const menu = head.slice(head.indexOf('<details'));
+    const outside = head.slice(0, head.indexOf('<details'));
+    expect([...outside.matchAll(/<a href="([^"]*)"/g)].map((m) => m[1])).toStrictEqual(['/', '/kolab/', '/konnect/']);
+    expect(menu).toContain('<div role="radiogroup" aria-label="Theme"');
+    if (file.startsWith('kolab/')) for (const href of ['https://kolab.konjir.com/', 'https://kolab.konjir.com/api/session/oauth/start']) expect(menu).toContain(`<a href="${href}"`);
+    // The menu's own links come first, in the section's order.
+    expect(menu.indexOf('<div class="menu-links">')).toBeLessThan(menu.indexOf('<div class="menu-end">'));
+  }
+  expect(headerOf(read(r, 'konnect/guide/index.html'))).toMatch(/<div class="menu-links">\n<a href="\/konnect\/">Overview<\/a>\n<a href="\/konnect\/guide\/" aria-current="page"[^>]*>Guide<\/a>\n<\/div>/);
+  // The org page has no section links, so its menu holds only the theme switch.
+  expect(headerOf(read(r, 'index.html'))).toContain('<div class="menu-links"></div>');
+
+  // The stylesheet says when the screen is narrow, in the menu's --menu, which site.js reads: the
+  // summary shows and the menu opens beneath it below 1200px; at 1200px and up the summary is hidden
+  // and the menu's content shows even while it is closed (as it is with no script).
+  const css = readFileSync(join(r, 'site', /href="(\/assets\/site\.[0-9a-f]{10}\.css)"/.exec(read(r, 'index.html'))![1]), 'utf8');
+  expect(css).toContain('@media (width >= 1200px){.menu{--menu:wide;');
+  expect(css).toContain('.menu>summary{display:none}');
+  expect(css).toContain('@media (width >= 1200px){.menu::details-content{content-visibility:visible}}');
+  expect(css).toMatch(/@media \(width < 1200px\)\{\.menu\{--menu:narrow;[^\n]*\.menu-panel\{position:absolute;/);
+  const js = readFileSync(join(r, 'site', /src="(\/assets\/site\.[0-9a-f]{10}\.js)"/.exec(read(r, 'index.html'))![1]), 'utf8');
+  expect(js).toContain("getPropertyValue('--menu')");
+  expect(js).toContain("e.key !== 'Escape'");
+
+  // The artboard's own header, which the artifact shows, is written the same way.
+  const src = readFileSync(artboard(r), 'utf8');
+  const own = /<header\b[\s\S]*?<\/header>/.exec(src)![0];
+  expect(own).toMatch(/<nav aria-label="Main" class="hd" [^>]*>\n<div class="hd-brand">[\s\S]*?<\/div>\n<details class="menu" data-menu="">\n<summary class="kb line">[\s\S]*?<span class="menu-label">Menu<\/span><\/summary>\n<div class="menu-panel">\n<div class="menu-links">/);
+  expect(own.indexOf('role="radiogroup"')).toBeGreaterThan(own.indexOf('<details'));
+});
+
+test('every footer links to the source on GitHub, both packages on npm and their licences, and to no privacy policy, terms or contact yet', () => {
+  const r = copy('footer');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const links = [
+    ['https://github.com/konjir/kolab', 'GitHub'],
+    ['https://www.npmjs.com/package/@konjir/kolab', '@konjir/kolab on npm'],
+    ['https://www.npmjs.com/package/@konjir/konnect', '@konjir/konnect on npm'],
+    ['https://github.com/konjir/kolab/blob/main/LICENSE.md', 'Kolab server licence (FSL-1.1-ALv2)'],
+    ['https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE', 'kolab CLI licence (Apache-2.0)'],
+    ['https://github.com/konjir/kolab/blob/main/apps/konnect/LICENSE', 'konnect licence (Apache-2.0)'],
+  ];
+  const nav = new RegExp(`<nav aria-label="Source and licences" class="[^"]*">\\n${links.map(([href, text]) => `<a href="${href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`).join('\\n')}\\n</nav>`);
+  // The artboard's footer (Kolab's pages) and the shared one (every other page and the 404) alike.
+  for (const file of [...PAGES.map(([f]) => f), '404.html']) {
+    const foot = /<footer\b[\s\S]*<\/footer>/.exec(read(r, file))![0];
+    expect([file, nav.test(foot)]).toStrictEqual([file, true]);
+    expect(foot).not.toMatch(/privacy|terms|contact|mailto:/i);
+  }
+  // The licences it names are the repository's: the server's FSL, the CLIs' Apache-2.0.
+  expect(readFileSync(join(ROOT, 'LICENSE.md'), 'utf8')).toContain('FSL-1.1-ALv2');
+  for (const app of ['cli', 'konnect']) {
+    expect(readFileSync(join(ROOT, `apps/${app}/LICENSE`), 'utf8')).toContain('Apache License');
+    expect(JSON.parse(readFileSync(join(ROOT, `apps/${app}/package.json`), 'utf8')).license).toBe('Apache-2.0');
+  }
+});
+
+test("the theme switch says which theme is on: its radios' aria-checked, and only the checked one a tab stop, follow the theme site.js applies", () => {
+  const r = copy('theme');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  // Written dark first, as the root's data-theme is, for a page read with no script.
+  for (const file of [...PAGES.map(([f]) => f), '404.html']) {
+    const html = read(r, file);
+    expect(html).toMatch(/<div class="kj[^"]*" data-theme="dark"/);
+    expect(html).toMatch(/role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="false" tabindex="-1" data-theme-choice="light"/);
+    expect(html).toMatch(/role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="true" tabindex="0" data-theme-choice="dark"/);
+  }
+  const js = readFileSync(join(ROOT, 'deploy/site/site.js'), 'utf8');
+  expect(js).toContain("buttons[i].setAttribute('aria-checked', on ? 'true' : 'false');");
+  expect(js).toContain('buttons[i].tabIndex = on ? 0 : -1;');
+});
+
 test("konnect's page is its <main>, in the shared header and footer: the install line, the three commands, an agent woken by a message, what it needs, and its links", () => {
   const r = copy('konnect');
   const b = build(r);

@@ -29,13 +29,27 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 .kb:focus-visible,.kb:has(:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
 .tt:focus-visible{outline:none}
 .kb.fill:hover{filter:brightness(1.07)}
+.hd{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+.hd-brand{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;min-width:0}
+.menu>summary{list-style:none;gap:8px;padding:0 16px 0 14px;font-size:15px;font-weight:500;color:var(--ink)}
+.menu>summary::-webkit-details-marker{display:none}
+.menu[open]>summary .menu-bars,.menu:not([open])>summary .menu-x{display:none}
+.menu-panel,.menu-end{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+.menu-links{display:flex;flex-wrap:wrap;gap:4px 20px;font-size:15px}
+@media (width >= 1200px){.menu{--menu:wide;flex:1 1 auto;min-width:0}.menu>summary{display:none}.menu-links{flex:1 1 auto}}
+@media (width >= 1200px){.menu::details-content{content-visibility:visible}}
+@supports not selector(::details-content){@media (width >= 1200px){.menu:not([open])>summary{display:inline-flex}}}
+@media (width < 1200px){.menu{--menu:narrow;margin-left:auto}.menu[open]>summary{--kb-line:var(--ink-muted)}.menu-panel{position:absolute;z-index:10;top:calc(100% - 8px);right:clamp(16px,4vw,48px);box-sizing:border-box;width:min(340px,calc(100% - 2 * clamp(16px,4vw,48px)));flex-direction:column;align-items:stretch;gap:16px;padding:8px 20px 20px;background:var(--raised);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.32)}.menu-links{flex-direction:column;gap:0}.menu-links:empty{display:none}.menu-links a{display:flex;align-items:center;min-height:44px;border-bottom:1px solid var(--line)}.menu-links a:last-child{border-bottom:0}.menu-end .kb.fill{flex:1 1 100%}}
+@media (width < 440px){.menu>summary{width:44px;padding:0}.menu-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
+@media (width < 380px){.hd{gap:12px}.hd-brand{gap:8px}.hd-brand>a>svg{width:70px;height:32px}}
 [hidden]{display:none!important}
 </style>
 </helmet>
 <div class="kj" data-theme="{{theme}}" style="background: var(--surface); color: var(--ink); font-family: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 26px; min-width: 0;">
 
 <header style="border-bottom: 1px solid var(--line);">
-<nav aria-label="Main" style="max-width: 1200px; margin: 0 auto; padding: 16px clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 32px;">
+<nav aria-label="Main" class="hd" style="max-width: 1200px; margin: 0 auto; padding: 16px clamp(16px, 4vw, 48px); box-sizing: border-box;">
+<div class="hd-brand">
 <a href="#top" aria-label="Konjir home" style="display: flex; align-items: center;">
 <svg viewBox="0 0 122 56" width="88" height="40" role="img" aria-label="Konjir">
 <g fill="none" style="stroke: var(--ink)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
@@ -43,7 +57,11 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" style="fill: var(--moon); stroke: var(--moon)" stroke-width="0.6" stroke-linejoin="round"></path>
 </svg>
 </a>
-<div style="display: flex; flex-wrap: wrap; gap: 4px 28px; flex: 1 1 auto; font-size: 15px;">
+</div>
+<details class="menu" data-menu="">
+<summary class="kb line"><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path class="menu-bars" d="M3 5.5H17M3 10H17M3 14.5H17"></path><path class="menu-x" d="M5 5L15 15M15 5L5 15"></path></svg><span class="menu-label">Menu</span></summary>
+<div class="menu-panel">
+<div class="menu-links">
 <a href="https://www.konjir.com/kolab/how-it-works/">How it works</a>
 <a href="#circle">Roles</a>
 <a href="#agents">For agents</a>
@@ -51,12 +69,16 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <a href="https://www.konjir.com/konnect/guide/">Messaging</a>
 <a href="https://www.konjir.com/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">Try it hands-on</a>
 </div>
+<div class="menu-end">
 <div role="radiogroup" aria-label="Theme" class="kb line" style="--kb-h: 44px; --kb-line: var(--line-strong); padding: 0 4px; gap: 0; cursor: default;">
 <button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="{{isLight}}" tabIndex="{{lightTab}}" onClick="{{setLight}}" onKeyDown="{{onKey}}"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" style="fill: var(--sun)"></circle></svg></button>
 <button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="{{isDark}}" tabIndex="{{darkTab}}" onClick="{{setDark}}" onKeyDown="{{onKey}}"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" style="fill: var(--moon); stroke: var(--moon)"></path></svg></button>
 </div>
 <a href="https://kolab.konjir.com/" style="font-size: 15px;">Sign in</a>
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 44px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 22px; color: var(--on-accent); font-weight: 600; font-size: 15px;">Sign up with GitHub</a>
+</div>
+</div>
+</details>
 </nav>
 </header>
 
@@ -337,6 +359,14 @@ job c9d5…: done (Kolab: reviewed) (exit 0)</span></pre>
 <a href="#signup">Sign up</a>
 <a href="https://www.konjir.com/kolab/hands-on/">Hands-on tutorial</a>
 <a href="https://www.konjir.com/konnect/guide/">Messaging with konnect</a>
+</nav>
+<nav aria-label="Source and licences" style="display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; line-height: 20px; flex-basis: 100%;">
+<a href="https://github.com/konjir/kolab">GitHub</a>
+<a href="https://www.npmjs.com/package/@konjir/kolab">@konjir/kolab on npm</a>
+<a href="https://www.npmjs.com/package/@konjir/konnect">@konjir/konnect on npm</a>
+<a href="https://github.com/konjir/kolab/blob/main/LICENSE.md">Kolab server licence (FSL-1.1-ALv2)</a>
+<a href="https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE">kolab CLI licence (Apache-2.0)</a>
+<a href="https://github.com/konjir/kolab/blob/main/apps/konnect/LICENSE">konnect licence (Apache-2.0)</a>
 </nav>
 <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted); flex-basis: 100%;">© 2026 Konjir · konjir.com</p>
 </div>
