@@ -1,19 +1,24 @@
-// konjir.com's viewer-request function (cloudfront-js-2.0). www.konjir.com is canonical by the
-// pages' canonical links, sitemap and Open Graph URLs, but the apex serves the same pages and
-// doesn't redirect: until this split the function answered www with a 301 to the apex, with no
-// Cache-Control, and browsers may keep that 301 for good, so an apex redirected back to www would
-// loop for them. Redirecting the apex is a later, deliberate change, once those have aged out.
+// konjir.com's viewer-request function (cloudfront-js-2.0). www.konjir.com is the site's host, and
+// konjir.com redirects to it (Lee, 2026-11-20): on the apex every request answers with a 301 to
+// https://www.konjir.com, path and query kept, a page that moved straight to where it is now, in one
+// hop. The redirect is built from the fixed www host, never from the Host header, and only a request
+// whose host is exactly the apex takes it; every other host is answered as www.
+// Known consequence: until 2026-11-19 the function answered www with a 301 to the apex, with no
+// Cache-Control, so a browser may still hold it for a www URL it visited then (www.konjir.com/
+// above all). For that browser, that URL loops (www -> apex -> www) until the entry leaves its cache;
+// clearing konjir.com's and www.konjir.com's cached data fixes it. URLs that never existed on www
+// before, the moved pages' new ones among them, aren't affected.
 //
-// On both hosts the pages that moved when the site was split by product answer with a 301 to where
-// they are now on www, path below them and query kept: /hands-on and /hands-on/… to
-// /kolab/hands-on/…, and /messages and /messages/… to /konnect/guide/… Their new URLs never existed
-// before, so no cached redirect leads back. A browser keeps a link's #fragment through a redirect,
-// so old links to a heading still land on it. Every 301 here may be cached a day, no longer, so a
-// later change of direction reaches browsers.
+// On www the pages that moved when the site was split by product answer with a 301 to where they
+// are now, path below them and query kept: /hands-on and /hands-on/… to /kolab/hands-on/…, and
+// /messages and /messages/… to /konnect/guide/… A browser keeps a link's #fragment through a
+// redirect, so old links to a heading still land on it. Every 301 here may be cached a day, no
+// longer, so a later change of direction reaches browsers.
 // A folder's page is its index.html (S3 behind OAC has no index documents, and
 // default_root_object covers only "/"): a path ending in "/" is served from <path>index.html, and
 // a path whose last segment has no "." (/kolab) answers with a 301 to the same path with "/" added.
-// A path that starts "//" or holds "\" is none of these. Every other request passes.
+// A path that holds "\" is none of these on either host, and on www neither is one that starts
+// "//". Every other request passes.
 // Tested in apps/cli/test/site-www-redirect.test.ts.
 function handler(event) {
   var request = event.request;
@@ -37,8 +42,11 @@ function handler(event) {
   // could name another host): it passes as it came, to be a 404.
   if (uri.indexOf('\\') >= 0) return request;
   var moved = movedTo(uri);
-  // From the apex, straight to www's new path, in one hop; on www, relative to it.
-  if (moved) return redirect(host === '${apex}' ? 'https://${www}' + moved : moved);
+  // From the apex, to the same path on www, or a moved page's new one, in one hop. Only a path
+  // that starts with "/" is appended to the fixed host, so the location's host is always www, even
+  // for "//evil.example"; any other (CloudFront sends none) passes, to be a 404.
+  if (host === '${apex}') return uri.charAt(0) === '/' ? redirect('https://${www}' + (moved || uri)) : request;
+  if (moved) return redirect(moved);
   if (uri.charAt(uri.length - 1) === '/') {
     if (uri !== '/') request.uri = uri + 'index.html';
     return request;

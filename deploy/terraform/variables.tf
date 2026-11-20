@@ -118,7 +118,7 @@ variable "cli_npm_spec" {
 }
 
 variable "site_enabled" {
-  description = "Serve the marketing site (site/) at www.<zone_name>, its canonical host, and at the apex (D81). On by default: this stack, konjir-test, is production (staging was dropped, D83). Set it false only for a stack that mustn't own konjir.com, such as a throwaway copy in the same zone."
+  description = "Serve the marketing site (site/) at www.<zone_name>, with the apex redirecting there (D81). On by default: this stack, konjir-test, is production (staging was dropped, D83). Set it false only for a stack that mustn't own konjir.com, such as a throwaway copy in the same zone."
   type        = bool
   default     = true
 }
