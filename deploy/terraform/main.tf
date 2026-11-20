@@ -157,8 +157,8 @@ module "release" {
   depends_on = [module.kolab, module.iam, module.monitoring]
 }
 
-# The marketing site (D81), at www.konjir.com (canonical) and konjir.com: the files in site/, on S3
-# behind CloudFront.
+# The marketing site (D81), at www.konjir.com, to which konjir.com redirects: the files in site/,
+# on S3 behind CloudFront.
 # This stack, konjir-test, is production (staging was dropped, D83), so site_enabled defaults to true.
 module "site" {
   source = "./modules/site"

@@ -10,16 +10,17 @@ Shipped and deployed:
 - The konnect guard (#179): the server logs each client's name and version, and CI runs every published konnect against every server change.
 - Step 1a (#180): the CLI is `@konjir/kolab`, command `kolab`. 0.9.0 is on npm, published by the workflow with provenance, and the web page's `npx` line names it (#185).
 - Step 1b (#186): the server says `kolab`; errors and sign-in pages do only for a client that says it is kolab.
-- Step 2 (#178): www.konjir.com with `/`, `/kolab/`, `/konnect/`; konjir.com serves the same pages, and the old paths redirect.
+- Step 2 (#178): www.konjir.com with `/`, `/kolab/`, `/konnect/`, and the old paths redirect. konjir.com served the same pages until it began redirecting to www (below).
 - Steps 3–5 (#183, #182, #184, #181): the org page, the reworked Kolab page with its working mark demo, `/kolab/how-it-works/`, and the konnect page. The tutorial installs `@konjir/kolab` (#188).
 - Step 6 (#191, #190): footer links to source, npm and licences; a one-row header at any width; a signed-out view on kolab.konjir.com.
 - Also: every `kolab` subcommand answers `--help` without acting (#187); CI's test jobs have room (#189).
+- konjir.com redirects to www.konjir.com (Lee, 2026-11-20): every request to the apex is a 301 to the same path and query on www, a moved page's straight to its new path. Known consequence: a browser that still holds the old uncached www-to-apex 301 for a www URL it visited before 2026-11-19, `https://www.konjir.com/` above all, loops on that URL. The fix for an affected visitor is to clear the browser's cached data for konjir.com and www.konjir.com; otherwise it ages out of the browser's cache. URLs that never existed on www before, and the moved pages, aren't affected.
 
 Left:
 - Lee: release 0.9.1, so the published CLI has the `--help` fix (in 0.9.0, `kolab logout --help` signs out). Then the tutorial's install line and `cli_npm_spec` move to it.
 - Lee: the text of a privacy policy and terms, and a contact, for the footer.
 - Follow-ups: the site's media queries in `min-width`/`max-width` form, for Safari before 16.4; the web page's retry sends one stale request per press (apps/web/src/api.ts `patiently`); konnect's `hosts` and `review` tests time out now and then on CI's Postgres job.
-- Later, Lee's call: konjir.com redirecting to www once old cached redirects have aged out; reconciling the kolab (D11, D63, D81, D94 and the binding elements above).
+- Later, Lee's call: reconciling the kolab (D11, D63, D81, D94 and the binding elements above).
 
 ## Decisions
 
@@ -29,7 +30,7 @@ Left:
 | The command is `kolab`, with no `konjir` alias | Lee, 2026-11-18 |
 | The existing `konjir` package on npm (latest 0.8.0) is left alone: not deprecated, no shim, no new versions. It is to be repurposed later | Lee, 2026-11-18 |
 | One marketing site at `www.konjir.com`, with each package's page under it: `/kolab`, `/konnect`. `kolab.konjir.com` stays the Kolab app (web UI, `/mcp`, `/api`, `/oauth`, `/.well-known`) | Lee, 2026-11-18 |
-| `www.konjir.com` is canonical, by the pages' canonical links, sitemap and Open Graph URLs. `konjir.com` serves the same pages and doesn't redirect for now: until step 2 the site answered www with an uncached 301 to the apex, which browsers may keep for good, so redirecting the apex back would loop for them. Redirecting it is a later, deliberate change, once those have aged out | Proposed by Claude, unless Lee says otherwise |
+| `www.konjir.com` is canonical, by the pages' canonical links, sitemap and Open Graph URLs. konjir.com redirects to www.konjir.com (since 2026-11-20, Lee). Until then the apex served the same pages, because until step 2 the site answered www with an uncached 301 to the apex, which browsers may keep for good; for a browser that still holds it, a www URL it visited then loops (see *Status*) | www canonical: proposed by Claude. The apex's redirect: Lee, 2026-11-20 |
 | Names machines read keep `konjir`: the `konjir_*` tool names, `kj:` addresses, `KONJIR_URL`, `KONJIR_TOKEN`, and the MCP entry keys `konjir connect` writes. Only what people install and type changes | Proposed by Claude, unless Lee says otherwise |
 | No `konnect.konjir.com` for now (it doesn't resolve today, and nothing needs it) | Proposed by Claude, unless Lee says otherwise |
 | Each landing page stays a claude.ai artboard published from `site/src/` (D92's mechanics). The existing [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W) artifact becomes the Kolab page; the www and konnect pages get new artifacts | Proposed by Claude, unless Lee says otherwise |
@@ -71,7 +72,7 @@ What to fix, most important first:
 | `/konnect/` | konnect's product page: install, three commands, an agent woken by a message, the harnesses it supports | new artboard, `site/src/konnect/` |
 | `/konnect/guide/` | Today's `/messages/` | `site/src/konnect/guide.md` |
 
-Redirects, all 301 and cacheable for a day, in the site's CloudFront Function, on both hosts: `/hands-on/…` to `https://www.konjir.com/kolab/hands-on/…`; `/messages/…` to `https://www.konjir.com/konnect/guide/…`. `konjir.com` serves the same pages as `www.konjir.com` and doesn't redirect (see *Decisions*).
+Redirects, all 301 and cacheable for a day, in the site's CloudFront Function, from either host: `/hands-on/…` to `https://www.konjir.com/kolab/hands-on/…`; `/messages/…` to `https://www.konjir.com/konnect/guide/…`. `konjir.com` redirects every request to the same path on `www.konjir.com`, a moved page's straight to its new path (see *Decisions*).
 
 ## Older konnect keeps working
 
@@ -133,7 +134,7 @@ In order. Step 2 ships before any content changes, so every later step only chan
 
 - `deploy/site/build.mjs` builds several landing pages, each an artboard in `site/src/<section>/`, and the articles under them. `site/src/project/Main.dc.html` and its images move to `site/src/kolab/`; `hands-on.md` moves to `site/src/kolab/`, `messages.md` to `site/src/konnect/guide.md`. Until step 3 lands, `/` is a minimal org page linking to `/kolab/` and `/konnect/`.
 - One shared header for every page: the Konjir mark, a product switcher (Kolab, konnect), and the section's own links. An article's links stay within its section instead of jumping to the home page's anchors.
-- `deploy/terraform/modules/site`: `www.konjir.com` canonical by canonical links, `konjir.com` serving the same pages without redirecting until the old cached www-to-apex redirects have aged out, and the old paths' 301s to www's new paths above. The certificate already covers both names.
+- `deploy/terraform/modules/site`: `www.konjir.com` canonical by canonical links, `konjir.com` redirecting to it (at first it served the same pages, until Lee's call of 2026-11-20), and the old paths' 301s to www's new paths above. The certificate already covers both names.
 - The build writes `sitemap.xml`, a canonical link, Open Graph and Twitter tags on every page, and an Open Graph image per landing page (static PNGs in `site/src/<section>/`).
 - `site/README.md` describes the new layout and how each artboard is published to its artifact.
 - Check: every old URL redirects to its new one, every page renders in both themes at 390px and 1440px, and the console shows no errors.

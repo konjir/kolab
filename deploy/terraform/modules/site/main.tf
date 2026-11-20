@@ -1,11 +1,12 @@
 # The marketing site (D81), served at www.konjir.com: the pages built in site/ from their source in
 # site/src/ (D92), one section per product (docs/plans/rebrand-and-site.md).
 #  - a private, versioned, encrypted bucket that only this CloudFront distribution reads (OAC)
-#  - CloudFront for www.konjir.com and konjir.com. www is canonical by the pages' canonical links;
-#    the apex serves the same pages and doesn't redirect, since browsers may hold the old function's
-#    uncached www-to-apex 301 for good (redirecting it is a later, deliberate change). A CloudFront
-#    Function (www-redirect.js.tftpl) redirects the pages that moved when the site was split
-#    (/hands-on/, /messages/) to where they are now on www, and serves a folder's page from its index.html
+#  - CloudFront for www.konjir.com and konjir.com. www is the site's host; a CloudFront Function
+#    (www-redirect.js.tftpl) answers every request to the apex with a 301 to the same path on www
+#    (Lee, 2026-11-20), redirects the pages that moved when the site was split (/hands-on/,
+#    /messages/) to where they are now on www, in one hop from either host, and serves a folder's
+#    page from its index.html. A browser that still holds the old function's uncached www-to-apex
+#    301 loops on that URL until it drops it (the function's comment says more)
 #  - an ACM certificate in us-east-1, validated through the konjir.com zone
 #  - security headers on every response, a strict CSP among them
 #  - every file in site/ (README.md, dotfiles and the source in site/src/ aside) uploaded with its
@@ -28,7 +29,7 @@ variable "name" { type = string }
 variable "zone_id" { type = string }
 
 variable "domain_name" {
-  description = "The apex. The site's canonical host is www.<domain_name>; the apex serves the same pages."
+  description = "The apex. The site's host is www.<domain_name>; the apex redirects to it."
   type        = string
 }
 
@@ -223,7 +224,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 resource "aws_cloudfront_function" "www_redirect" {
   name    = "${var.name}-site-www-redirect"
   runtime = "cloudfront-js-2.0"
-  comment = "Moved pages 301 to ${local.www}; folder index pages; ${var.domain_name} served as ${local.www}"
+  comment = "${var.domain_name} 301s to ${local.www}; moved pages 301 to their new paths; folder index pages"
   publish = true
   code    = templatefile("${path.module}/www-redirect.js.tftpl", { www = local.www, apex = var.domain_name })
 }
