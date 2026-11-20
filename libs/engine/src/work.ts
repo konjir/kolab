@@ -613,8 +613,8 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
     const o = x as Record<string, unknown>;
     const unknown = Object.keys(o).filter((k) => !(EVIDENCE_KEYS as readonly string[]).includes(k));
     if (unknown.length) problems.push(`${what} has ${unknown.join(', ')}, which evidence doesn't take: it takes ${EVIDENCE_KEYS.join(', ')}`);
-    // An error names `konjir <command>`, which Kolab words for the kolab CLI alone (apps/server/src/wording.ts).
-    if (o.kind === 'release') { problems.push(`${what} is a release, which is recorded after the deploy with konjir_record_release (or konjir work deliver --release), not as the work's own evidence`); return; }
+    // The tool alone, which every client has: a job's harness, which a job's agent works through, has no `konjir` command, nor a `kolab` it may record with.
+    if (o.kind === 'release') { problems.push(`${what} is a release, which is recorded after the deploy with konjir_record_release, not as the work's own evidence`); return; }
     if (!(SUBMITTED_KINDS as readonly unknown[]).includes(o.kind)) { problems.push(`${what}'s kind is one of ${SUBMITTED_KINDS.join(', ')}, not ${JSON.stringify(o.kind ?? null)}`); return; }
     const kind = o.kind as EvidenceKind;
     const given = (k: string) => o[k] !== undefined && o[k] !== null;

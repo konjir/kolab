@@ -56,9 +56,10 @@ export const oauthWording = (registeredName: string | null | undefined): Wording
 /**
  * The CLI's commands an error may name, `konjir <command>`: its own commands, and a verb run through
  * it, which has an underscore (`konjir archive_agent label=…`). Not `konjir kolab:…` (a scope), nor
- * `konjir_<verb>` (a tool).
+ * `konjir_<verb>` (a tool). The same list as the CLI's own rewording (apps/channel-bridge/src/words.ts,
+ * KOLAB_COMMANDS), which apps/cli/test/server-wording.test.ts holds equal to it.
  */
-const COMMANDS = ['login', 'logout', 'connect', 'import', 'work', 'instructions', 'watch', 'claude', 'bridge', 'repo', 'serve', 'tools', 'help', 'status', 'whoami'];
+export const COMMANDS = ['login', 'logout', 'connect', 'import', 'work', 'instructions', 'watch', 'claude', 'bridge', 'repo', 'serve', 'tools', 'help', 'status', 'whoami'];
 const KONJIR_COMMAND = new RegExp(`\\bkonjir (${COMMANDS.join('|')}|[a-z]+(?:_[a-z]+)+)\\b(?!:)`, 'g');
 
 /** `text` as `wording` says it: for `kolab`, each `konjir <command>` said `kolab <command>`; for `konjir`, as it is. */

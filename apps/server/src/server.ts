@@ -13,6 +13,7 @@ import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
 
 export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
+export { COMMANDS as WORDED_COMMANDS } from './wording.js';
 export { answersUri, inboxUri, uriOf } from './uris.js';
 export { isPinnedNpmSpec } from './kolab-server.module.js';
 // Kolab's JSON log lines (P11, D68), for `kolab serve`'s own lines: the CLI loads the server, never the library.
