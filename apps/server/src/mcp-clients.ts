@@ -2,9 +2,7 @@ import { Inject, Injectable, type NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import type { Logger } from '@konjir/log';
 import { SERVER_OPTIONS, type ServerOptions } from './tokens.js';
-
-/** Where a 2026-07-28 request carries its client's name and version: in its `_meta`, on every request. */
-const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
+import { clientInfoOf } from './wording.js';
 
 /** The most of a name or a version a line keeps: the client chooses them. */
 const MAX_LENGTH = 100;
@@ -31,9 +29,9 @@ const text = (v: unknown) => (typeof v === 'string' ? v.slice(0, MAX_LENGTH) : n
  */
 export function mcpClients(logger: Logger) {
   return (req: Request, res: Response, next: NextFunction) => {
-    const body = req.body as { method?: unknown; params?: { clientInfo?: unknown; _meta?: Record<string, unknown> } } | undefined;
+    const body = req.body as { method?: unknown } | undefined;
     if (body && typeof body === 'object' && !Array.isArray(body) && (body.method === 'initialize' || body.method === 'server/discover')) {
-      const info = (body.params?.clientInfo ?? body.params?._meta?.[CLIENT_INFO_META_KEY]) as { name?: unknown; version?: unknown } | undefined;
+      const info = clientInfoOf(body);
       const client_name = text(info?.name);
       const client_version = text(info?.version);
       res.once('finish', () => {
@@ -46,7 +44,7 @@ export function mcpClients(logger: Logger) {
 }
 
 /**
- * mcpClients on /mcp, writing to the server's `clientLog` (ServerOptions): `konjir serve`, which
+ * mcpClients on /mcp, writing to the server's `clientLog` (ServerOptions): `kolab serve`, which
  * runs the deployed Kolab, gives Kolab's own logger. A server started without one (the tests',
  * in-process, whose stdout is often a CLI's under test) logs no such line.
  */

@@ -15,7 +15,7 @@ import { defaultWebRoot, webApp } from './web/static.js';
 export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
 export { answersUri, inboxUri, uriOf } from './uris.js';
 export { isPinnedNpmSpec } from './kolab-server.module.js';
-// Kolab's JSON log lines (P11, D68), for `konjir serve`'s own lines: the CLI loads the server, never the library.
+// Kolab's JSON log lines (P11, D68), for `kolab serve`'s own lines: the CLI loads the server, never the library.
 export { log } from '@konjir/log';
 export { JsonNestLogger, serverErrors } from './json-logger.js';
 export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
@@ -52,7 +52,7 @@ export async function startServer(opts: {
   worker?: boolean;
   /** The clock agents' states are judged by (konjir_say_state), in ms: Date.now by default; tests move it instead of sleeping. */
   agentStateClock?: () => number;
-  /** Where each MCP client that connects is logged (event mcp_client): `konjir serve` gives Kolab's logger; none by default. */
+  /** Where each MCP client that connects is logged (event mcp_client): `kolab serve` gives Kolab's logger; none by default. */
   clientLog?: Logger;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });

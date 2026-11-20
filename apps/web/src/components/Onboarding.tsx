@@ -43,7 +43,7 @@ export function Command({ text, label }: { text: string; label: string }) {
 export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https://opencode.ai/config.json', mcp: { konjir: { type: 'remote', url: mcp } } }, null, 2);
 
 /**
- * How to run the konjir CLI here (W3.7): `npx <spec>` only when this Kolab's operator named the
+ * How to run the kolab CLI here (W3.7): `npx <spec>` only when this Kolab's operator named the
  * published package, pinned to an exact version (KONJIR_CLI_NPM_SPEC). Until then, never `npx
  * konjir`: with no version pinned, whatever is published under the name at the time would run on
  * every machine that pasted the command. A checkout's bin/kolab instead, at ~/kolab.
@@ -51,29 +51,29 @@ export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https:
 export const CHECKOUT = '~/kolab';
 export const konjirCommand = (cli: WebCli | undefined) => (cli?.npm ? `npx ${cli.npm}` : `${CHECKOUT}/bin/kolab`);
 
-/** `konjir connect` for a harness (W3.7, D59): one agent of yours per entry, product and engineer by default. */
+/** `kolab connect` for a harness (W3.7, D59): one agent of yours per entry, product and engineer by default. */
 export const konjirConnect = (cli: WebCli | undefined, harness: 'opencode' | 'claude', origin: string, kolab: string) => `${konjirCommand(cli)} connect ${harness} --url ${origin} --kolab ${kolab}`;
 
 /**
- * `konjir connect claude` (W3.8, D61): the Konjir channel bridge, Claude Code's one Konjir server.
- * The published konjir carries it (W9.5, API29), so it is run as any other konjir command here.
+ * `kolab connect claude` (W3.8, D61): the Konjir channel bridge, Claude Code's one Konjir server.
+ * The published kolab carries it (W9.5, API29), so it is run as any other kolab command here.
  */
 export const konjirConnectChannel = (cli: WebCli | undefined, origin: string, kolab: string) => konjirConnect(cli, 'claude', origin, kolab);
 
-/** The agents konjir connect makes by default, by label: `<person>-<label>`, each with its entry `konjir-<label>`. */
+/** The agents kolab connect makes by default, by label: `<person>-<label>`, each with its entry `konjir-<label>`. */
 export const DEFAULT_AGENT_LABELS = ['product', 'engineer'] as const;
-/** Claude Code's server name for an agent's entry, as konjir connect writes it. */
+/** Claude Code's server name for an agent's entry, as kolab connect writes it. */
 export const entryName = (label: string) => `konjir-${label}`;
-/** Starting one agent's Claude Code session with its entry and channel alone, as konjir connect claude ends (W9.1, API24). */
+/** Starting one agent's Claude Code session with its entry and channel alone, as kolab connect claude ends (W9.1, API24). */
 export const claudeSession = (cli: WebCli | undefined, label: string) => `${konjirCommand(cli)} claude ${label}`;
 
-/** Where the konjir CLI comes from, when it isn't published: a checkout of the repository. */
+/** Where the kolab CLI comes from, when it isn't published: a checkout of the repository. */
 function GetTheCli({ cli }: { cli: WebCli | undefined }) {
-  if (cli?.npm) return <p className="why-not">The konjir CLI is the npm package <span className="mono">{cli.npm}</span>, run with <span className="mono">npx</span> (Node 22 or later).</p>;
+  if (cli?.npm) return <p className="why-not">The kolab CLI is the npm package <span className="mono">{cli.npm}</span>, run with <span className="mono">npx</span> (Node 22 or later).</p>;
   return (
     <>
-      <p className="why-not">This Kolab names no published konjir CLI, so these commands run it from a checkout of <span className="mono">github.com/konjir/kolab</span> at <span className="mono">{CHECKOUT}</span> (Node 22 or later). Make the checkout once:</p>
-      <Command label="Get the konjir CLI from its repository" text={`git clone https://github.com/konjir/kolab ${CHECKOUT} && (cd ${CHECKOUT} && npm ci)`} />
+      <p className="why-not">This Kolab names no published kolab CLI, so these commands run it from a checkout of <span className="mono">github.com/konjir/kolab</span> at <span className="mono">{CHECKOUT}</span> (Node 22 or later). Make the checkout once:</p>
+      <Command label="Get the kolab CLI from its repository" text={`git clone https://github.com/konjir/kolab ${CHECKOUT} && (cd ${CHECKOUT} && npm ci)`} />
     </>
   );
 }
@@ -82,29 +82,29 @@ function GetTheCli({ cli }: { cli: WebCli | undefined }) {
  * Connecting a harness, by one of two routes. Over MCP (Claude Code, OpenCode, any client that
  * speaks MCP's authorization), the harness needs only the URL and signs in on Kolab's own page,
  * where the person chooses the agent it works as (D30, D56), the kolab and the role; its agent then
- * calls the konjir_instructions tool, since such an agent usually has no konjir CLI. In a shell,
- * the konjir CLI signs in with `konjir login`, and `konjir instructions` gives the same text.
+ * calls the konjir_instructions tool, since such an agent usually has no kolab CLI. In a shell,
+ * the kolab CLI signs in with `kolab login`, and `kolab instructions` gives the same text.
  * `cli` says how this Kolab runs the CLI (GET /api/session/cli).
  */
 export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; cli?: WebCli; origin?: string }) {
   const mcp = `${origin}/mcp`;
-  const konjir = konjirCommand(cli);
+  const kolab = konjirCommand(cli);
   return (
     <>
       <section className="summary" aria-label="Connect a harness">
         <h1>Connect a harness</h1>
-        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you. Connect it with one command, over MCP by hand, or through the konjir CLI in a shell.</span>
+        <span className="fact">An agent works in Kolab through its own harness, as an agent of yours: its own actor and session, never more access than you. Connect it with one command, over MCP by hand, or through the kolab CLI in a shell.</span>
       </section>
       <section className="newk" aria-labelledby="c-connect">
-        <h2 className="section-title" id="c-connect">One command: konjir connect</h2>
+        <h2 className="section-title" id="c-connect">One command: kolab connect</h2>
         <p className="why-not">Run it in your project. It shows the change to the harness’s config, then opens your browser once, at Kolab’s setup page: it names {me.kolab} and one agent of yours per entry, <span className="mono">{me.actor}-{DEFAULT_AGENT_LABELS[0]}</span> and <span className="mono">{me.actor}-{DEFAULT_AGENT_LABELS[1]}</span> by default, made or reused, each with its role, for you to check and allow. Nothing to choose there, and nothing asked in the terminal. It writes no token in the config.</p>
         <GetTheCli cli={cli} />
         <h3 id="c-connect-opencode">OpenCode</h3>
-        <Command label="Connect OpenCode with konjir connect" text={konjirConnect(cli, 'opencode', origin, me.kolab)} />
+        <Command label="Connect OpenCode with kolab connect" text={konjirConnect(cli, 'opencode', origin, me.kolab)} />
         <h3 id="c-connect-claude">Claude Code</h3>
-        <p className="why-not">For Claude Code, each entry is the Konjir channel: one Konjir server with Kolab’s tools, which also pushes your inbox into the session as it changes, on one sign-in per agent. The konjir CLI carries it, and each agent is signed in at the setup, so no more pages open when Claude Code starts. It prints the command to start Claude Code last.</p>
-        <Command label="Connect Claude Code with konjir connect" text={konjirConnectChannel(cli, origin, me.kolab)} />
-        <p className="why-not">Then start each agent’s own Claude Code session in your project, one terminal each, with <span className="mono">konjir claude &lt;label&gt;</span>: only that agent’s entry and channel, and a system prompt naming the agent, its role and kolab, so your prompt to it carries only the task. Channels are a research preview, so it loads as a development channel: choose “I am using this for local development” at the warning. Channels need Claude Code signed in with a claude.ai account; without one the tools still work, and no channel messages arrive.</p>
+        <p className="why-not">For Claude Code, each entry is the Konjir channel: one Konjir server with Kolab’s tools, which also pushes your inbox into the session as it changes, on one sign-in per agent. The kolab CLI carries it, and each agent is signed in at the setup, so no more pages open when Claude Code starts. It prints the command to start Claude Code last.</p>
+        <Command label="Connect Claude Code with kolab connect" text={konjirConnectChannel(cli, origin, me.kolab)} />
+        <p className="why-not">Then start each agent’s own Claude Code session in your project, one terminal each, with <span className="mono">kolab claude &lt;label&gt;</span>: only that agent’s entry and channel, and a system prompt naming the agent, its role and kolab, so your prompt to it carries only the task. Channels are a research preview, so it loads as a development channel: choose “I am using this for local development” at the warning. Channels need Claude Code signed in with a claude.ai account; without one the tools still work, and no channel messages arrive.</p>
         {DEFAULT_AGENT_LABELS.map((l) => <Command key={l} label={`Start ${entryName(l)}'s Claude Code session`} text={claudeSession(cli, l)} />)}
         <p className="why-not">Don’t want channels? <span className="mono">--http</span> writes Claude Code’s plain HTTP entry instead, signed in from <span className="mono">/mcp</span>.</p>
         <Command label="Connect Claude Code over HTTP, with no channel" text={`${konjirConnect(cli, 'claude', origin, me.kolab)} --http`} />
@@ -125,17 +125,17 @@ export function ConnectView({ me, cli, origin = location.origin }: { me: WebMe; 
         <Command label="Kolab's MCP URL" text={mcp} />
       </section>
       <section className="newk" aria-labelledby="c-shell">
-        <h2 className="section-title" id="c-shell">In a shell: the konjir CLI, for Codex or you</h2>
-        <p className="why-not">The konjir CLI signs in with your browser and keeps the sign-in, renewing it by itself. Every konjir command then works as the agent you chose; start with <span className="mono">konjir instructions</span>.</p>
+        <h2 className="section-title" id="c-shell">In a shell: the kolab CLI, for Codex or you</h2>
+        <p className="why-not">The kolab CLI signs in with your browser and keeps the sign-in, renewing it by itself. Every kolab command then works as the agent you chose; start with <span className="mono">kolab instructions</span>.</p>
         {!cli?.npm && <p className="why-not">It runs from the checkout above, at <span className="mono">{CHECKOUT}</span>.</p>}
-        <Command label="Sign the konjir CLI in" text={`${konjir} login --url ${mcp} --kolab ${me.kolab} --role ${me.role}`} />
-        <Command label="Read the instructions with the konjir CLI" text={`${konjir} instructions`} />
+        <Command label="Sign the kolab CLI in" text={`${kolab} login --url ${mcp} --kolab ${me.kolab} --role ${me.role}`} />
+        <Command label="Read the instructions with the kolab CLI" text={`${kolab} instructions`} />
       </section>
       <section className="newk" aria-labelledby="c-work">
-        <h2 className="section-title" id="c-work">Put a machine to work: konjir work</h2>
-        <p className="why-not">Rather than drive agents yourself, set a machine to work on {me.kolab}: in a checkout of its repository, <span className="mono">konjir work</span> takes what is ready (reviews, work packages, questions and marks on the technical layer) and gives each to an agent of yours in its own worktree, one job at a time per slot. It never merges or deploys. Sign in first, as yourself.</p>
-        <Command label="Sign in to put this machine to work" text={`${konjir} login --url ${mcp} --kolab ${me.kolab}`} />
-        <Command label="Put this machine to work, in a checkout of the kolab's repository" text={`${konjir} work`} />
+        <h2 className="section-title" id="c-work">Put a machine to work: kolab work</h2>
+        <p className="why-not">Rather than drive agents yourself, set a machine to work on {me.kolab}: in a checkout of its repository, <span className="mono">kolab work</span> takes what is ready (reviews, work packages, questions and marks on the technical layer) and gives each to an agent of yours in its own worktree, one job at a time per slot. It never merges or deploys. Sign in first, as yourself.</p>
+        <Command label="Sign in to put this machine to work" text={`${kolab} login --url ${mcp} --kolab ${me.kolab}`} />
+        <Command label="Put this machine to work, in a checkout of the kolab's repository" text={`${kolab} work`} />
       </section>
     </>
   );
@@ -474,7 +474,7 @@ export function GettingStarted({ me, go }: { me: WebMe; go(r: string): void }) {
     <section className="notice" aria-label="Getting started">
       <h2>Getting started in {me.kolab}</h2>
       <ol>
-        <li><button type="button" className="chip" onClick={() => go('connect')}>Connect a harness</button> over MCP (Claude Code, OpenCode) or with the konjir CLI in a shell.</li>
+        <li><button type="button" className="chip" onClick={() => go('connect')}>Connect a harness</button> over MCP (Claude Code, OpenCode) or with the kolab CLI in a shell.</li>
         {me.access.level === 'admin' && <li><button type="button" className="chip" onClick={() => go('people')}>Invite a teammate</button> with a link: an engineer to write the binding, or a product owner.</li>}
         <li>Write the spec below, or let your agent draft it for you to review.</li>
       </ol>
@@ -486,7 +486,7 @@ const VIA_WORDS: Record<OwnSession['via'], string> = { web: 'web page', app: 'ap
 
 /**
  * Your sessions (W6.1, D103): you hold one on each machine you sign in through as yourself, each
- * konjir install, browser and harness entry, and signing in again on one replaces only that one.
+ * kolab install, browser and harness entry, and signing in again on one replaces only that one.
  * The list says where and when each was last used; revoking one ends it at once and closes its
  * streams (D41). This browser's own is marked, and signing out ends it instead.
  */
@@ -503,7 +503,7 @@ export function SessionsView({ tick, act }: { tick: number; act: Act }) {
     <>
       <section className="summary" aria-label="Your sessions">
         <h1>Your sessions</h1>
-        <span className="fact">You stay signed in on each machine you use: each konjir install, browser and harness. Signing in again on one replaces only that one. Revoke any you no longer use.</span>
+        <span className="fact">You stay signed in on each machine you use: each kolab install, browser and harness. Signing in again on one replaces only that one. Revoke any you no longer use.</span>
       </section>
       <section aria-labelledby="s-list"><h2 className="section-title" id="s-list">Signed in now</h2>
         {error && <p className="empty" role="alert">{error}</p>}
@@ -530,7 +530,7 @@ export function SessionsView({ tick, act }: { tick: number; act: Act }) {
   );
 }
 
-/** Connect a harness, with how this Kolab runs the konjir CLI (W3.7): a checkout's until the server names a published spec. */
+/** Connect a harness, with how this Kolab runs the kolab CLI (W3.7): a checkout's until the server names a published spec. */
 export function ConnectPage({ me }: { me: WebMe }) {
   const { data } = useRead<WebCli>('session/cli', 0);
   return <ConnectView me={me} cli={data} />;

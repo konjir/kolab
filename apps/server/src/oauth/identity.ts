@@ -128,7 +128,7 @@ export class GitHubIdentity implements IdentityProvider {
  * An identity provider for tests and local development, which signs in whoever the test says,
  * with no browser and no network: `authorizationUrl` sends the browser straight back to Kolab's
  * callback with a code for the next person queued by `next` (or `as`). Only code can configure
- * it (startServer's `identity`); `konjir serve` never does.
+ * it (startServer's `identity`); `kolab serve` never does.
  */
 export class StubIdentity implements IdentityProvider {
   readonly id = 'stub';

@@ -110,7 +110,7 @@ test('a package with release set stays In review after its approval, shown as ap
   expect(r.next).toBe('once it is deployed, after this approval, its release is recorded by someone with Write on the technical layer other than its assignee, '
     + 'from an engineer session outside any job (a job never merges or deploys, JOB4), naming the deploy run, a GitHub Actions run of the package\'s registered repository, or for a package with none of its own the registered one its evidence named with repo= '
     + '(<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha '
-    + '(konjir_record_release work=kj:orders-pg#W1.1 run=<the run\'s https link> sha=<the full sha>, or konjir work deliver kj:orders-pg#W1.1 --release <run> from a checkout of that repository), and that makes it Done');
+    + '(konjir_record_release work=kj:orders-pg#W1.1 run=<the run\'s https link> sha=<the full sha>, or kolab work deliver kj:orders-pg#W1.1 --release <run> from a checkout of that repository), and that makes it Done');
   expect(await state(kolab, 'W1.1')).toStrictEqual({ state: 'in_review', approved: true });
   // Shown so wherever its state is: the board, the package, and to a reader.
   const board = (await kolab.listWork(bob)).items;

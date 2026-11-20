@@ -71,7 +71,7 @@ export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
    * The gate on each subscriptions/listen stream, as it opens (API4, D41): the break-glass
    * token's streams pass; a session's only while it is open, an admin's too. A session ended since its request
    * was verified is refused in-band (JSON-RPC -32003, `data.reason` 'session_ended'), which
-   * Kolab's own clients, the channel bridge and `konjir watch`, treat as the token revoked, as
+   * Kolab's own clients, the channel bridge and `kolab watch`, treat as the token revoked, as
    * they do a 401. If the check itself fails, the package refuses the stream as 'gate_failed'
    * (or 'gate_timeout' after 10 s), which they treat as worth retrying. The stream is already
    * tracked while this runs, so a session that ends now or later still has it closed

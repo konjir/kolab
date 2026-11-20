@@ -22,7 +22,7 @@ export function jobMachine(given: unknown): { machine?: string; problem?: string
 
 /**
  * The kinds a take may start when its runner names none (JOB6): build and review, the kinds every
- * `konjir work` knows, so a runner from before W5.11 never gets an item it has no playbook for.
+ * `kolab work` knows, so a runner from before W5.11 never gets an item it has no playbook for.
  */
 export const DEFAULT_TAKE_KINDS: readonly JobKind[] = ['build', 'review'];
 

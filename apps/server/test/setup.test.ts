@@ -42,8 +42,9 @@ class Browser {
   }
 }
 
-async function register(base: string, redirectUris = [CB]) {
-  const r = await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'konjir connect', redirect_uris: redirectUris }) });
+/** Registers a client as published konjir's connect registers, or by `name`. */
+async function register(base: string, redirectUris = [CB], name = 'konjir connect') {
+  const r = await fetch(`${base}/oauth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: name, redirect_uris: redirectUris }) });
   return (await r.json() as { client_id: string }).client_id;
 }
 
@@ -517,4 +518,31 @@ test('an agent its person removed from the kolab is signed out there for good, i
   expect(again.used.body.agents[0]).toMatchObject({ agent: 'ann-pm', made: false });
   expect(await initialize(mcp, again.used.body.agents[0].access_token!)).toBe(200);
   expect(await kolab.access('ann-pm', 'anns')).toMatchObject({ level: 'write' });
+});
+
+test('a client registered as the kolab CLI\'s (kolab connect, kolab channel) is told to run kolab connect; one registered as published konjir\'s or konnect\'s, or any other, konjir connect, as published konnect reads it (step 1b)', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  await kolab.addActor('rae', { by: 'kolab' });
+  await kolab.createKolab('raes', { owner: 'rae', by: 'kolab' });
+  const unesc = (s: string) => s.replace(/&#39;/g, '\'');
+  for (const [name, cmd] of [['kolab connect', 'kolab'], ['kolab channel (Claude Code)', 'kolab'], ['konjir connect', 'konjir'], ['konjir channel (Claude Code)', 'konjir'], ['konnect agent', 'konjir'], ['kolabs', 'konjir']] as const) {
+    const client = await register(base, [CB], name);
+    // The setup page: who should have run what, and why it can't be allowed.
+    const { page, done } = await setupPage(base, idp, client, setupScope('raes', ['pm:product']), { decision: 'deny' });
+    expect([name, page.html]).toStrictEqual([name, expect.stringContaining(`Allow it only if you just ran <code>${cmd} connect</code>.`)]);
+    expect([name, page.html]).toStrictEqual([name, expect.stringContaining(`Nothing was made. Deny it; <code>${cmd} connect</code> says the same in your terminal.`)]);
+    // What the app is told when it is denied, which published konnect rewrites by `run konjir connect again`.
+    expect([name, done!.left!.searchParams.get('error_description')]).toStrictEqual([name, expect.stringMatching(new RegExp(`: run ${cmd} connect again with one of their names$`))]);
+    // A setup token that isn't one: /oauth/setup says so, in the client's words.
+    const used = await useSetup(base, 'kjs_not-a-setup-token', client);
+    expect([name, used.status, used.body.error_description]).toStrictEqual([name, 400, expect.stringMatching(new RegExp(`; run ${cmd} connect again$`))]);
+    // A sign-in's own page (kolab login's scope): the new kolab's name is what `<cmd> connect --kolab` takes.
+    const signIn = await setupPage(base, idp, client, 'konjir');
+    expect([name, unesc(signIn.page.html)]).toStrictEqual([name, expect.stringContaining(`the one <code>${cmd} connect --kolab</code> takes.`)]);
+    expect(signIn.page.html).not.toContain(`${cmd === 'kolab' ? 'konjir' : 'kolab'} connect`);
+  }
+  // Phrasing about kolabs is the same for every client: only the command's name changes.
+  const ours = await setupPage(base, idp, await register(base, [CB], 'kolab connect'), setupScope('raes', ['pm:product']));
+  expect(unesc(ours.page.html)).toContain('a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir.');
 });

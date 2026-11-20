@@ -119,7 +119,7 @@ export class WebPeople {
     let i;
     try { i = await this.kolab.sessionInfo(token!); } catch { throw new UnauthorizedException({ error: 'unauthorized', message: `your session has ended: ${signIn}` }); }
     if (i.kind !== 'person') {
-      throw new ForbiddenException({ error: 'forbidden', message: `that is ${i.actor}'s session, an agent's: the web interface is for people, and an agent works through MCP or the konjir CLI. Sign in as yourself` });
+      throw new ForbiddenException({ error: 'forbidden', message: `that is ${i.actor}'s session, an agent's: the web interface is for people, and an agent works through MCP or the kolab CLI. Sign in as yourself` });
     }
     const a = await this.kolab.actor(i.actor);
     return {

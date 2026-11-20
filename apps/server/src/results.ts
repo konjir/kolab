@@ -1,6 +1,7 @@
 import { AccessError, GateError, LimitError, RoleError, TenancyError } from '@konjir/engine';
 import type { Query } from '@konjir/types';
 import type { McpToolContext } from '@onivoro/server-mcp';
+import { currentWording, worded } from './wording.js';
 
 /** Questions and notes in the shape read_node shows them beside an element. */
 export const thread = (q: Query) => ({
@@ -16,6 +17,11 @@ export function ok(data: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }], structuredContent: data as Record<string, unknown> };
 }
 
+/**
+ * A tool's error, as the client asking is told it: its message names the CLI's commands as that
+ * client's wording says (`kolab <command>` for the kolab CLI, `konjir <command>` for any other,
+ * which published konnect and konjir read by its words; wording.ts).
+ */
 export function fail(e: unknown) {
   const err = e as Error;
   const hint =
@@ -25,7 +31,7 @@ export function fail(e: unknown) {
     : err instanceof TenancyError ? ' Read the message and adjust the request.'
     : err instanceof LimitError ? ' Nothing was written. Read the message and adjust the request; do not retry unchanged.'
     : '';
-  return { content: [{ type: 'text' as const, text: `${err.name ?? 'Error'}: ${sentence(err.message)}${hint}` }], isError: true };
+  return { content: [{ type: 'text' as const, text: `${err.name ?? 'Error'}: ${worded(sentence(err.message), currentWording())}${hint}` }], isError: true };
 }
 
 /** A message ended as a sentence: a full stop added unless it ends in one already (or ? or !), so none ends in '..' (W5.7). */

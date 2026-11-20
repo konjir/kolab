@@ -476,7 +476,7 @@ export function checkReleaseInput(input: unknown): { item: CheckedEvidence | nul
  * https://host[:port]/path, the host in lower case, with no trailing slash and no `.git`. Refused, not
  * stripped, with why: another scheme, a user or password (a token in a remote URL is a credential,
  * D98), a query or a fragment, a host with no path, and anything over MAX_REPOSITORY_URL characters.
- * `konjir work deliver` reads a checkout's remotes and canonicalizes them alike, after dropping any
+ * `kolab work deliver` reads a checkout's remotes and canonicalizes them alike, after dropping any
  * credential locally, so it never sends one.
  */
 export function repositoryUrl(given: unknown): { url?: string; problem?: string } {
@@ -613,6 +613,7 @@ export function checkEvidenceInput(input: unknown): { items: CheckedEvidence[]; 
     const o = x as Record<string, unknown>;
     const unknown = Object.keys(o).filter((k) => !(EVIDENCE_KEYS as readonly string[]).includes(k));
     if (unknown.length) problems.push(`${what} has ${unknown.join(', ')}, which evidence doesn't take: it takes ${EVIDENCE_KEYS.join(', ')}`);
+    // An error names `konjir <command>`, which Kolab words for the kolab CLI alone (apps/server/src/wording.ts).
     if (o.kind === 'release') { problems.push(`${what} is a release, which is recorded after the deploy with konjir_record_release (or konjir work deliver --release), not as the work's own evidence`); return; }
     if (!(SUBMITTED_KINDS as readonly unknown[]).includes(o.kind)) { problems.push(`${what}'s kind is one of ${SUBMITTED_KINDS.join(', ')}, not ${JSON.stringify(o.kind ?? null)}`); return; }
     const kind = o.kind as EvidenceKind;

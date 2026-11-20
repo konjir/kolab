@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import { setupDigest, type SetupPlan, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
 import type { Access, InvitePreview, PendingInvitation, Role } from '@konjir/types';
+import { worded, type Wording } from '../wording.js';
 
 /** Text made safe for HTML, in content and in attribute values. */
 export const esc = escapeHtml;
@@ -71,8 +72,8 @@ export function sendPage(res: Response, status: number, title: string, body: str
 }
 
 /** A page that says what went wrong and what to do; it never redirects anywhere. */
-export function sendError(res: Response, status: number, message: string) {
-  sendPage(res, status, 'Sign-in stopped', `<h1>Sign-in stopped</h1><div class="card"><p class="err">${esc(message)}</p>
+export function sendError(res: Response, status: number, message: string, wording: Wording = 'konjir') {
+  sendPage(res, status, 'Sign-in stopped', `<h1>Sign-in stopped</h1><div class="card"><p class="err">${esc(worded(message, wording))}</p>
 <p class="muted">Close this tab and start again from the app you were connecting, or from Kolab's own page.</p></div>`);
 }
 
@@ -83,6 +84,8 @@ export interface ConsentView {
   signIn: string;
   csrf: string;
   client: string;
+  /** How the page names the CLI's commands, by the name the client registered with (oauthWording): `konjir` when not given. */
+  wording?: Wording;
   /** Where the client receives its answer: what the person can check the client by, since its name is its own say-so. */
   redirect: string;
   /** The web interface, which is for people: no agents. */
@@ -109,7 +112,7 @@ export interface ConsentView {
    */
   lock?: { agent: string; kolab: string; role: Role; step: { n: number; of: number } | null };
   /**
-   * The kolab the client's scope names (`konjir login --kolab`) when the person can't reach it
+   * The kolab the client's scope names (`kolab login --kolab`) when the person can't reach it
    * (D106): the page says so, with the hint the setup page gives (Kolab.kolabHint: their own kolabs,
    * and one whose title is that name), and preselects no other kolab.
    */
@@ -139,12 +142,13 @@ export const lockAllowed = (v: ConsentView) => !!v.lock && v.agents.includes(v.l
  * The consent page locked to the agent, kolab and role the client's scope names (D97): no
  * list of agents, no new agent and no Yourself, nor any other kolab or role, so
  * nothing on it can sign in anyone else; the server refuses any other choice too. Its title and
- * heading name the agent, and "agent N of M" when `konjir connect` signs several in. An agent that
+ * heading name the agent, and "agent N of M" when `kolab connect` signs several in. An agent that
  * isn't the person's, or a kolab they can't reach, is never named (D59): the page says it can't
  * be allowed, and offers only Deny.
  */
 function lockedConsentPage(v: ConsentView & { lock: NonNullable<ConsentView['lock']> }): string {
   const { lock } = v;
+  const say = (text: string) => worded(text, v.wording ?? 'konjir');
   const allowed = lockAllowed(v);
   const kolab = v.kolabs.find((k) => k.id === lock.kolab);
   const step = lock.step && lock.step.of > 1
@@ -156,12 +160,12 @@ function lockedConsentPage(v: ConsentView & { lock: NonNullable<ConsentView['loc
   if (!allowed) {
     const why = !v.agents.includes(lock.agent)
       ? 'it asks to work as an agent that isn\'t a live agent of yours.'
-      : v.unreached ? esc(unreachedSays(v.unreached, true)) : 'it asks to work in a kolab you can\'t reach.';
+      : v.unreached ? esc(say(unreachedSays(v.unreached, true))) :'it asks to work in a kolab you can\'t reach.';
     return `<h1>${esc(lockedTitle(lock, false))}</h1>
 ${intro}
 <form class="card" method="post" action="/oauth/consent">
 ${step}${asks}
-<p class="err" role="alert">This sign-in can't be allowed: ${why} Deny it, then check the app's configuration, or run konjir connect again.</p>
+<p class="err" role="alert">This sign-in can't be allowed: ${why} Deny it, then check the app's configuration, or ${say('run konjir connect again')}.</p>
 ${hidden}
 <div class="row"><button class="primary" type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
@@ -171,7 +175,7 @@ ${hidden}
 ${intro}
 <form class="card" method="post" action="/oauth/consent">
 ${step}${asks}
-${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+${v.error ? `<p class="err" role="alert">${esc(say(v.error))}</p>` : ''}
 ${hidden}
 <input type="hidden" name="as" value="agent:${esc(lock.agent)}">
 <input type="hidden" name="kolab" value="kolab:${esc(lock.kolab)}">
@@ -195,6 +199,7 @@ ${hidden}
  */
 export function consentPage(v: ConsentView): string {
   if (v.lock && !v.web) return lockedConsentPage({ ...v, lock: v.lock });
+  const say = (text: string) => worded(text, v.wording ?? 'konjir');
   const checked = (on: boolean) => (on ? ' checked' : '');
   // An invite is chosen already only for someone with no kolab yet; anyone else picks, explicitly (W3.4).
   const kolab = v.pick.kolab ?? (v.invite ? (v.kolabs.length ? '' : '@invite') : v.kolabs[0] ? `kolab:${v.kolabs[0].id}` : '@new');
@@ -209,8 +214,8 @@ ${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="a
 <p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>
 <form class="card" method="post" action="/oauth/consent">
 <p><strong>${esc(v.client)}</strong> ${v.web ? 'opens a session for you.' : `asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just connected it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.`}</p>
-${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
-${v.unreached ? `<p class="err" role="alert">${esc(unreachedSays(v.unreached, false))} No kolab is chosen for you: choose one below, or deny it, and ask again with the name of one of the kolabs below.</p>` : ''}
+${v.error ? `<p class="err" role="alert">${esc(say(v.error))}</p>` : ''}
+${v.unreached ? `<p class="err" role="alert">${esc(say(unreachedSays(v.unreached, false)))} No kolab is chosen for you: choose one below, or deny it, and ask again with the name of one of the kolabs below.</p>` : ''}
 <input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">
 ${who}
@@ -218,8 +223,8 @@ ${who}
 ${v.invite ? `<label class="opt"><input type="radio" name="kolab" value="@invite"${checked(kolab === '@invite')}><span>Join <code>${esc(v.invite.kolab)}</code> ${esc(v.invite.title)}<small>${esc(v.invite.invited_by)} invites you, with ${esc(describe(v.invite))}, owned by ${esc(v.invite.owner)}. Choose it only if you expected this invite.</small></span></label>` : ''}
 ${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value="kolab:${esc(k.id)}"${checked(kolab === `kolab:${k.id}`)}><span><code>${esc(k.id)}</code> ${esc(k.title)}<small>You hold ${esc(describe(k.access))}</small></span></label>`).join('\n')}
 <label class="opt"><input type="radio" name="kolab" value="@new"${checked(kolab === '@new')}><span>A new private kolab of your own
-<small><strong>Name</strong>: its address, unique across Konjir, the one <code>konjir connect --kolab</code> takes. Lowercase letters, digits and '-'.</small>
-<input type="text" name="new_kolab_name" value="${esc(v.pick.newName ?? '')}" maxlength="40" placeholder="for example linkly-ada" aria-label="The new kolab's name, its address: what konjir connect --kolab takes">
+<small><strong>Name</strong>: its address, unique across Konjir, the one <code>${say('konjir connect')} --kolab</code> takes. Lowercase letters, digits and '-'.</small>
+<input type="text" name="new_kolab_name" value="${esc(v.pick.newName ?? '')}" maxlength="40" placeholder="for example linkly-ada" aria-label="The new kolab's name, its address: what ${say('konjir connect')} --kolab takes">
 <small><strong>Title</strong>: what people read. Leave it empty to use the name.</small>
 <input type="text" name="new_kolab_title" value="${esc(v.pick.newTitle ?? '')}" maxlength="100" placeholder="for example Linkly: short links that expire" aria-label="The new kolab's title, what people read; empty uses the name"></span></label>
 </fieldset>
@@ -231,11 +236,13 @@ ${v.kolabs.map((k) => `<label class="opt"><input type="radio" name="kolab" value
 </form>`;
 }
 
-/** What the setup page shows (konjir connect, Lee's instruction of 2026-11-01). */
+/** What the setup page shows (kolab connect, Lee's instruction of 2026-11-01). */
 export interface SetupView {
   signIn: string;
   csrf: string;
   client: string;
+  /** How the page names the CLI's commands, by the name the client registered with (oauthWording): `konjir` when not given. */
+  wording?: Wording;
   redirect: string;
   person: string; login: string; provider: string; created: boolean;
   /** What allowing it does: the kolab and each agent. Absent when the request itself can't be a setup. */
@@ -245,17 +252,18 @@ export interface SetupView {
 }
 
 /**
- * The setup page: one page for everything `konjir connect` asks, locked to it. It names the kolab
+ * The setup page: one page for everything `kolab connect` asks, locked to it. It names the kolab
  * (made now, private and theirs, or theirs already, with what they hold there), each agent with its
  * role (made now, or theirs already, and whether allowing this ends a session it holds elsewhere,
  * ENF4), and the app asking. Nothing on it to choose: Allow or Deny. A setup that can't be allowed
  * says why, plainly, and offers only Deny; the app is told why when the person denies it.
  */
 export function setupPage(v: SetupView): string {
+  const say = (text: string) => worded(text, v.wording ?? 'konjir');
   const hidden = `<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">`;
   const intro = `<p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>`;
-  const asks = `<p><strong>${esc(v.client)}</strong> on this computer asks to set up Konjir, and gets its answer at <code>${esc(v.redirect)}</code>. Allow it only if you just ran <code>konjir connect</code>.</p>`;
+  const asks = `<p><strong>${esc(v.client)}</strong> on this computer asks to set up Konjir, and gets its answer at <code>${esc(v.redirect)}</code>. Allow it only if you just ran <code>${say('konjir connect')}</code>.</p>`;
   const plan = v.plan;
   const list = plan && !v.refused ? `<dl class="locked">
 <dt>Kolab</dt><dd><code>${esc(plan.kolab.id)}</code>${plan.kolab.made || plan.kolab.title === plan.kolab.id ? '' : ` ${esc(plan.kolab.title)}`}<small>${plan.kolab.made ? 'New: made now, private, yours' : `Yours, existing: you hold ${plan.kolab.access ? esc(describe(plan.kolab.access)) : 'access'}`}</small></dd>
@@ -271,8 +279,8 @@ export function setupPage(v: SetupView): string {
 ${intro}
 <form class="card" method="post" action="/oauth/consent">
 ${asks}
-<p class="err" role="alert">${esc(v.refused)}</p>
-<p class="muted">Nothing was made. Deny it; <code>konjir connect</code> says the same in your terminal.</p>
+<p class="err" role="alert">${esc(say(v.refused))}</p>
+<p class="muted">Nothing was made. Deny it; <code>${say('konjir connect')}</code> says the same in your terminal.</p>
 ${hidden}
 <div class="row"><button class="primary" type="submit" name="decision" value="deny">Deny</button></div>
 </form>`;
@@ -282,7 +290,7 @@ ${hidden}
 ${intro}
 <form class="card" method="post" action="/oauth/consent">
 ${asks}
-${(plan!.notes ?? []).map((n) => `<p class="err" role="alert">${esc(n)}</p>`).join('\n')}
+${(plan!.notes ?? []).map((n) => `<p class="err" role="alert">${esc(say(n))}</p>`).join('\n')}
 ${list}
 ${hidden}
 <input type="hidden" name="shown" value="${esc(setupDigest(plan!))}">

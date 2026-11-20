@@ -1,5 +1,5 @@
 /**
- * The file `konjir import` reads (W6.3; D15, D104, D109): a kolab's spec, its binding with its
+ * The file `kolab import` reads (W6.3; D15, D104, D109): a kolab's spec, its binding with its
  * decisions and work packages, its rulings and its repository, as one JSON document, checked whole
  * here before Kolab writes anything (Kolab.importKolab). Its shape is documented in README.md
  * ("Importing a kolab") and `IMPORT_FORMAT` names it, so a file written for another shape is refused.

@@ -10,6 +10,7 @@ import { Inboxes } from './inboxes.js';
 import { ListenScope } from './listen-scope.js';
 import { ListenStreams } from './listen-streams.js';
 import { McpClients } from './mcp-clients.js';
+import { McpWording } from './wording.js';
 import { AgentStates } from './agent-states.js';
 import { InstructionsAccess, OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
 import { KOLAB, MCP_ROUTE, OAUTH_OPTIONS, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
@@ -55,6 +56,8 @@ export class KolabServerModule implements NestModule {
    * `session` below): a 2025-era resources/subscribe would bypass it. listen.test.ts pins that.
    */
   configure(consumer: MiddlewareConsumer) {
+    // How its errors name the CLI's commands, by the client it comes from (McpWording): first, so all that answers it runs within it.
+    consumer.apply(McpWording).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
     consumer.apply(ListenScope).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
     // Who connects: each client's name and version, logged when the server is given a clientLog (McpClients).
     consumer.apply(McpClients).forRoutes({ path: MCP_ROUTE, method: RequestMethod.POST });
@@ -116,6 +119,7 @@ export class KolabServerModule implements NestModule {
         AgentStates,
         ListenScope,
         McpClients,
+        McpWording,
         OperatingInstructions,
         ReviewerInstructions,
         InstructionsAccess,

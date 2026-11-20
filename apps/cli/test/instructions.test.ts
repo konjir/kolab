@@ -195,7 +195,7 @@ test('which=playbook with a kind is that kind\'s playbook, its item\'s specifics
     expect(text).not.toMatch(/alpha/);
     expect(await toolText(admin, { which: 'playbook', kind })).toBe(text);
   }
-  expect(await toolText(ann.client, { which: 'playbook', kind: 'build' })).toContain('konjir work deliver {{work}} --submit');
+  expect(await toolText(ann.client, { which: 'playbook', kind: 'build' })).toContain('kolab work deliver {{work}} --submit');
   expect(await toolText(ann.client, { which: 'playbook', kind: 'review' })).toContain('review {{item}}, which {{author}} submitted');
   const refusal = async (args: Record<string, unknown>) => {
     const r = await ann.client.callTool({ name: 'konjir_instructions', arguments: args });
@@ -247,10 +247,10 @@ test('the server instructions tell an MCP session to call konjir_instructions fi
   expect(served).toMatch(/Before your first change, call the konjir_instructions tool/);
   expect(served).toMatch(/Before reviewing a version, call konjir_instructions which=reviewer/);
   expect(served.indexOf('konjir_instructions')).toBeLessThan(served.indexOf('konjir_operating_instructions'));
-  expect(served).toMatch(/Alternatives: a person can invoke them as the konjir_operating_instructions and konjir_reviewer_instructions prompts, and an agent working in a shell with the konjir CLI can run `konjir instructions`/);
+  expect(served).toMatch(/Alternatives: a person can invoke them as the konjir_operating_instructions and konjir_reviewer_instructions prompts, and an agent working in a shell with the kolab CLI can run `kolab instructions`/);
   // No advice to run the CLI is given as if every session had it.
-  expect(served).not.toMatch(/run `konjir instructions` in a shell/);
-  expect(served).not.toMatch(/Otherwise, while you wait on answers, run `konjir watch/);
+  expect(served).not.toMatch(/run `(konjir|kolab) instructions` in a shell/);
+  expect(served).not.toMatch(/Otherwise, while you wait on answers, run `(konjir|kolab) watch/);
   // Without subscriptions, rule 8 says when to check, and checks the inbox as well as the answers.
   expect(served).toMatch(/Otherwise, check both at the start of work, before finishing, and after each commit or submit: your inbox with konjir_list_queries, konjir_list_stale, konjir_list_cases and konjir_list_reviews, and your answers with konjir_list_queries mine=true and konjir_list_cases mine=true/);
   await server.close();
@@ -331,7 +331,7 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
 
   // Rule 9, in the server instructions: the loop, in order.
   const rule9 = served.slice(served.indexOf('\n9. '));
-  const steps = ['konjir_pull_work', 'konjir_read_work', 'git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"', 'konjir work deliver <work> --submit', 'konjir_review work=', 'konjir_reopen_work'];
+  const steps = ['konjir_pull_work', 'konjir_read_work', 'git commit --trailer "Konjir-Work: kj:<kolab>/<binding>#<id>"', 'kolab work deliver <work> --submit', 'konjir_review work=', 'konjir_reopen_work'];
   expect(rule9.indexOf(steps[0])).toBeGreaterThan(0);
   for (let i = 1; i < steps.length; i++) expect(rule9.indexOf(steps[i - 1])).toBeLessThan(rule9.indexOf(steps[i]));
   // The full text: seven steps, then reviewing work, then at risk.
@@ -350,7 +350,7 @@ test('the served instructions carry the build loop (W5.3; PLN11, CASE5), in orde
   expect(tools.find((t) => t.name === 'konjir_open_case')!.description).not.toMatch(/blocks nothing/);
   // A job's instructions agree with the loop: the same trailer, deliver --submit, a case file rather than a patch.
   expect(job).toContain('git commit --trailer "Konjir-Work: kj:anns/b#W1"');
-  expect(job).toContain('konjir work deliver kj:b#W1 --submit');
+  expect(job).toContain('kolab work deliver kj:b#W1 --submit');
   expect(job).toMatch(/don't patch the behavior/);
   // W7.6: the docs that say how work is reviewed agree with the review playbook, each on each ask.
   const readme = readFileSync(fileURLToPath(new URL('../../../README.md', import.meta.url)), 'utf8');

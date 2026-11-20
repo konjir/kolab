@@ -544,7 +544,7 @@ export function App() {
         </nav>
           <GoTo here={me.kolab} go={go} />
           <div className="rail-foot"><span>{me.name} · {me.role} · {me.kolab}</span>
-            {me.konjirAdmin && <span title="You are a Konjir admin: run admin verbs from the konjir CLI or MCP, signed in as yourself">Konjir admin</span>}</div>
+            {me.konjirAdmin && <span title="You are a Konjir admin: run admin verbs from the kolab CLI or MCP, signed in as yourself">Konjir admin</span>}</div>
         </div>
         {/* Keyed by the session's kolab and role: when either changes, by whatever route, every place starts afresh, and nothing drafted in one is left to submit in another. */}
         <main key={`${me.kolab}/${me.role}`} id="main" ref={mainRef} tabIndex={-1}>

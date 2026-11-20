@@ -164,11 +164,11 @@ export interface JobReport {
 
 /**
  * Tools Claude Code may use without asking, beyond edits in its worktree (acceptEdits): git, npm, npx, gh and kolab, and Kolab's own tools (JOB4).
- * Bash(konjir *) too, for now: Kolab's playbooks and the hints its tools give a job still say `konjir work deliver`
- * until the server's texts say kolab, and a job's `konjir` is its own kolab (writeKonjirShim). It goes with them.
+ * Kolab's playbooks, instructions and hints tell a job to run `kolab work deliver` (step 1b of
+ * docs/plans/rebrand-and-site.md), so a job has no `konjir` command, and no Bash(konjir *).
  */
 export const ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'TodoWrite',
-  'Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(kolab *)', 'Bash(konjir *)', 'mcp__konjir'];
+  'Bash(git *)', 'Bash(npm *)', 'Bash(npx *)', 'Bash(gh *)', 'Bash(kolab *)', 'mcp__konjir'];
 
 /**
  * What a job is kept from trying, even with --allow-all, as Claude Code's permission patterns:
@@ -246,25 +246,19 @@ export function konjirCommand(proc: Pick<NodeJS.Process, 'argv' | 'execArgv' | '
  * it, with tsx's tsconfig when it is set (bin/kolab sets it). The runner puts `dir` first on a job's
  * PATH, so `kolab work deliver` runs in the job as written, under Bash(kolab *), which needs no
  * approval; and the job's guard hook runs it too. Returns its path.
- *
- * The same script is written as `konjir` beside it, for now: Kolab's playbooks and its tools' hints
- * still tell a job to run `konjir work deliver` until the server's texts say kolab, and a job runs
- * them as written. It is the job's own, not an alias anyone installs, and goes with those texts.
  */
 export function writeKonjirShim(dir: string, command: string[] = konjirCommand(), env: NodeJS.ProcessEnv = process.env): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
   const tsconfig = env.TSX_TSCONFIG_PATH ? `TSX_TSCONFIG_PATH=${shellQuote(env.TSX_TSCONFIG_PATH)} ` : '';
   const script = `#!/bin/sh\n# kolab, as the kolab work that started this job runs it (W7.8).\n${tsconfig}exec ${command.map(shellQuote).join(' ')} "$@"\n`;
-  for (const name of ['kolab', 'konjir']) {
-    const path = join(dir, name);
-    rmSync(path, { force: true });
-    writeFileSync(path, script, { mode: 0o555 });
-    // Read and run only, and nothing added beside it: the guard hook runs it (removeKonjirShim undoes this).
-    chmodSync(path, 0o555);
-  }
+  const path = join(dir, 'kolab');
+  rmSync(path, { force: true });
+  writeFileSync(path, script, { mode: 0o555 });
+  // Read and run only, and nothing added beside it: the guard hook runs it (removeKonjirShim undoes this).
+  chmodSync(path, 0o555);
   chmodSync(dir, 0o500);
-  return join(dir, 'kolab');
+  return path;
 }
 
 /** `path`'s own lstat, never a link's target's, or undefined when nothing is there. */

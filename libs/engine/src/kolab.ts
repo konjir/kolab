@@ -135,7 +135,7 @@ export interface PendingAuthorization {
   person: string | null;
   /** The key of the invite the web interface's sign-in carries (W3.4), if any; never a registered client's. */
   inviteKey: string | null;
-  /** Which of several sign-ins this is, as the client said (`konjir connect`'s "agent N of M"): display only, never part of the scope. */
+  /** Which of several sign-ins this is, as the client said (`kolab connect`'s "agent N of M"): display only, never part of the scope. */
   step: { n: number; of: number } | null;
 }
 
@@ -167,7 +167,7 @@ const PKCE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 
 /**
  * The agent, kolab and role a sign-in's scope names together, if it names all three
- * (`agent:<id> kolab:<name> role:<role>`, as `konjir connect` writes it): such a sign-in is locked
+ * (`agent:<id> kolab:<name> role:<role>`, as `kolab connect` writes it): such a sign-in is locked
  * to them (D97). Its consent page offers nothing else, and a consent for it
  * grants that agent, in that kolab and role, or nothing. A scope that names fewer only preselects
  * (D59). Never the web interface's own sign-in, which is for people.
@@ -183,7 +183,7 @@ export function scopeLock(scope: string | null | undefined, agentOf: (named: str
 
 /**
  * The agent a sign-in's scope means by `agent:<named>` (API26): the person's agent of that name, or
- * else their agent `<person>-<named>`, so `konjir login --agent <label>` takes a label as konjir
+ * else their agent `<person>-<named>`, so `kolab login --agent <label>` takes a label as konjir
  * connect does. A name that is neither stays as it is, and so names no agent of theirs.
  */
 export function namedAgent(named: string, person: string, agents: readonly string[]): string {
@@ -204,7 +204,7 @@ export const SETUP_MAX_AGENTS = 10;
 export interface SetupAgent { label: string; role: Role }
 
 /**
- * A setup's scope, as `konjir connect` asks for it (Lee's instruction of 2026-11-01):
+ * A setup's scope, as `kolab connect` asks for it (Lee's instruction of 2026-11-01):
  * `konjir kolab:<name> setup:<label>:<role> …`, one `setup:` word per agent. It names labels,
  * never agent ids: the CLI doesn't know who will sign in. Such a sign-in is a setup: one page,
  * locked to what it names, that makes the kolab if it is new and each agent that is, grants each
@@ -588,7 +588,7 @@ const OPEN_SESSION = `s.ended_at is null and (g.id is null and (s.expires_at is 
  * The machine a session is on (D103, migration 0040), which a new sign-in is compared against: it
  * ends only its actor's open session on the same machine. Every agent's session is on AGENT_MACHINE,
  * so an agent holds one, whatever it signs in through. A person's is `client:<id>` for a sign-in
- * through an OAuth client (each konjir install and harness entry registers and keeps its own),
+ * through an OAuth client (each kolab install and harness entry registers and keeps its own),
  * `web:<key>` for Kolab's web page in one browser (webMachine), and TOKEN_MACHINE for a hand-issued
  * one: an admin opens a person one at a time, as before.
  */
@@ -2127,7 +2127,7 @@ export class Kolab {
   readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshGraceS: 10, agentsPerPerson: 10 };
   /**
    * How long a hand-issued session lasts (openSession, W2.22): 30 days by default
-   * (KONJIR_HAND_ISSUED_TOKEN_DAYS for `konjir serve`). Once it expires, its token is refused like
+   * (KONJIR_HAND_ISSUED_TOKEN_DAYS for `kolab serve`). Once it expires, its token is refused like
    * an ended session's.
    */
   readonly sessions = { handIssuedTtlS: 30 * 86_400 };
@@ -2473,7 +2473,10 @@ export class Kolab {
    * that make agents than `setups.burst` in its window. It makes nothing.
    */
   async setupPlan(person: string, setup: { kolab: string; agents: SetupAgent[] }): Promise<SetupPlan> {
-    const plan: SetupPlan = { person, kolab: { id: setup.kolab, title: setup.kolab, made: false, owner: person }, agents: [] };
+    // Its refusals and notes name `konjir connect`, which published konnect reads in them: Kolab's
+    // pages and answers word them for the kolab CLI alone (apps/server/src/wording.ts). So do the
+    // setup's other errors here, consentSetup's and useSetup's.
+    const plan: SetupPlan ={ person, kolab: { id: setup.kolab, title: setup.kolab, made: false, owner: person }, agents: [] };
     const refuse = (why: string, forApp?: string): SetupPlan => ({ ...plan, refused: why, ...(forApp ? { refusedForApp: forApp } : {}) });
     const p = await this.findActor(person);
     if (!p || p.kind !== 'person') return refuse(`${person} isn't a person here: only a person sets up agents`);
@@ -3070,6 +3073,7 @@ export class Kolab {
    * pm (signed in now). Archive …`.
    */
   private async liveAgentsShown(person: string, archive: string, q: Q = this.db): Promise<string> {
+    // Part of errors, so `konjir archive_agent`: Kolab words it for the kolab CLI alone (apps/server/src/wording.ts).
     const live = (await this.ownAgentRows(q, person, false))
       .sort((a, b) => Number(a.open) - Number(b.open) || (a.lastUsed ?? '').localeCompare(b.lastUsed ?? '') || a.made.localeCompare(b.made) || a.agent.localeCompare(b.agent));
     if (!live.length) return `You have no live agent of your own. ${archive} (konjir archive_agent label=<label>)`;
@@ -9269,7 +9273,7 @@ export class Kolab {
     // Every failed acceptance check its evidence records, in every round (REV9): on its record for good, whatever the verdicts.
     const findings = acceptanceFindings(evidenceRows);
     // The trailers its commits carried while it was a plan's package (D104, migration 0033), which
-    // still name it: `konjir work deliver` finds commits by either.
+    // still name it: `kolab work deliver` finds commits by either.
     const former = (await this.db.query<{ plan: string; element: string }>(
       `select p.name as plan, m.plan_element_id as element from work_package_moved m join node p on p.id = m.plan_node_id
         where m.binding_node_id = $1 and m.element_id = $2 order by p.name`, [binding.id, id])).rows.map((r) => workTrailer(s.kolab, r.plan, r.element));
@@ -11693,7 +11697,7 @@ export class Kolab {
   /**
    * Registers a git repository in the session's kolab (KON7, D98 ruling 1): its https URL, in the
    * one form Kolab compares (repositoryUrl), and its root commit, the parentless commit every checkout
-   * of it has, which `konjir work deliver` checks the local checkout against. With `binding`, it is
+   * of it has, which `kolab work deliver` checks the local checkout against. With `binding`, it is
    * that binding's implementation, one per binding (D38): its work packages' commits and pull
    * requests are recorded in it unless a package names another (its `repo`).
    *
@@ -11823,6 +11827,7 @@ export class Kolab {
         order by archived_at nulls first, registered_at desc limit 1 ${opts.forUpdate ? 'for update' : opts.forShare ? 'for share' : ''}`,
       [kolab, String(given), canonical ?? ''])).rows[0];
     if (!r) {
+      // An error names `konjir <command>`, which Kolab words for the kolab CLI alone (apps/server/src/wording.ts).
       throw new GateError(`${canonical ?? String(given)} isn't a repository registered in kolab ${kolab}${opts.live ? ', or it is archived' : ''}: `
         + 'a person with Maintain or Admin registers it (konjir repo register, or konjir_register_repository); konjir_list_repositories lists them');
     }
@@ -11875,6 +11880,7 @@ export class Kolab {
       } else if (own) {
         repo = own;
       } else {
+        // An error names `konjir <command>`, which Kolab words for the kolab CLI alone (apps/server/src/wording.ts).
         throw new GateError(`${what} names no repository, and ${at} has none of its own (no repo, and its binding has no implementation): `
           + 'give repo=<its URL>, one of konjir_list_repositories, or have a person with Maintain register the binding\'s (konjir repo register --binding <binding>)');
       }
@@ -12949,7 +12955,7 @@ export class Kolab {
   // ---- importing a kolab (W6.3; D15, D104, D109) ---------------------------------
 
   /**
-   * `konjir import` (W6.3; one role a session, as Lee ruled on #105): writes what the session's role
+   * `kolab import` (W6.3; one role a session, as Lee ruled on #105): writes what the session's role
    * may write of one file (parseImportFile), as the person whose own session it is, in the kolab it
    * works in. Never an agent's session, a job's among them, nor the admin token, which has no session.
    * So a whole file takes two passes, two sign-ins, in either order: as product, the spec and the
@@ -12973,6 +12979,7 @@ export class Kolab {
    */
   async importKolab(sessionId: string, input: unknown, opts: { dryRun?: boolean; update?: boolean } = {}): Promise<ImportReport> {
     const s = await this.session(sessionId);
+    // Its errors name `konjir <command>`, which Kolab words for the kolab CLI alone (apps/server/src/wording.ts); its report's hints say kolab.
     if (s.kind !== 'person') {
       throw new AccessError(`${s.actor_id} is an agent, and an agent imports nothing: a person imports a kolab, from their own session (konjir import, signed in as themselves with konjir login), never from an agent's or a job's`);
     }
@@ -13071,7 +13078,7 @@ export class Kolab {
     if (problems.length) throw new GateError(`the import is refused, and nothing was written: ${problems.join('; ')}`);
 
     const steps: ImportStep[] = [];
-    const signIn = (role: Role) => `konjir login --kolab ${s.kolab} --role ${role}, then konjir import again`;
+    const signIn = (role: Role) => `kolab login --kolab ${s.kolab} --role ${role}, then kolab import again`;
     const otherRole = ROLE_OF_LAYER[myLayer === 'functional' ? 'technical' : 'functional'];
     // A step of this role's layer writes, unless it is a dry run. One of the other layer only reads:
     // what is there is said as it is, and the rest is left for the other pass.
@@ -13219,7 +13226,7 @@ export class Kolab {
       const back = open.state === 'drafted' ? (await this.db.query<{ reviewer_id: string; note: string | null }>(
         `select reviewer_id, note from review_request where version_id = $1 and state = 'changes_requested' order by decided_at desc limit 1`, [open.id])).rows[0] : undefined;
       if (back) {
-        return { outcome: 'sent_back', version: open.seq, detail: `${back.reviewer_id} requested changes to ${node.name}@${open.seq}: ${JSON.stringify(back.note ?? '')}. Nothing was resubmitted: resubmit it as it is with konjir submit_for_review node=${node.name} version=${open.seq}, or abandon it (konjir_abandon) and run the import again to draft the file's` };
+        return { outcome: 'sent_back', version: open.seq, detail: `${back.reviewer_id} requested changes to ${node.name}@${open.seq}: ${JSON.stringify(back.note ?? '')}. Nothing was resubmitted: resubmit it as it is with kolab submit_for_review node=${node.name} version=${open.seq}, or abandon it (konjir_abandon) and run the import again to draft the file's` };
       }
       const own = await this.linkKeys(open.id);
       const base = open.base_version_id ? await this.linkKeys(open.base_version_id) : new Set<string>();
@@ -14564,7 +14571,7 @@ const RELEASE_NEXT = (at: string) =>
   `once it is deployed, after this approval, its release is recorded by someone with Write on the technical layer other than its assignee, `
   + `from an engineer session outside any job (a job never merges or deploys, JOB4), naming the deploy run, a GitHub Actions run of the package's registered repository, or for a package with none of its own the registered one its evidence named with repo= `
   + `(<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha `
-  + `(konjir_record_release work=${at} run=<the run's https link> sha=<the full sha>, or konjir work deliver ${at} --release <run> from a checkout of that repository), and that makes it Done`;
+  + `(konjir_record_release work=${at} run=<the run's https link> sha=<the full sha>, or kolab work deliver ${at} --release <run> from a checkout of that repository), and that makes it Done`;
 
 /** The git trailer a commit carries for a work package (D98): its full address, kolab included. */
 const workTrailer = (kolab: string, binding: string, id: string) => `Konjir-Work: ${formatAddress({ kolab, node: binding, element: id })}`;

@@ -96,9 +96,15 @@ export const claudeBridgeEntry = (e: Entry, bridge: Bridge | string) => ({
  * and the client each agent's sign-in is issued to: the bridge's own CLIENT_NAME, as the agent's
  * own browser sign-in through the bridge would register.
  */
-export const CHANNEL_CLIENT_NAME = 'konjir channel (Claude Code)';
+export const CHANNEL_CLIENT_NAME = 'kolab channel (Claude Code)';
 /** The name kolab connect registers under for the other harnesses, whose entries sign in by themselves. */
-export const CONNECT_CLIENT_NAME = 'konjir connect';
+export const CONNECT_CLIENT_NAME = 'kolab connect';
+/**
+ * The name kolab login registers under. Each of kolab's names starts `kolab`, which is how Kolab's
+ * sign-in pages, and what they tell the app, know to name its commands `kolab <command>` (step 1b
+ * of docs/plans/rebrand-and-site.md); a name of published konjir's or konnect's gets `konjir <command>`.
+ */
+export const CLI_CLIENT_NAME = 'kolab CLI';
 
 // The published builds (scripts/package.mjs) define this as the package's version.
 declare const KONJIR_VERSION: string | undefined;
