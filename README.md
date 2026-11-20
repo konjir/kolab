@@ -698,23 +698,26 @@ This stack, `konjir-test`, is production, since staging was dropped (D83), so `s
 
 ## Releasing the CLI
 
-`nx release` versions `@konjir/kolab` (D23), configured in `nx.json`'s `release`: that project only, tagged `kolab@<version>`. The current version is the newest such tag. The package was `konjir` until 0.8.0, tagged `konjir@<version>`, and `@konjir/kolab` continues its versions: before the first `kolab@*` tag, the current version is `apps/cli/package.json`'s, 0.8.0, so the first release is 0.9.0, and the workflow refuses any version at or below the newest `konjir@*` tag. Bumps are plain semver, so `minor` from 0.8.0 is 0.9.0. The commits here aren't conventional commits, so the version is given, not inferred, and nx release writes no changelog. `apps/cli/scripts/version-actions.cjs` writes the version, in place of `@nx/js`'s, so the workspace doesn't install `@nx/js`. Installing it would add Babel to every install, the instance's included, and turn on Nx's source-file analysis, which needs TypeScript 5's JavaScript API. Publishing isn't nx release's: the workflow below publishes the tarball it tested with `npm publish`.
+`nx release` versions `@konjir/kolab` (D23), configured in `nx.json`'s `release`: that project only, tagged `kolab@<version>`. A bump (`patch`, `minor`, `major`) goes from the semver-highest `kolab@*` tag on any branch (`currentVersionResolver` `git-tag`, `checkAllBranchesWhen` `true`), not the newest by date, so `patch` after `kolab@0.9.0` is 0.9.1 even with `kolab@0.8.1` tagged later. Only before the first `kolab@*` tag does it go from `apps/cli/package.json`'s version (`fallbackCurrentVersionResolver` `disk`), 0.8.0, konjir's last: the package was `konjir` until 0.8.0, tagged `konjir@<version>`, and `@konjir/kolab` continues its versions, so the first release was 0.9.0. A release never commits its version, so `apps/cli/package.json` stays at 0.8.0. Bumps are plain semver, so `minor` from 0.9.0 is 0.10.0. The commits here aren't conventional commits, so the version is given, not inferred, and nx release writes no changelog. `nx.json` mustn't set `release.version.conventionalCommits` at all: Nx 23 treats an explicit `false` as a reason to drop `currentVersionResolver`, which then defaults to `disk`, and every bump goes from package.json's 0.8.0. That is how a `patch` on 2026-11-20 published 0.8.1 after 0.9.0.
+
+`apps/cli/scripts/release-version.mjs` sets the version for the workflow. It has nx release compute it, then refuses any version, bumped or exact, that isn't above all of: every `kolab@*` tag, every `konjir@*` tag, and every version of `@konjir/kolab` on npm (`npm view @konjir/kolab versions --json`, the 0.0.1 placeholder and 0.0.0-stage among them). The error names the tag or npm version it isn't above. Only then does it write the version to `apps/cli/package.json`, in the runner. `apps/cli/test/release-version.test.ts` covers it. `apps/cli/scripts/version-actions.cjs` writes the version, in place of `@nx/js`'s, so the workspace doesn't install `@nx/js`. Installing it would add Babel to every install, the instance's included, and turn on Nx's source-file analysis, which needs TypeScript 5's JavaScript API. Publishing isn't nx release's: the workflow below publishes the tarball it tested with `npm publish`.
 
 ```
-npx nx release version minor --dry-run   # preview the version the workflow would set
+git fetch --tags
+node apps/cli/scripts/release-version.mjs patch --dry-run   # the version the workflow would set, and its checks; writes nothing
 ```
 
 Publishing runs only in GitHub Actions, by hand: **Actions › Release CLI › Run workflow** on main, with a version (`patch`, `minor`, `major` or an exact `X.Y.Z`; no prereleases) and dry run on (the default) or off. The workflow, `.github/workflows/release-cli.yml`, has four jobs, each with only the permissions it needs:
 
-1. **Build kolab release** (read-only) sets the version in the runner and commits nothing. It refuses a version that already has a tag or is on npm. It builds the tarball and the binaries, checks both against a Kolab it starts from the checkout, runs `npm publish --dry-run`, and uploads the files with `SHA256SUMS`. A dry run stops here.
+1. **Build kolab release** (read-only) sets the version in the runner and commits nothing. It refuses, before building anything, a version that isn't above every `kolab@*` and `konjir@*` tag and every version on npm, and shows the version it set as a notice on the run, a dry run's included. It builds the tarball and the binaries, checks both against a Kolab it starts from the checkout, runs `npm publish --dry-run`, and uploads the files with `SHA256SUMS`. A dry run stops here.
 2. **Draft GitHub release** attests the files' build provenance (`gh attestation verify <file> --repo konjir/kolab` checks a download). It creates the release `kolab@<version>` as a draft, with the files and notes generated from the merged pull requests.
 3. **Publish @konjir/kolab to npm** runs in the `npm-release` environment, with no checkout and no dependencies. It publishes the tested tarball, with provenance, through npm 11 and trusted publishing alone: there is no npm token, and `@konjir/kolab` accepts none. It logs npm at verbose level, so a failed token exchange says why.
-4. **Publish GitHub release** takes the draft out of draft. That creates the tag on the built commit, and the next release reads its version from that tag.
+4. **Publish GitHub release** takes the draft out of draft. That creates the tag on the built commit, and the next release's bump goes from that tag.
 
 Lee sets up, once:
 
 - **A GitHub environment** named `npm-release` (Settings › Environments), with deployment branches limited to `main`, and a required reviewer if wanted. A copy of the workflow on another branch then can't publish, because `@konjir/kolab` trusts the workflow only in that environment.
-- **A placeholder on npm**, since npm can't trust a workflow for a package that has never been published. As konjir's 0.0.1 was (D63), `@konjir/kolab@0.0.1` is an empty package, published by hand: a folder holding only a `package.json` (name, `"version": "0.0.1"`, a description saying the name is reserved, `"license": "Apache-2.0"`) and a one-line `README.md`, then `npm publish --access public` there. Nothing in it runs; the first real version, 0.9.0, is the workflow's, with provenance and attestations. The workflow's versions come from the git tags and `apps/cli/package.json`, never from npm, so the placeholder changes nothing there: it still gives 0.9.0, and its check that npm hasn't the version already looks only at the version it is about to publish.
+- **A placeholder on npm**, since npm can't trust a workflow for a package that has never been published. As konjir's 0.0.1 was (D63), `@konjir/kolab@0.0.1` is an empty package, published by hand: a folder holding only a `package.json` (name, `"version": "0.0.1"`, a description saying the name is reserved, `"license": "Apache-2.0"`) and a one-line `README.md`, then `npm publish --access public` there. Nothing in it runs; the first real version, 0.9.0, is the workflow's, with provenance and attestations. The workflow's bumps come from the git tags and `apps/cli/package.json`, never from npm; npm's versions only set a floor every new version must be above, which the placeholder's 0.0.1 doesn't raise.
 - **npm trusted publishing**, from his machine, in an interactive terminal, once that placeholder is on npm:
 
   ```
@@ -727,6 +730,14 @@ Lee sets up, once:
 New trust starts out "Pending validation" and expires unless a publish uses it within about 48 hours, so release soon after adding it: for the first, run *Release CLI* with `minor` (0.9.0) and dry run off. `npm trust list` doesn't show that trust expired; the package's settings page on npmjs.com does. Expired trust makes *Publish @konjir/kolab to npm* fail with `OIDC token exchange error - package not found` (visible because the job logs npm at verbose level) and then `404 Not Found - PUT`. To replace it, run `npm run release:trust -- --renew`, then release, or re-run the failed job, within the 48 hours.
 
 If a run fails, what to do depends on how far it got. Before *Publish @konjir/kolab to npm*, nothing is published: delete the draft release if there is one (`gh release delete kolab@<version>`), then run again. If npm has the version but *Publish GitHub release* failed, re-run that job, or run `gh release edit kolab@<version> --draft=false`. A new run for a version npm already has stops in its first job.
+
+If a release got the wrong version (on 2026-11-20 a `patch` meant as 0.9.1 published 0.8.1, which became npm's `latest`), don't delete or move its tag or release, and don't unpublish it. Publish the right version as a new release, with an exact version (*Release CLI* with, say, `0.9.1`, dry run off); the new release takes npm's `latest` dist-tag. Then deprecate the wrong one, so `npm install` warns anyone who pins it:
+
+```
+npm deprecate @konjir/kolab@0.8.1 "Published in error with a lower version than 0.9.0; use @konjir/kolab@latest"
+```
+
+Lee runs that from his machine: `@konjir/kolab` requires two-factor authentication, so it asks for a one-time password.
 
 A release doesn't change what production's web page shows: bump `cli_npm_spec` and deploy (see *Deploying to AWS*).
 
