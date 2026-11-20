@@ -1,6 +1,11 @@
-# konjir.com, the marketing site (D81): the page built in site/ from its source in site/src/ (D92).
+# The marketing site (D81), served at www.konjir.com: the pages built in site/ from their source in
+# site/src/ (D92), one section per product (docs/plans/rebrand-and-site.md).
 #  - a private, versioned, encrypted bucket that only this CloudFront distribution reads (OAC)
-#  - CloudFront for konjir.com and www.konjir.com, www redirected to the apex by a CloudFront Function
+#  - CloudFront for www.konjir.com and konjir.com. www is canonical by the pages' canonical links;
+#    the apex serves the same pages and doesn't redirect, since browsers may hold the old function's
+#    uncached www-to-apex 301 for good (redirecting it is a later, deliberate change). A CloudFront
+#    Function (www-redirect.js.tftpl) redirects the pages that moved when the site was split
+#    (/hands-on/, /messages/) to where they are now on www, and serves a folder's page from its index.html
 #  - an ACM certificate in us-east-1, validated through the konjir.com zone
 #  - security headers on every response, a strict CSP among them
 #  - every file in site/ (README.md, dotfiles and the source in site/src/ aside) uploaded with its
@@ -23,7 +28,7 @@ variable "name" { type = string }
 variable "zone_id" { type = string }
 
 variable "domain_name" {
-  description = "The apex the site is served at; www.<domain_name> redirects to it."
+  description = "The apex. The site's canonical host is www.<domain_name>; the apex serves the same pages."
   type        = string
 }
 
@@ -218,7 +223,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 resource "aws_cloudfront_function" "www_redirect" {
   name    = "${var.name}-site-www-redirect"
   runtime = "cloudfront-js-2.0"
-  comment = "301 from ${local.www} to ${var.domain_name}"
+  comment = "Moved pages 301 to ${local.www}; folder index pages; ${var.domain_name} served as ${local.www}"
   publish = true
   code    = templatefile("${path.module}/www-redirect.js.tftpl", { www = local.www, apex = var.domain_name })
 }
@@ -357,7 +362,7 @@ resource "aws_route53_record" "dmarc" {
   records = ["v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s"]
 }
 
-output "url" { value = "https://${var.domain_name}" }
+output "url" { value = "https://${local.www}" }
 output "bucket" { value = aws_s3_bucket.site.id }
 output "distribution_id" { value = aws_cloudfront_distribution.site.id }
 output "distribution_domain" { value = aws_cloudfront_distribution.site.domain_name }

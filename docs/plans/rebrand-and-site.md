@@ -12,7 +12,7 @@ Where this plan contradicts the kolab (D11, D63, D81, D94; the binding's API6, I
 | The command is `kolab`, with no `konjir` alias | Lee, 2026-11-18 |
 | The existing `konjir` package on npm (latest 0.8.0) is left alone: not deprecated, no shim, no new versions. It is to be repurposed later | Lee, 2026-11-18 |
 | One marketing site at `www.konjir.com`, with each package's page under it: `/kolab`, `/konnect`. `kolab.konjir.com` stays the Kolab app (web UI, `/mcp`, `/api`, `/oauth`, `/.well-known`) | Lee, 2026-11-18 |
-| `www.konjir.com` is canonical; `konjir.com` redirects to it (the reverse of today) | Proposed by Claude, unless Lee says otherwise |
+| `www.konjir.com` is canonical, by the pages' canonical links, sitemap and Open Graph URLs. `konjir.com` serves the same pages and doesn't redirect for now: until step 2 the site answered www with an uncached 301 to the apex, which browsers may keep for good, so redirecting the apex back would loop for them. Redirecting it is a later, deliberate change, once those have aged out | Proposed by Claude, unless Lee says otherwise |
 | Names machines read keep `konjir`: the `konjir_*` tool names, `kj:` addresses, `KONJIR_URL`, `KONJIR_TOKEN`, and the MCP entry keys `konjir connect` writes. Only what people install and type changes | Proposed by Claude, unless Lee says otherwise |
 | No `konnect.konjir.com` for now (it doesn't resolve today, and nothing needs it) | Proposed by Claude, unless Lee says otherwise |
 | Each landing page stays a claude.ai artboard published from `site/src/` (D92's mechanics). The existing [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W) artifact becomes the Kolab page; the www and konnect pages get new artifacts | Proposed by Claude, unless Lee says otherwise |
@@ -54,7 +54,7 @@ What to fix, most important first:
 | `/konnect/` | konnect's product page: install, three commands, an agent woken by a message, the harnesses it supports | new artboard, `site/src/konnect/` |
 | `/konnect/guide/` | Today's `/messages/` | `site/src/konnect/guide.md` |
 
-Redirects, all 301, in the site's CloudFront Function: `konjir.com/*` to `www.konjir.com/*`; `/hands-on/` to `/kolab/hands-on/`; `/messages/` to `/konnect/guide/`.
+Redirects, all 301 and cacheable for a day, in the site's CloudFront Function, on both hosts: `/hands-on/…` to `https://www.konjir.com/kolab/hands-on/…`; `/messages/…` to `https://www.konjir.com/konnect/guide/…`. `konjir.com` serves the same pages as `www.konjir.com` and doesn't redirect (see *Decisions*).
 
 ## Older konnect keeps working
 
@@ -107,7 +107,7 @@ In order. Step 2 ships before any content changes, so every later step only chan
 
 - `deploy/site/build.mjs` builds several landing pages, each an artboard in `site/src/<section>/`, and the articles under them. `site/src/project/Main.dc.html` and its images move to `site/src/kolab/`; `hands-on.md` moves to `site/src/kolab/`, `messages.md` to `site/src/konnect/guide.md`. Until step 3 lands, `/` is a minimal org page linking to `/kolab/` and `/konnect/`.
 - One shared header for every page: the Konjir mark, a product switcher (Kolab, konnect), and the section's own links. An article's links stay within its section instead of jumping to the home page's anchors.
-- `deploy/terraform/modules/site`: `www.konjir.com` canonical, `konjir.com` redirecting to it, and the redirects above. The certificate already covers both names.
+- `deploy/terraform/modules/site`: `www.konjir.com` canonical by canonical links, `konjir.com` serving the same pages without redirecting until the old cached www-to-apex redirects have aged out, and the old paths' 301s to www's new paths above. The certificate already covers both names.
 - The build writes `sitemap.xml`, a canonical link, Open Graph and Twitter tags on every page, and an Open Graph image per landing page (static PNGs in `site/src/<section>/`).
 - `site/README.md` describes the new layout and how each artboard is published to its artifact.
 - Check: every old URL redirects to its new one, every page renders in both themes at 390px and 1440px, and the console shows no errors.

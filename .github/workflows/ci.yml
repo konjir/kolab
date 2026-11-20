@@ -81,12 +81,12 @@ jobs:
         run: |
           node deploy/site/build.mjs
           if ! git diff --exit-code --diff-filter=d --stat -- site; then
-            echo "::error file=site/src/project/Main.dc.html::site/ isn't built from site/src/: run node deploy/site/build.mjs and commit the result"
+            echo "::error file=site/src/kolab/project/Main.dc.html::site/ isn't built from site/src/: run node deploy/site/build.mjs and commit the result"
             exit 1
           fi
           untracked=$(git ls-files --others --exclude-standard -- site)
           if [ -n "$untracked" ]; then
-            echo "::error file=site/src/project/Main.dc.html::the build wrote files that aren't committed: $untracked"
+            echo "::error file=site/src/kolab/project/Main.dc.html::the build wrote files that aren't committed: $untracked"
             exit 1
           fi
 

@@ -48,7 +48,11 @@
           "jest",
           "{workspaceRoot}/deploy/release/start.sh",
           "{workspaceRoot}/deploy/release/install.sh",
-          "{workspaceRoot}/deploy/recovery-verify.cjs"
+          "{workspaceRoot}/deploy/recovery-verify.cjs",
+          "{workspaceRoot}/deploy/site/**/*",
+          "{workspaceRoot}/site/**/*",
+          "{workspaceRoot}/deploy/terraform/modules/site/www-redirect.js.tftpl",
+          "{workspaceRoot}/brand/konjir-mark-tile.svg"
         ]
       },
       "bundle": {
