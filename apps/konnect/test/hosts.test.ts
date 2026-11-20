@@ -342,9 +342,11 @@ test('hosting under one name: another machine can\'t take a name that is hosting
   const second = desk.run(['host', 'run', 'desk'], { exec: there.exec, self, pause: soon, waking: (end) => { endSecond = end; }, err: (l) => secondErr.push(l) });
   await first;
   expect(firstErr.at(-1)).toMatch(/another konnect host run hosts as desk on this machine now: this one ends$/);
+  // Ending so, the older one says nothing to the service: the desk is still listed, with no gap.
+  expect(await laptop.run(['host', 'list'])).toMatch(/^desk\s+hosting/);
   // The first ends as soon as the second claims the name here, which is before the second has told
   // the service it hosts and said so: so that is waited for, not assumed.
-  await until(async () => /^desk\s+hosting/.test(await laptop.run(['host', 'list'])) && secondErr.length > 0, 'the newer one hosts, and says so');
+  await until(() => secondErr.length > 0, 'the newer one says it hosts');
   expect(secondErr[0]).toContain(`konnect host pair desk ${code}\n`);
   // Ended there (Ctrl-C), it says so to the service, and is listed no more.
   endSecond();
