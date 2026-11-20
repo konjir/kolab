@@ -2,28 +2,50 @@
 // exits 0, before it reads any other argument, a project's .konjir.json or a sign-in, so it sends no
 // request and opens no browser; a verb Kolab serves is `kolab help <verb>`, never a call to a tool
 // named --help, and with nothing to ask Kolab with it says how to see the verb's parameters.
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+// node:child_process is stood in for, so a browser opened (@konjir/login's execFile) or claude started
+// (spawn) is recorded rather than run; bin/kolab, run as a process, gets stand-ins on its PATH.
+import { EventEmitter } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { connect as netConnect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, jest, test } from '@jest/globals';
-import { startServer } from '@konjir/server';
-import { closeAtEnd, openKolab } from '@konjir/engine/testing';
-import { main } from '../src/cli.js';
-import { COMMANDS, commandHelp, helpRequest, verbHelpOffline } from '../src/help.js';
+
+const actual = await import('node:child_process');
+/** Every program kolab started, in place of starting it. */
+const started: string[][] = [];
+jest.unstable_mockModule('node:child_process', () => ({
+  ...actual,
+  spawn: (cmd: string, args: readonly string[] = []) => {
+    started.push([cmd, ...args]);
+    const child = Object.assign(new EventEmitter(), { pid: 0, kill: () => true });
+    setImmediate(() => child.emit('exit', 0, null));
+    return child;
+  },
+  execFile: (cmd: string, args: readonly string[] = []) => { started.push([cmd, ...args]); return { unref: () => undefined }; },
+}));
+const { execFileSync } = actual;
+const { startServer } = await import('@konjir/server');
+const { closeAtEnd, openKolab } = await import('@konjir/engine/testing');
+const { main } = await import('../src/cli.js');
+const { COMMANDS, commandHelp, helpRequest, verbHelpOffline } = await import('../src/help.js');
+const { claudeBridgeEntry } = await import('../src/connect.js');
+type Entry = import('../src/connect.js').Entry;
 
 const env = { ...process.env };
 const cwd = process.cwd();
 let out: string[];
 let fetched: string[];
 let scratch: string;
-/** A browser opened, or claude started: the stand-ins on the PATH leave this file. */
+/** The project's .konjir.json, as written. */
+const PROJECT_FILE = JSON.stringify({ kolab: 'elsewhere', url: 'https://kolab.example.com/mcp' });
+/** bin/kolab, run as a process: a browser it opened or claude it started, as the stand-ins on its PATH leave this file. */
 let marker: string;
 
 beforeEach(() => {
   out = [];
   fetched = [];
+  started.length = 0;
   process.exitCode = undefined;
   jest.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { out.push(a.map(String).join(' ')); });
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -47,7 +69,7 @@ beforeEach(() => {
   delete process.env.KONJIR_JOB;
   const project = join(scratch, 'project');
   mkdirSync(project);
-  writeFileSync(join(project, '.konjir.json'), JSON.stringify({ kolab: 'elsewhere', url: 'https://kolab.example.com/mcp' }));
+  writeFileSync(join(project, '.konjir.json'), PROJECT_FILE);
   process.chdir(project);
 });
 afterEach(() => {
@@ -57,11 +79,19 @@ afterEach(() => {
   process.exitCode = undefined;
 });
 
+/** Help wrote nothing: no credentials store, no data folder, the project's file as it was, and no stand-in ran. */
+function nothingWritten() {
+  expect(started).toStrictEqual([]);
+  expect(readdirSync(scratch).sort()).toStrictEqual(['bin', 'project']);
+  expect(readdirSync(join(scratch, 'project'))).toStrictEqual(['.konjir.json']);
+  expect(readFileSync(join(scratch, 'project', '.konjir.json'), 'utf8')).toBe(PROJECT_FILE);
+}
+
 /** The arguments that name each command, and the command whose help they get. */
 const NAMED: [string[], string][] = [
   [['login'], 'login'], [['logout'], 'logout'], [['connect'], 'connect'], [['connect', 'claude'], 'connect'], [['claude'], 'claude'],
   [['bridge'], 'bridge'], [['work'], 'work'], [['work', 'deliver'], 'work deliver'], [['work', 'deliver', 'kj:b#W1', '--submit'], 'work deliver'],
-  [['work', 'guard'], 'work guard'], [['repo'], 'repo register'], [['repo', 'register'], 'repo register'], [['status'], 'status'],
+  [['work', 'guard'], 'work guard'], [['repo'], 'repo register'], [['repo', 'register'], 'repo register'], [['status'], 'status'], [['status', '--json'], 'status'],
   [['import'], 'import'], [['import', 'file.json'], 'import'], [['serve', '--port', '7431'], 'serve'], [['watch'], 'watch'], [['tools'], 'tools'],
   [['instructions'], 'instructions'], [['help'], 'help'], [['resolve'], 'resolve'], [['read'], 'read'], [['stale'], 'stale'], [['queries'], 'queries'],
 ];
@@ -80,6 +110,7 @@ test.each(NAMED.flatMap(([args, command]) => ['--help', '-h'].map((h) => [[...ar
     expect(process.exitCode).toBeUndefined();
     expect(fetched).toStrictEqual([]);
     expect(existsSync(marker)).toBe(false);
+    nothingWritten();
   });
 
 test('kolab serve --help starts no Kolab', async () => {
@@ -88,6 +119,7 @@ test('kolab serve --help starts no Kolab', async () => {
     const s = netConnect(7431, '127.0.0.1').once('connect', () => { s.destroy(); resolve(true); }).once('error', () => resolve(false));
   });
   expect(listening).toBe(false);
+  nothingWritten();
 });
 
 test('kolab help <command>, --help <command> and -h <command> print the command\'s usage; the connection flags may come first', async () => {
@@ -98,18 +130,34 @@ test('kolab help <command>, --help <command> and -h <command> print the command\
     expect([argv, out.join('\n')]).toStrictEqual([argv, commandHelp(command)]);
   }
   expect(fetched).toStrictEqual([]);
-  expect(existsSync(marker)).toBe(false);
+  nothingWritten();
+});
+
+test('inside a Konjir job (KONJIR_JOB), a command\'s help prints as anywhere, before the job\'s refusals', async () => {
+  process.env.KONJIR_JOB = 'J1';
+  for (const [argv, command] of [[['login', '--help'], 'login'], [['work', '-h'], 'work'], [['work', 'deliver', '--help'], 'work deliver'], [['import', '-h'], 'import'], [['claude', '--help'], 'claude']] as const) {
+    out = [];
+    await main([...argv]);
+    expect([argv, out.join('\n')]).toStrictEqual([argv, commandHelp(command)]);
+  }
+  // Without help, a job still refuses them.
+  await expect(main(['login'])).rejects.toThrow(/kolab login doesn't run inside a Konjir job/);
+  expect(fetched).toStrictEqual([]);
+  nothingWritten();
 });
 
 test('a verb Kolab serves, with nothing to ask Kolab with, says how to see its parameters, and calls nothing', async () => {
   delete process.env.KONJIR_TOKEN;
   process.chdir(scratch);
-  for (const argv of [['read_node', '--help'], ['whoami', '-h'], ['read_node', 'node=orders', '--help'], ['--help', 'read_node'], ['-h', 'read_node']]) {
+  for (const [argv, verb] of [[['read_node', '--help'], 'read_node'], [['whoami', '-h'], 'whoami'], [['read_node', 'node=orders', '--help'], 'read_node'],
+    [['--help', 'read_node'], 'read_node'], [['-h', 'read_node'], 'read_node'], [['help', 'read_node'], 'read_node'], [['help', 'konjir_import'], 'konjir_import']] as const) {
     out = [];
-    await main(argv);
-    expect([argv, out.join('\n')]).toStrictEqual([argv, verbHelpOffline(argv.includes('whoami') ? 'whoami' : 'read_node')]);
+    await main([...argv]);
+    expect([argv, out.join('\n')]).toStrictEqual([argv, verbHelpOffline(verb)]);
   }
-  expect(out.join('\n')).toMatch(/kolab help read_node, or kolab tools for every verb/);
+  expect(verbHelpOffline('read_node')).toMatch(/kolab help read_node, or kolab tools for every verb/);
+  expect(verbHelpOffline('konjir_import')).toMatch(/^kolab import \[key=value …\]/);
+  expect(verbHelpOffline('konjir_import')).toMatch(/then run kolab help konjir_import, or kolab tools/);
   expect(process.exitCode).toBeUndefined();
   expect(fetched).toStrictEqual([]);
 });
@@ -146,6 +194,10 @@ test('help is asked only where it is kolab\'s: not as a flag\'s value, and never
   expect(helpRequest(['work', 'deliver', 'kj:b#W1', '--note', '-h'])).toBeUndefined();
   expect(helpRequest(['work', '--harness', '--help'])).toBeUndefined();
   expect(helpRequest(['create_node', '--json', '-h'])).toBeUndefined();
+  expect(helpRequest(['import', '--json', '-h'])).toBeUndefined();
+  // kolab status's --json takes no value.
+  expect(helpRequest(['status', '--json', '--help'])).toStrictEqual({ command: 'status' });
+  expect(helpRequest(['repo', 'register', '--url', '-h'])).toBeUndefined();
   expect(helpRequest(['--token', '-h', 'whoami'])).toBeUndefined();
   for (const argv of [[], ['help'], ['--help'], ['--version'], ['whoami'], ['read_node', 'node=x'], ['login', '--kolab', 'k']]) expect(helpRequest(argv)).toBeUndefined();
   // kolab -h is kolab --help, with any connection flags kept.
@@ -169,4 +221,43 @@ test('bin/kolab login --help and logout -h print their usage on stdout and exit 
   expect(run('login', '--help')).toBe(`${commandHelp('login')}\n`);
   expect(run('logout', '-h')).toBe(`${commandHelp('logout')}\n`);
   expect(existsSync(marker)).toBe(false);
+}, 60_000);
+
+test('kolab claude <label> --help is claude\'s: kolab starts claude with it', async () => {
+  process.env.HOME = mkdtempSync(join(tmpdir(), 'konjir-help-home-'));
+  const project = mkdtempSync(join(tmpdir(), 'konjir-help-claude-'));
+  const entry: Entry = { name: 'konjir-product', agent: 'ann-product', label: 'product', role: 'product', kolab: 'anns', url: 'https://kolab.example/mcp' };
+  writeFileSync(join(project, '.mcp.json'), JSON.stringify({ mcpServers: { 'konjir-product': claudeBridgeEntry(entry, '/src/kolab/apps/channel-bridge/scripts/start.sh') } }));
+  process.chdir(project);
+  await main(['claude', 'product', '--help']);
+  expect(out).toStrictEqual([]);
+  expect(process.exitCode).toBe(0);
+  expect(started).toHaveLength(1);
+  expect(started[0].slice(0, 2)).toStrictEqual(['claude', '--strict-mcp-config']);
+  expect(started[0].at(-1)).toBe('--help');
+  expect(fetched).toStrictEqual([]);
+});
+
+test('kolab work deliver … --note -h is a delivery with the note -h, not help', async () => {
+  jest.mocked(globalThis.fetch).mockRestore();
+  const kolab = await openKolab();
+  const server = await startServer({ adminToken: 'help-admin', kolab, webRoot: null });
+  closeAtEnd(server);
+  const real = globalThis.fetch;
+  const calls: string[] = [];
+  jest.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    if (typeof init?.body === 'string') {
+      try { const m = JSON.parse(init.body) as { method?: string; params?: { name?: string } }; if (m.method === 'tools/call') calls.push(m.params?.name ?? ''); } catch { /* not JSON-RPC */ }
+    }
+    return real(input, init);
+  });
+  process.chdir(scratch);
+  process.env.KONJIR_URL = server.url;
+  process.env.KONJIR_TOKEN = 'help-admin';
+  // Delivery reads the package from Kolab first; this kolab has none, so it stops there, past help.
+  const refused = main(['work', 'deliver', 'kj:b#W1', '--note', '-h', '-C', scratch]);
+  await expect(refused).rejects.toThrow();
+  expect(String(await refused.catch((e: Error) => e.message))).not.toContain('kolab work deliver [<work>]');
+  expect(out.join('\n')).not.toContain(commandHelp('work deliver'));
+  expect(calls).toContain('konjir_read_work');
 }, 60_000);
