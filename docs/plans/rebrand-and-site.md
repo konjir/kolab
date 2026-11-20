@@ -4,6 +4,23 @@ Lee's instruction of 2026-11-18. This work runs outside the kolab's planning pro
 
 Where this plan contradicts the kolab (D11, D63, D81, D94; the binding's API6, IMP2, API14, API25, API29 and DEP8), this plan wins for this work. Reconciling the kolab afterwards is a separate decision of Lee's.
 
+## Status, 2026-11-20
+
+Shipped and deployed:
+- The konnect guard (#179): the server logs each client's name and version, and CI runs every published konnect against every server change.
+- Step 1a (#180): the CLI is `@konjir/kolab`, command `kolab`. 0.9.0 is on npm, published by the workflow with provenance, and the web page's `npx` line names it (#185).
+- Step 1b (#186): the server says `kolab`; errors and sign-in pages do only for a client that says it is kolab.
+- Step 2 (#178): www.konjir.com with `/`, `/kolab/`, `/konnect/`; konjir.com serves the same pages, and the old paths redirect.
+- Steps 3–5 (#183, #182, #184, #181): the org page, the reworked Kolab page with its working mark demo, `/kolab/how-it-works/`, and the konnect page. The tutorial installs `@konjir/kolab` (#188).
+- Step 6 (#191, #190): footer links to source, npm and licences; a one-row header at any width; a signed-out view on kolab.konjir.com.
+- Also: every `kolab` subcommand answers `--help` without acting (#187); CI's test jobs have room (#189).
+
+Left:
+- Lee: release 0.9.1, so the published CLI has the `--help` fix (in 0.9.0, `kolab logout --help` signs out). Then the tutorial's install line and `cli_npm_spec` move to it.
+- Lee: the text of a privacy policy and terms, and a contact, for the footer.
+- Follow-ups: the site's media queries in `min-width`/`max-width` form, for Safari before 16.4; the web page's retry sends one stale request per press (apps/web/src/api.ts `patiently`); konnect's `hosts` and `review` tests time out now and then on CI's Postgres job.
+- Later, Lee's call: konjir.com redirecting to www once old cached redirects have aged out; reconciling the kolab (D11, D63, D81, D94 and the binding elements above).
+
 ## Decisions
 
 | Decision | Taken |
