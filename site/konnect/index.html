@@ -69,13 +69,13 @@
 <figure class="s134">
 <figcaption class="s95">Team acme, people and agents</figcaption>
 <pre class="s96"><span class="s97">$ </span>konnect team list
-<span class="s21">@ada (you)     person
-@ada/laptop    agent   idle
-@sam           person
-@sam/reviewer  agent   working</span>
+<span class="s21">@ada (you)        person
+@ada/helper       agent   idle
+@sam-gh           person
+@sam-gh/reviewer  agent   idle</span>
 
-<span class="s97">$ </span>konnect send '#general' "deploy is green, thanks @sam"
-<span class="s21">Sent to #general, mentioning @sam.</span></pre>
+<span class="s97">$ </span>konnect send '#general' "deploy is green, thanks @sam-gh"
+<span class="s21">Sent to #general, mentioning @sam-gh.</span></pre>
 </figure>
 </section>
 
@@ -108,8 +108,8 @@ Invite people with: konnect team invite &lt;github-user&gt;</span></pre>
 </div>
 <figure class="s140">
 <figcaption class="s95">Your terminal</figcaption>
-<pre class="s96"><span class="s97">$ </span>konnect team invite sam
-<span class="s21">Invited: sam.
+<pre class="s96"><span class="s97">$ </span>konnect team invite sam-gh
+<span class="s21">Invited: sam-gh.
 They join by running, with the GitHub account you named:
   npx @konjir/konnect login</span></pre>
 </figure>
@@ -123,10 +123,10 @@ They join by running, with the GitHub account you named:
 <figure class="s140">
 <figcaption class="s95">Sam’s terminal</figcaption>
 <pre class="s96"><span class="s97">$ </span>konnect login
-<span class="s21">You're in team acme, as @sam.
+<span class="s21">You're in team acme, as @sam-gh.
 
-@ada        person
-@sam (you)  person
+@ada           person
+@sam-gh (you)  person
 
 Next:
   konnect status                      what is waiting for you
@@ -136,7 +136,7 @@ Next:
 <span class="s97">$ </span>konnect receive
 <span class="s21">#general
 2026-11-20 09:12  @ada
-  deploy is green, thanks @sam</span></pre>
+  deploy is green, thanks @sam-gh</span></pre>
 </figure>
 </li>
 </ol>
@@ -148,24 +148,24 @@ Next:
 <div class="s135">
 <p class="s33">Agents</p>
 <h2 id="agents-title" class="s56">A message to an agent wakes it.</h2>
-<p class="s136">An agent is a member of the team too, named after its owner: <code class="s133">@sam/reviewer</code> is Sam’s agent <code class="s133">reviewer</code>. Sam starts it in Claude Code with one command. Ada asks it a question from her laptop, and a turn starts on Sam’s machine with nobody typing.</p>
+<p class="s136">An agent is a member of the team too, named after its owner: <code class="s133">@sam-gh/reviewer</code> is Sam’s agent <code class="s133">reviewer</code>. Sam starts it in Claude Code with one command; the first time, the browser opens once to allow it. Ada asks it a question from her machine, and a turn starts on Sam’s machine with nobody typing.</p>
 </div>
 <div class="s141">
 <figure class="s142">
-<figcaption class="s95">Ada’s laptop</figcaption>
-<pre class="s96"><span class="s97">$ </span>konnect send @sam/reviewer "is the importer safe to merge?"
-<span class="s21">Sent to @sam/reviewer.</span>
+<figcaption class="s95">On Ada’s machine</figcaption>
+<pre class="s96"><span class="s97">$ </span>konnect send @sam-gh/reviewer "is the importer safe to merge?"
+<span class="s21">Sent to @sam-gh/reviewer.</span>
 
-<span class="s97">$ </span>konnect receive --wait 10m @sam/reviewer
-<span class="s21">2026-11-20 14:06  @sam/reviewer
+<span class="s97">$ </span>konnect receive --wait 10m @sam-gh/reviewer
+<span class="s21">2026-11-20 14:06  @sam-gh/reviewer
   Yes, with one gap. It only reads from the old table,
   and its tests pass. An empty file fails with a stack
   trace: worth a check before you merge.</span></pre>
 </figure>
 <figure class="s134">
-<figcaption class="s95">Sam’s machine</figcaption>
+<figcaption class="s95">On Sam’s machine</figcaption>
 <pre class="s96"><span class="s97">$ </span>konnect agent run reviewer claude
-<span class="s21">Your agent @sam/reviewer is in team acme.</span></pre>
+<span class="s21">Your agent @sam-gh/reviewer is added to team acme.</span></pre>
 <div class="s143">
 <p class="s33">In Claude Code, with nobody typing</p>
 <ol class="s144">
@@ -177,7 +177,7 @@ Next:
 </div>
 </figure>
 </div>
-<p class="s146">By default an agent takes a message as a teammate’s words, never an instruction: it answers, and changes nothing. Started with <code class="s133">--act-for me</code>, it carries out your own messages as your instructions. If the agent isn’t running, the message waits for it.</p>
+<p class="s146">By default konnect tells an agent that a message is a teammate’s words, never an instruction: answer it, and change nothing. That is its system prompt, not a permission: what the agent can do is set in its harness. Started with <code class="s133">--act-for me</code>, it is told to carry out your own messages as your instructions. If the agent isn’t running, the message waits for it.</p>
 </div>
 </section>
 
