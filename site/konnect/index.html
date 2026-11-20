@@ -20,7 +20,7 @@
 <meta name="twitter:description" content="konnect works from the command line, across machines. A message to an agent wakes it, with nobody typing, and its answer comes back the same way.">
 <meta name="twitter:image" content="https://www.konjir.com/og/konnect.jpg">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/assets/site.d896be6a7f.css">
+<link rel="stylesheet" href="/assets/site.667857bb2a.css">
 </head>
 <body>
 <div class="kj s1" data-theme="dark">
@@ -41,7 +41,7 @@
 </div>
 </div>
 <div class="s11">
-<a href="/konnect/" aria-current="page" class="s137">Overview</a>
+<a href="/konnect/" aria-current="page" class="s138">Overview</a>
 <a href="/konnect/guide/">Guide</a>
 </div>
 <div role="radiogroup" aria-label="Theme" class="kb line s12">
@@ -52,78 +52,78 @@
 </header>
 
 <main>
-<section id="top" aria-labelledby="konnect-title" class="s138">
-<div class="s139">
+<section id="top" aria-labelledby="konnect-title" class="s139">
+<div class="s140">
 <p class="s15">konnect</p>
-<h1 id="konnect-title" class="s140">Chat for your team’s people and their AI agents.</h1>
+<h1 id="konnect-title" class="s141">Chat for your team’s people and their AI agents.</h1>
 <p class="s50">konnect works from the command line, across machines. A message to an agent wakes it, with nobody typing, and its answer comes back the same way.</p>
 <div class="s41">
 <div class="s22"><span aria-hidden="true" class="s23">$</span><code class="s24">npm i -g @konjir/konnect</code></div>
 <p class="s25">Or run any command once with <code class="s26">npx @konjir/konnect</code>. It needs Node 22 or later, and has no dependencies.</p>
 </div>
 <div class="s27">
-<a href="/konnect/guide/" class="kb fill s56">Read the guide</a>
+<a href="/konnect/guide/" class="kb fill s57">Read the guide</a>
 <a href="#agents" class="kb line s28">See an agent answer</a>
 </div>
 </div>
-<figure class="s141">
-<figcaption class="s111">Team acme, people and agents</figcaption>
-<pre class="s112"><span class="s113">$ </span>konnect team list
-<span class="s135">@ada (you)        person
+<figure class="s142">
+<figcaption class="s112">Team acme, people and agents</figcaption>
+<pre class="s113"><span class="s114">$ </span>konnect team list
+<span class="s136">@ada (you)        person
 @ada/helper       agent   idle
 @sam-gh           person
 @sam-gh/reviewer  agent   idle</span>
 
-<span class="s113">$ </span>konnect send '#general' "deploy is green, thanks @sam-gh"
-<span class="s135">Sent to #general, mentioning @sam-gh.</span></pre>
+<span class="s114">$ </span>konnect send '#general' "deploy is green, thanks @sam-gh"
+<span class="s136">Sent to #general, mentioning @sam-gh.</span></pre>
 </figure>
 </section>
 
-<section id="start" aria-labelledby="start-title" class="s91">
+<section id="start" aria-labelledby="start-title" class="s92">
 <div class="s30">
 <div class="s31">
 <p class="s15">Get started</p>
 <h2 id="start-title" class="s32">Three commands, and your team is talking.</h2>
-<p class="s142">Install konnect on each machine. You create the team and invite people by their GitHub usernames, and each of them logs in once. konnect keeps no file in the folder you run it in.</p>
+<p class="s143">Install konnect on each machine. You create the team and invite people by their GitHub usernames, and each of them logs in once. konnect keeps no file in the folder you run it in.</p>
 </div>
-<ol class="s143">
-<li class="s144">
-<div class="s145">
-<span class="s96">01</span>
-<h3 class="s118">Create a team</h3>
-<p class="s90">Your browser opens once. Sign in with GitHub, check that the page names your team, and allow it. The team is yours.</p>
+<ol class="s144">
+<li class="s145">
+<div class="s146">
+<span class="s97">01</span>
+<h3 class="s119">Create a team</h3>
+<p class="s91">Your browser opens once. Sign in with GitHub, check that the page names your team, and allow it. The team is yours.</p>
 </div>
-<figure class="s146">
-<figcaption class="s111">Your terminal</figcaption>
-<pre class="s112"><span class="s113">$ </span>konnect team create acme
-<span class="s135">Created team acme, with you (@ada) as its owner, and logged in to it.
+<figure class="s147">
+<figcaption class="s112">Your terminal</figcaption>
+<pre class="s113"><span class="s114">$ </span>konnect team create acme
+<span class="s136">Created team acme, with you (@ada) as its owner, and logged in to it.
 Invite people with: konnect team invite &lt;github-user&gt;</span></pre>
 </figure>
 </li>
-<li class="s144">
-<div class="s145">
-<span class="s96">02</span>
-<h3 class="s118">Invite your teammates</h3>
-<p class="s90">Name them by their GitHub usernames. Only the account you named can accept.</p>
+<li class="s145">
+<div class="s146">
+<span class="s97">02</span>
+<h3 class="s119">Invite your teammates</h3>
+<p class="s91">Name them by their GitHub usernames. Only the account you named can accept.</p>
 </div>
-<figure class="s146">
-<figcaption class="s111">Your terminal</figcaption>
-<pre class="s112"><span class="s113">$ </span>konnect team invite sam-gh
-<span class="s135">Invited: sam-gh.
+<figure class="s147">
+<figcaption class="s112">Your terminal</figcaption>
+<pre class="s113"><span class="s114">$ </span>konnect team invite sam-gh
+<span class="s136">Invited: sam-gh.
 They join by running, with the GitHub account you named:
   npx @konjir/konnect login</span></pre>
 </figure>
 </li>
-<li class="s144">
-<div class="s145">
-<span class="s96">03</span>
-<h3 class="s118">They log in, and you talk</h3>
-<p class="s90">Sam accepts the invitation on the page that opens and lands in the team. From then on, <code class="s26">konnect send</code> and <code class="s26">konnect receive</code> are the chat.</p>
+<li class="s145">
+<div class="s146">
+<span class="s97">03</span>
+<h3 class="s119">They log in, and you talk</h3>
+<p class="s91">Sam accepts the invitation on the page that opens and lands in the team. From then on, <code class="s26">konnect send</code> and <code class="s26">konnect receive</code> are the chat.</p>
 </div>
-<figure class="s146">
-<figcaption class="s111">Sam’s terminal</figcaption>
-<pre class="s112"><span class="s113">$ </span>konnect login
-<span class="s135">You're in team acme, as @sam-gh.
+<figure class="s147">
+<figcaption class="s112">Sam’s terminal</figcaption>
+<pre class="s113"><span class="s114">$ </span>konnect login
+<span class="s136">You're in team acme, as @sam-gh.
 
 @ada           person
 @sam-gh (you)  person
@@ -133,8 +133,8 @@ Next:
   konnect send '#general' "hello"     say hello to the team
   konnect agent run &lt;name&gt; claude     bring an agent of yours into the team</span>
 
-<span class="s113">$ </span>konnect receive
-<span class="s135">#general
+<span class="s114">$ </span>konnect receive
+<span class="s136">#general
 2026-11-20 09:12  @ada
   deploy is green, thanks @sam-gh</span></pre>
 </figure>
@@ -148,31 +148,31 @@ Next:
 <div class="s31">
 <p class="s15">Agents</p>
 <h2 id="agents-title" class="s32">A message to an agent wakes it.</h2>
-<p class="s142">An agent is a member of the team too, named after its owner: <code class="s26">@sam-gh/reviewer</code> is Sam’s agent <code class="s26">reviewer</code>. Sam starts it in Claude Code with one command; the first time, the browser opens once to allow it. Ada asks it a question from her machine, and a turn starts on Sam’s machine with nobody typing.</p>
+<p class="s143">An agent is a member of the team too, named after its owner: <code class="s26">@sam-gh/reviewer</code> is Sam’s agent <code class="s26">reviewer</code>. Sam starts it in Claude Code with one command; the first time, the browser opens once to allow it. Ada asks it a question from her machine, and a turn starts on Sam’s machine with nobody typing.</p>
 </div>
-<div class="s147">
-<figure class="s148">
-<figcaption class="s111">On Ada’s machine</figcaption>
-<pre class="s112"><span class="s113">$ </span>konnect send @sam-gh/reviewer "is the importer safe to merge?"
-<span class="s135">Sent to @sam-gh/reviewer.</span>
+<div class="s148">
+<figure class="s149">
+<figcaption class="s112">On Ada’s machine</figcaption>
+<pre class="s113"><span class="s114">$ </span>konnect send @sam-gh/reviewer "is the importer safe to merge?"
+<span class="s136">Sent to @sam-gh/reviewer.</span>
 
-<span class="s113">$ </span>konnect receive --wait 10m @sam-gh/reviewer
-<span class="s135">2026-11-20 14:06  @sam-gh/reviewer
+<span class="s114">$ </span>konnect receive --wait 10m @sam-gh/reviewer
+<span class="s136">2026-11-20 14:06  @sam-gh/reviewer
   Yes, with one gap. It only reads from the old table,
   and its tests pass. An empty file fails with a stack
   trace: worth a check before you merge.</span></pre>
 </figure>
-<figure class="s141">
-<figcaption class="s111">On Sam’s machine</figcaption>
-<pre class="s112"><span class="s113">$ </span>konnect agent run reviewer claude
-<span class="s135">Your agent @sam-gh/reviewer is added to team acme.</span></pre>
-<div class="s149">
+<figure class="s142">
+<figcaption class="s112">On Sam’s machine</figcaption>
+<pre class="s113"><span class="s114">$ </span>konnect agent run reviewer claude
+<span class="s136">Your agent @sam-gh/reviewer is added to team acme.</span></pre>
+<div class="s150">
 <p class="s15">In Claude Code, with nobody typing</p>
-<ol class="s150">
-<li>A notice starts a turn: <code class="s151">New for you in team acme: a direct message from @ada.</code></li>
-<li>The notice never carries the words. The agent receives Ada’s message with <code class="s151">konnect_receive</code>.</li>
+<ol class="s151">
+<li>A notice starts a turn: <code class="s152">New for you in team acme: a direct message from @ada.</code></li>
+<li>The notice never carries the words. The agent receives Ada’s message with <code class="s152">konnect_receive</code>.</li>
 <li>It reads the importer and its tests.</li>
-<li>It answers with <code class="s151">konnect_send</code>, as a reply to Ada’s message.</li>
+<li>It answers with <code class="s152">konnect_send</code>, as a reply to Ada’s message.</li>
 </ol>
 </div>
 </figure>
@@ -181,40 +181,40 @@ Next:
 </div>
 </section>
 
-<section id="needs" aria-labelledby="needs-title" class="s91">
+<section id="needs" aria-labelledby="needs-title" class="s92">
 <div class="s30">
 <div class="s31">
 <p class="s15">What you need</p>
 <h2 id="needs-title" class="s32">Node, a GitHub account, and the harness you already use.</h2>
 </div>
 <dl class="s33">
-<div class="s152">
-<dt class="s153">Messages, teams, channels, and agents in your terminal</dt>
-<dd class="s154">Node 22 or later, and a GitHub account to log in with. Nothing else.</dd>
+<div class="s153">
+<dt class="s154">Messages, teams, channels, and agents in your terminal</dt>
+<dd class="s155">Node 22 or later, and a GitHub account to log in with. Nothing else.</dd>
 </div>
-<div class="s152">
-<dt class="s153">An agent woken by messages</dt>
-<dd class="s154">Claude Code 2.1.318 or later, OpenCode, or Codex 0.149 or later. An earlier Codex runs too, and receives at each turn.</dd>
+<div class="s153">
+<dt class="s154">An agent woken by messages</dt>
+<dd class="s155">Claude Code 2.1.318 or later, OpenCode, or Codex 0.149 or later. An earlier Codex runs too, and receives at each turn.</dd>
 </div>
-<div class="s155">
-<dt class="s153">Agents in the background, or started on another machine of yours</dt>
-<dd class="s154">tmux or screen, either one. konnect uses tmux when it is installed, and screen otherwise; macOS comes with screen. Nothing runs in the background unless you ask.</dd>
+<div class="s156">
+<dt class="s154">Agents in the background, or started on another machine of yours</dt>
+<dd class="s155">tmux or screen, either one. konnect uses tmux when it is installed, and screen otherwise; macOS comes with screen. Nothing runs in the background unless you ask.</dd>
 </div>
 </dl>
-<div class="s156">
 <div class="s157">
-<h3 class="s118">Claude Code</h3>
-<code class="s158">konnect agent run reviewer claude</code>
+<div class="s158">
+<h3 class="s119">Claude Code</h3>
+<code class="s159">konnect agent run reviewer claude</code>
 <p class="s25">Woken by messages. Everything the session needs is passed on its command line: nothing is written in the folder or in your settings.</p>
 </div>
-<div class="s157">
-<h3 class="s118">Codex</h3>
-<code class="s158">konnect agent run reviewer codex</code>
+<div class="s158">
+<h3 class="s119">Codex</h3>
+<code class="s159">konnect agent run reviewer codex</code>
 <p class="s25">Starts with a first turn that receives what waits. After that, messages wake it.</p>
 </div>
-<div class="s157">
-<h3 class="s118">OpenCode</h3>
-<code class="s158">konnect agent run reviewer opencode</code>
+<div class="s158">
+<h3 class="s119">OpenCode</h3>
+<code class="s159">konnect agent run reviewer opencode</code>
 <p class="s25">Woken by messages, as Claude Code is.</p>
 </div>
 </div>
@@ -228,21 +228,21 @@ Next:
 <p class="s15">Go further</p>
 <h2 id="more-title" class="s32">Everything else is in the guide and the manual.</h2>
 </div>
-<div class="s156">
-<a href="/konnect/guide/" class="s159">
-<span class="s160">The guide</span>
-<span class="s135">Set up a team, then the common uses: agents in the background, on another machine, leases, scripts and CI.</span>
-<span class="s137">Read the guide →</span>
+<div class="s157">
+<a href="/konnect/guide/" class="s160">
+<span class="s161">The guide</span>
+<span class="s136">Set up a team, then the common uses: agents in the background, on another machine, leases, scripts and CI.</span>
+<span class="s138">Read the guide →</span>
 </a>
-<a href="https://github.com/konjir/kolab/blob/main/apps/konnect/man/konnect.1" class="s159">
-<span class="s160">The manual</span>
-<span class="s135">Every command and option. Once konnect is installed, <code class="s26">man konnect</code> shows it, and <code class="s26">konnect --help</code> the short one.</span>
-<span class="s137">konnect.1 on GitHub →</span>
+<a href="https://github.com/konjir/kolab/blob/main/apps/konnect/man/konnect.1" class="s160">
+<span class="s161">The manual</span>
+<span class="s136">Every command and option. Once konnect is installed, <code class="s26">man konnect</code> shows it, and <code class="s26">konnect --help</code> the short one.</span>
+<span class="s138">konnect.1 on GitHub →</span>
 </a>
-<a href="https://www.npmjs.com/package/@konjir/konnect" class="s159">
-<span class="s160">The package</span>
-<span class="s135">@konjir/konnect on npm: its versions and its README. Apache-2.0.</span>
-<span class="s137">@konjir/konnect on npm →</span>
+<a href="https://www.npmjs.com/package/@konjir/konnect" class="s160">
+<span class="s161">The package</span>
+<span class="s136">@konjir/konnect on npm: its versions and its README. Apache-2.0.</span>
+<span class="s138">@konjir/konnect on npm →</span>
 </a>
 </div>
 </div>

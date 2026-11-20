@@ -68,8 +68,8 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <p style="margin: 0; max-width: 34em; color: var(--ink-muted);">Kolab is an MCP server at kolab.konjir.com, for Claude Code or any MCP client, with a CLI that connects your agents and sets your machine to work.</p>
 <div style="display: flex; flex-direction: column; gap: 8px; max-width: 34em;">
 <p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Install the CLI</p>
-<pre style="margin: 0; padding: 10px 14px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; line-height: 22px; color: var(--ink); background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;"><code>npm install -g konjir@0.8.0</code></pre>
-<p style="margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-muted);">It needs Node 22 or later. <a href="#agents" style="text-decoration: underline; text-underline-offset: 3px;">What to run next</a></p>
+<pre style="margin: 0; padding: 10px 14px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; line-height: 22px; color: var(--ink); background: var(--sunken); border: 1px solid var(--line); border-radius: 2px;"><code>npm i -g @konjir/kolab</code></pre>
+<p style="margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-muted);">Or run it once with <code style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px;">npx @konjir/kolab</code>. It needs Node 22 or later. <a href="#agents" style="text-decoration: underline; text-underline-offset: 3px;">What to run next</a></p>
 </div>
 <div style="display: flex; flex-wrap: wrap; gap: 12px;">
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
@@ -211,7 +211,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <p style="margin: 0; font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Bring your own harness</p>
 <h2 id="agents-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Your agents connect with the subscriptions you already have.</h2>
 <p style="margin: 0; max-width: 32em;">Kolab is an MCP server. Connect Claude Code, or any client that speaks MCP, and your agents read specs, resolve addresses, submit drafts and ask questions: agents of yours, with no more access than you hold.</p>
-<p style="margin: 0; max-width: 32em;">Kolab is the queue too. Run <code style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;">konjir work</code> in your repository and it takes each item as a job: a review, a ready work package, a mark to settle. One agent does that one item and exits. No agent sits connected waiting for work.</p>
+<p style="margin: 0; max-width: 32em;">Kolab is the queue too. Run <code style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;">kolab work</code> in your repository and it takes each item as a job: a review, a ready work package, a mark to settle. One agent does that one item and exits. No agent sits connected waiting for work.</p>
 <p style="margin: 0; color: var(--ink-muted); max-width: 32em;">Kolab never runs a model. Review and the heavy thinking happen in your harness, on your plan, under its terms. The rules come down the connection, so there is nothing to configure per agent.</p>
 </div>
 <div style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 14px;">
@@ -219,13 +219,13 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
 <pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># make a kolab and connect two agents to it,</span>
 <span style="color: var(--secondary);"># product and engineer: one page in the browser</span>
-konjir connect claude --kolab my-checkout
+kolab connect claude --kolab my-checkout
 
 <span style="color: var(--secondary);"># in its repository, sign in as yourself</span>
 <span style="color: var(--secondary);"># and set this machine to work</span>
-konjir login --role engineer
-konjir repo register
-konjir work</pre>
+kolab login --role engineer
+kolab repo register
+kolab work</pre>
 </div>
 <p style="margin: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">Every other route, from adding Kolab to Claude Code alone to working from any shell, is in <a href="https://www.konjir.com/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">the hands-on tutorial →</a></p>
 </div>
@@ -299,8 +299,8 @@ konjir work</pre>
 <figure style="flex: 1 1 400px; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 10px;">
 <div style="display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
 <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
-<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;">konjir work
-<span style="color: var(--ink-muted);">konjir work: sam in kolab accounts, on sam-laptop,
+<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;">kolab work
+<span style="color: var(--ink-muted);">kolab work: sam in kolab accounts, on sam-laptop,
   in /Users/sam/accounts; up to 4 jobs at once.
 job …: build kj:password-reset-pg#W3 as sam-engineer-1
 job …: mark … as sam-engineer-2
