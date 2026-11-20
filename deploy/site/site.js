@@ -1,5 +1,5 @@
-// konjir.com's only script: the static stand-in for the artifact's component logic (D81), and
-// the Kolab page's demo of a mark (the second block below).
+// konjir.com's only script: the static stand-in for the artifact's component logic (D81), the
+// Kolab page's demo of a mark (the second block below), and the header's menu (the third).
 // build.mjs places it, hashed, as the first child of the page's .kj root, so it runs
 // before the rest of the page is parsed and the chosen theme paints first.
 //
@@ -55,7 +55,7 @@
         if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) < 0) return;
         e.preventDefault();
         pick(theme === 'light' ? 'dark' : 'light');
-        var on = root.querySelector('[data-theme-choice][aria-checked="true"]');
+        var on = e.currentTarget.parentElement.querySelector('[data-theme-choice][aria-checked="true"]');
         if (on) on.focus();
       });
     }
@@ -128,5 +128,69 @@
     window.addEventListener('resize', again);
     window.addEventListener('load', again);
     try { document.fonts.ready.then(again); } catch (e) { /* no font loading API */ }
+  });
+})();
+
+// The header's menu (chrome.mjs): a <details>, so it opens and closes, and says whether it is open,
+// with no script. The stylesheet decides when the screen is narrow, and says so in the menu's
+// --menu property: on a wide screen its summary is hidden and its links sit in the header's row,
+// so this keeps it open, as it looks; on a narrow one it starts closed, beneath its summary, the
+// menu button, and this closes it on Escape (focus back on the button), a click outside it, focus
+// leaving it, or a link in it followed (an in-page link would leave it open over the page).
+// Crossing between the two opens or closes it; a resize within one leaves it as it is.
+(function () {
+  'use strict';
+  document.addEventListener('DOMContentLoaded', function () {
+    var menus = document.querySelectorAll('details[data-menu]');
+    if (!menus.length) return;
+    var modes = [];
+    function narrow(menu) {
+      return window.getComputedStyle(menu).getPropertyValue('--menu').trim() === 'narrow';
+    }
+    function fit() {
+      for (var i = 0; i < menus.length; i++) {
+        var n = narrow(menus[i]);
+        if (n !== modes[i]) {
+          modes[i] = n;
+          menus[i].open = !n;
+        }
+      }
+    }
+    function close(menu, focus) {
+      if (!menu.open || !narrow(menu)) return;
+      menu.open = false;
+      if (focus) menu.querySelector('summary').focus();
+    }
+    fit();
+    var pending = false;
+    window.addEventListener('resize', function () {
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(function () {
+        pending = false;
+        fit();
+      });
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' && e.key !== 'Esc') return;
+      for (var i = 0; i < menus.length; i++) {
+        if (menus[i].open && narrow(menus[i])) {
+          close(menus[i], menus[i].contains(document.activeElement));
+          e.preventDefault();
+        }
+      }
+    });
+    document.addEventListener('click', function (e) {
+      for (var i = 0; i < menus.length; i++) {
+        if (!menus[i].contains(e.target)) close(menus[i], false);
+        else if (e.target.closest && e.target.closest('.menu-panel a')) close(menus[i], false);
+      }
+    });
+    for (var j = 0; j < menus.length; j++) {
+      menus[j].addEventListener('focusout', function (e) {
+        var menu = e.currentTarget;
+        if (e.relatedTarget && !menu.contains(e.relatedTarget)) close(menu, false);
+      });
+    }
   });
 })();
