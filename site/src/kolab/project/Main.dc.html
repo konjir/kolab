@@ -29,6 +29,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 .kb:focus-visible,.kb:has(:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
 .tt:focus-visible{outline:none}
 .kb.fill:hover{filter:brightness(1.07)}
+[hidden]{display:none!important}
 </style>
 </helmet>
 <div class="kj" data-theme="{{theme}}" style="background: var(--surface); color: var(--ink); font-family: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 26px; min-width: 0;">
@@ -84,7 +85,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <div style="display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; line-height: 20px; color: var(--ink-muted);"><span style="font-weight: 600; color: var(--ink);">Spec</span><span>what it does</span><span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--secondary);">password-reset</span><span data-demo-when="before" hidden="">version 2</span><span data-demo-when="stale held revised">version 3</span></div>
 <div style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; background: var(--surface); border: 1px solid var(--line); border-radius: 2px; padding: 10px 12px;">
 <span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); width: 32px;">PR8</span>
-<span style="flex: 1 1 240px; min-width: 0; font-size: 14px; line-height: 22px;">At most <span data-demo-when="before" hidden="">5</span><span data-demo-when="stale"><del style="background: var(--del); text-decoration-thickness: 1px;">5</del> <ins style="background: var(--ins); text-decoration: none;">3</ins></span><span data-demo-when="held revised" hidden="">3</span> reset requests per email address per hour.</span>
+<span style="flex: 1 1 240px; min-width: 0; font-size: 14px; line-height: 22px;">At most <span data-demo-when="before" hidden="">5</span><span data-demo-when="stale"><del style="background: var(--del); text-decoration-thickness: 1px;"><span style="position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;">was </span>5</del> <ins style="background: var(--ins); text-decoration: none;"><span style="position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;">, now </span>3</ins></span><span data-demo-when="held revised" hidden="">3</span> reset requests per email address per hour.</span>
 </div>
 <div data-demo-when="before" hidden=""><button type="button" data-demo-go="stale" class="kb line" style="--kb-h: 36px; --kb-line: var(--line-strong); padding: 0 18px; font-size: 13px; color: var(--ink);">Change 5 to 3</button></div>
 </div>
@@ -100,13 +101,13 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <div style="display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline;">
 <span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--secondary); width: 32px;">B9</span>
 <span style="flex: 1 1 220px; min-width: 0; font-size: 14px; line-height: 22px;">Rate limit: a sliding window per normalized email, sized by PR8.</span>
-<span data-demo-when="stale"><span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--accent); color: var(--accent); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span></span>
+<span data-demo-when="stale revised"><span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--accent); color: var(--accent); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle><path d="M5 1a4 4 0 0 1 0 8Z" fill="currentColor" stroke="none"></path></svg>stale</span></span>
 <span data-demo-when="before held" hidden=""><span style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; border: 1px solid var(--clean); color: var(--clean); border-radius: 999px; padding: 0 9px;"><svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="4"></circle></svg>holds</span></span>
-<span data-demo-when="revised" hidden=""><span style="font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">In review</span></span>
+<span data-demo-when="revised" hidden=""><span style="font-size: 11px; line-height: 18px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Revision in review</span></span>
 </div>
-<div data-demo-when="stale"><div style="margin-left: clamp(0px, 4vw, 48px); display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--accent); border-radius: 6px; padding: 12px 14px; background: var(--surface);">
+<div data-demo-when="stale revised"><div style="margin-left: clamp(0px, 4vw, 48px); display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--accent); border-radius: 6px; padding: 12px 14px; background: var(--surface);">
 <p style="margin: 0; font-size: 14px; line-height: 20px;">PR8 changed in version 3. B9 was written against version 2.</p>
-<p style="margin: 0; font-size: 14px; line-height: 22px; background: var(--sunken); border-radius: 2px; padding: 8px 10px;">At most <del style="background: var(--del); text-decoration-thickness: 1px;">5</del> <ins style="background: var(--ins); text-decoration: none;">3</ins> reset requests per email address per hour.</p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; background: var(--sunken); border-radius: 2px; padding: 8px 10px;">At most <del style="background: var(--del); text-decoration-thickness: 1px;"><span style="position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;">was </span>5</del> <ins style="background: var(--ins); text-decoration: none;"><span style="position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap;">, now </span>3</ins> reset requests per email address per hour.</p>
 <p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted);">Check it against the new text: clear it if it still holds, or revise it.</p>
 <div data-demo-when="stale" hidden=""><div style="display: flex; flex-wrap: wrap; gap: 8px;">
 <button type="button" data-demo-go="held" class="kb line" style="--kb-h: 36px; --kb-line: var(--line-strong); padding: 0 18px; font-size: 13px; color: var(--ink);">Still holds</button>
@@ -122,7 +123,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 </div>
 
 <div style="display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); padding-top: 14px;">
-<p aria-live="polite" aria-atomic="true" style="margin: 0; font-size: 14px; line-height: 22px;"><span data-demo-when="before" hidden="">PR8 says 5. B9 relies on it, and B8 and B10 don’t. Change it as Maya would: she owns the product.</span><span data-demo-when="stale">Maya, who owns the product, changed PR8 from 5 to 3. Kolab marked B9, the one element that relies on it. B8, B10 and eleven others weren’t touched.</span><span data-demo-when="held" hidden="">Cleared: it still holds. B9 now relies on version 3, and nothing is marked.</span><span data-demo-when="revised" hidden="">B9 is revised in a new version of the binding. It commits once someone other than its author approves it, and that settles the mark.</span></p>
+<p aria-live="polite" aria-atomic="true" style="margin: 0; font-size: 14px; line-height: 22px;"><span data-demo-when="before" hidden="">PR8 says 5. B9 relies on it, and B8 and B10 don’t. Change it as Maya would: she owns the product.</span><span data-demo-when="stale">Maya, who owns the product, changed PR8 from 5 to 3, and once the change was approved, Kolab marked B9, the one element that relies on it. B8, B10 and eleven others weren’t touched.</span><span data-demo-when="held" hidden="">Cleared: it still holds. B9 now relies on version 3, and nothing is marked.</span><span data-demo-when="revised" hidden="">B9 is revised in a new version of the binding, now in review. It commits once someone other than its author approves it, or on Kolab’s checks alone when no one else may, and that settles the mark.</span></p>
 <div data-demo-when="held revised" hidden=""><button type="button" data-demo-go="before" class="kb line" style="--kb-h: 36px; --kb-line: var(--line-strong); padding: 0 18px; font-size: 13px; color: var(--ink);">Start again</button></div>
 </div>
 </div>
@@ -174,7 +175,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <li style="display: flex; flex-direction: column; gap: 12px;">
 <span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent);">03</span>
 <h3 style="margin: 0; font-size: 20px; line-height: 28px; font-weight: 600;">Change it</h3>
-<p style="margin: 0; color: var(--ink-muted);">Every change is a new version, and it commits only once someone other than its author approves it. Then Kolab marks exactly what relied on the old text, with a word-by-word diff.</p>
+<p style="margin: 0; color: var(--ink-muted);">Every change is a new version, and it commits once someone other than its author approves it, or on Kolab’s checks alone when no one else may. Then Kolab marks exactly what relied on the old text, with a word-by-word diff.</p>
 </li>
 <li style="display: flex; flex-direction: column; gap: 12px;">
 <span style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--accent);">04</span>
@@ -217,12 +218,16 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 <div style="flex: 1 1 480px; min-width: 0; display: flex; flex-direction: column; gap: 14px;">
 <div style="display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
 <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
-<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># make a kolab and connect two agents to it,</span>
-<span style="color: var(--secondary);"># product and engineer: one page in the browser</span>
-kolab connect claude --kolab my-checkout
+<pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;"><span style="color: var(--secondary);"># in your repository: make a kolab (its name is unique</span>
+<span style="color: var(--secondary);"># across Konjir) and connect a product and an engineer agent</span>
+kolab connect claude --kolab checkout-maya
 
-<span style="color: var(--secondary);"># in its repository, sign in as yourself</span>
-<span style="color: var(--secondary);"># and set this machine to work</span>
+<span style="color: var(--secondary);"># write the spec with the product agent, in Claude Code;</span>
+<span style="color: var(--secondary);"># then the binding, with kolab claude engineer</span>
+kolab claude product
+
+<span style="color: var(--secondary);"># sign in as yourself (choose Yourself on Kolab's page),</span>
+<span style="color: var(--secondary);"># then set this machine to work</span>
 kolab login --role engineer
 kolab repo register
 kolab work</pre>
@@ -287,7 +292,7 @@ kolab work</pre>
 <section id="signup" aria-labelledby="signup-title" style="border-top: 1px solid var(--line);">
 <div style="max-width: 1200px; margin: 0 auto; padding: clamp(64px, 9vw, 112px) clamp(16px, 4vw, 48px); box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 48px; align-items: center;">
 <div style="flex: 1 1 440px; min-width: 0; display: flex; flex-direction: column; gap: 18px; justify-content: center;">
-<h2 id="signup-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Konjir is in early testing.</h2>
+<h2 id="signup-title" style="margin: 0; font-family: 'Fraunces', Georgia, 'Times New Roman', serif; font-weight: 400; font-size: clamp(32px, 4vw, 44px); line-height: 1.12; letter-spacing: -0.01em; text-wrap: balance;">Kolab is in early testing.</h2>
 <p style="margin: 0; color: var(--ink-muted); max-width: 30em;">We’re working with teams who build with agents every day. Sign up with your GitHub account, connect your agents, then set a machine to work.</p>
 <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px;">
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
@@ -300,13 +305,12 @@ kolab work</pre>
 <div style="display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
 <div style="display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);">Terminal</div>
 <pre style="margin: 0; padding: 18px 20px; overflow-x: auto; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 22px; color: var(--ink); white-space: pre;">kolab work
-<span style="color: var(--ink-muted);">kolab work: sam in kolab accounts, on sam-laptop,
-  in /Users/sam/accounts; up to 4 jobs at once.
-job …: build kj:password-reset-pg#W3 as sam-engineer-1
-job …: mark … as sam-engineer-2
-job …: done (Kolab: submitted) (exit 0)
-job …: review kj:password-reset-pg#W3 as sam-engineer-2
-job …: done (Kolab: reviewed) (exit 0)</span></pre>
+<span style="color: var(--ink-muted);">kolab work: sam in kolab accounts, on sam-laptop, in /Users/sam/accounts (https://github.com/sam/accounts, from origin); up to 4 jobs at once.
+job a41c…: build kj:password-reset-pg#W3 as sam-engineer-1, in /Users/sam/.konjir/jobs/…
+job 7e02…: mark … as sam-engineer-2, in /Users/sam/.konjir/jobs/…
+job a41c…: done (Kolab: submitted) (exit 0)
+job c9d5…: review kj:password-reset-pg#W3 as sam-engineer-3, in /Users/sam/.konjir/jobs/…
+job c9d5…: done (Kolab: reviewed) (exit 0)</span></pre>
 </div>
 <figcaption style="font-size: 13px; line-height: 20px; color: var(--ink-muted);">Sam’s machine at work: one agent per item, and a review is never its builder’s.</figcaption>
 </figure>

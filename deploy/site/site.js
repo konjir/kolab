@@ -67,7 +67,8 @@
 // shows only in those states; each [data-demo-go="<state>"] button moves to that state. The page
 // hides everything that needs this script (its buttons), so it reads whole without it.
 // A move shows the new state, and its live region says what happened; focus goes to the first
-// button the new state shows, so a keyboard carries on where it was.
+// button the new state shows, so a keyboard carries on where it was. The box keeps the height of
+// its tallest state, so the page doesn't jump on a move.
 (function () {
   'use strict';
   function visible(el, box) {
@@ -86,15 +87,46 @@
         if (visible(buttons[j], box)) { buttons[j].focus(); return; }
       }
     }
+    var states = [box.getAttribute('data-demo')];
+    var current = states[0];
     for (var k = 0; k < buttons.length; k++) {
+      var to = buttons[k].getAttribute('data-demo-go');
+      if (states.indexOf(to) < 0) states.push(to);
       buttons[k].addEventListener('click', function (e) {
-        show(e.currentTarget.getAttribute('data-demo-go'), true);
+        current = e.currentTarget.getAttribute('data-demo-go');
+        show(current, true);
       });
     }
-    show(box.getAttribute('data-demo'), false);
+    // Every state is laid out in turn, in one task, so nothing paints or is announced but the last.
+    function hold() {
+      box.style.minHeight = '';
+      var tallest = 0;
+      for (var m = 0; m < states.length; m++) {
+        show(states[m], false);
+        tallest = Math.max(tallest, box.getBoundingClientRect().height);
+      }
+      show(current, false);
+      box.style.minHeight = Math.ceil(tallest) + 'px';
+    }
+    hold();
+    return hold;
   }
   document.addEventListener('DOMContentLoaded', function () {
     var boxes = document.querySelectorAll('[data-demo]');
-    for (var i = 0; i < boxes.length; i++) start(boxes[i]);
+    var holds = [];
+    for (var i = 0; i < boxes.length; i++) holds.push(start(boxes[i]));
+    var pending = false;
+    function again() {
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(function () {
+        pending = false;
+        for (var j = 0; j < holds.length; j++) holds[j]();
+      });
+    }
+    // Measured again once the fonts are in, since they change how the text wraps, and on a resize.
+    window.addEventListener('resize', again);
+    window.addEventListener('load', again);
+    try { document.fonts.ready.then(again); } catch (e) { /* no font loading API */ }
   });
 })();
