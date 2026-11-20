@@ -595,7 +595,16 @@ interface BrowserOpts {
   scope?: string; open?: (u: URL) => void | Promise<void>; log?: (line: string) => void; timeoutMs?: number; again?: string;
   /** What is said as the browser opens, before the link; by default, that it signs in to Kolab. */
   opening?: string;
+  /**
+   * What the sign-in's MCP connections tell Kolab they are (clientInfo): `konjir-cli` 0.6.0 by
+   * default, as every published konnect's does; the kolab CLI gives its own, `kolab`, which opts in
+   * to Kolab's wording for it (docs/plans/rebrand-and-site.md, step 1b).
+   */
+  clientInfo?: { name: string; version: string };
 }
+
+/** What a sign-in's MCP connections say they are when the caller doesn't say (BrowserOpts.clientInfo). */
+const SIGN_IN_CLIENT = { name: 'konjir-cli', version: '0.6.0' };
 
 /**
  * Signs a provider in through the person's browser: a loopback listener on a port of its own
@@ -637,7 +646,7 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
     });
     back.catch(() => undefined);
     const first = new StreamableHTTPClientTransport(new URL(url), { authProvider: provider });
-    const probe = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
+    const probe = new Client(opts.clientInfo ?? SIGN_IN_CLIENT, { versionNegotiation: { mode: 'auto' } });
     try {
       await probe.connect(first);
       await probe.close();
@@ -679,7 +688,7 @@ export async function login(url: string, opts: { path?: string; clientName?: str
     path: opts.path, redirectUrl, fresh: true, clientName: opts.clientName, yieldTo: opts.yieldTo, onAuthorize,
   }), opts);
   const kept = new StoredLogin(url, { path: opts.path });
-  const client = new Client({ name: 'konjir-cli', version: '0.6.0' }, { versionNegotiation: { mode: 'auto' } });
+  const client = new Client(opts.clientInfo ?? SIGN_IN_CLIENT, { versionNegotiation: { mode: 'auto' } });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { authProvider: kept, fetch: kept.fetch, onInsufficientScope: 'throw' }));
   let me;
   try {

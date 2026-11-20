@@ -58,7 +58,7 @@ import { StoredLogin, credentialsPath, keptSignIns, login, logout, safeUrl, setu
 import { deliverWork, gitIn, registerRepository, releaseDelivered } from './deliver.js';
 import { ToolRefusal, formatStatus, runWork, workStatus } from './work.js';
 import { guardHook } from './guard.js';
-import { HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
+import { CLI_CLIENT_NAME, HARNESSES, connectHarness, mcpUrl, parseAgents, terminalIO, type Harness } from './connect.js';
 import { gitIgnored, startClaude } from './claude.js';
 import { toolsListing, verbHelp } from './verbs.js';
 import { commandHelp, helpRequest, verbHelpOffline } from './help.js';
@@ -670,7 +670,7 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     if (token) console.error('kolab connect signs you in in your browser, at Kolab\'s setup page: KONJIR_TOKEN and --token aren\'t used for it.');
     const mcp = mcpUrl(url);
     await connectHarness({ harness: harness as Harness, url: mcp, kolab, agents: parseAgents(agents), cwd: process.cwd(), env: process.env, ...opts },
-      terminalIO((r) => setup(r.url, { scope: r.scope, mint: r.mint, clientName: r.clientName, opening: r.opening, log: (l) => console.log(l) }).catch((e: unknown) => { throw unreachable(e, r.url) ?? e; })));
+      terminalIO((r) => setup(r.url, { scope: r.scope, mint: r.mint, clientName: r.clientName, clientInfo: KOLAB_CLIENT, opening: r.opening, log: (l) => console.log(l) }).catch((e: unknown) => { throw unreachable(e, r.url) ?? e; })));
     return;
   }
 
@@ -955,7 +955,7 @@ export async function loginAs(url: string, scope: string, agent: string | undefi
   for (let tries = 1; ; tries++) {
     let me;
     try {
-      me = await login(url, { scope, path: opts.path, open: opts.open, log: opts.log });
+      me = await login(url, { scope, path: opts.path, open: opts.open, log: opts.log, clientName: CLI_CLIENT_NAME, clientInfo: KOLAB_CLIENT });
     } catch (e) {
       throw unreachable(e, url) ?? e;
     }

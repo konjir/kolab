@@ -113,8 +113,8 @@ export class WebSessionController {
   }
 
   /**
-   * How to get the konjir CLI here (W3.7): the published package's pinned spec, if the operator set
-   * one; otherwise none, and the page shows a checkout's bin/konjir, never an `npx` of a name
+   * How to get the kolab CLI here (W3.7): the published package's pinned spec, if the operator set
+   * one; otherwise none, and the page shows a checkout's bin/kolab, never an `npx` of a name
    * anyone could register.
    */
   @Get('cli')

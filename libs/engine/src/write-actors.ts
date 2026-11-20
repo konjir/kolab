@@ -92,7 +92,7 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   declineAuthorization: { unsigned: 'authorization_dropped' },
   consent: { recorded: ['oauth_code.person_id', 'kolab.created_by', 'actor.created_by', 'audit_event:grant.set', 'kolab_invite.accepted_by'] },
   exchangeCode: { recorded: ['oauth_grant.person_id', 'session.opened_by', 'session.ended_by'] },
-  // A setup (konjir connect, Lee's instruction of 2026-11-01): the person allows it, its code is
+  // A setup (kolab connect, Lee's instruction of 2026-11-01): the person allows it, its code is
   // exchanged for them, and its token has each agent's sign-in issued, opened by them.
   consentSetup: { recorded: ['oauth_setup.person_id', 'kolab.created_by', 'actor.created_by', 'audit_event:grant.set'] },
   exchangeSetupCode: { recorded: ['oauth_setup.exchanged_by'] },

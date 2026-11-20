@@ -178,7 +178,7 @@ function EvidenceList({ items, more }: { items: WebReviewEvidence[]; more: numbe
   return (
     <>
       <ul className="evidence">{items.map((e) => <EvidenceItem key={e.id} e={e} />)}</ul>
-      {more > 0 ? <span className="why-not">and {more} more: read them all with konjir read_work.</span> : null}
+      {more > 0 ? <span className="why-not">and {more} more: read them all with kolab read_work.</span> : null}
     </>
   );
 }
@@ -212,7 +212,7 @@ export function WorkReviewItem({ r, act, go }: { r: WebWorkReview; act: Act; go(
         <span>work package by {r.assignee} · submitted {ago(r.at)}</span>
         {r.open_marks ? <Pill tone="stale">at risk</Pill> : null}
         {r.findings.length ? <Pill tone="stale">acceptance failed</Pill> : null}</div>
-      {r.missing ? <p className="why-not" role="alert">Kolab couldn’t read this package’s details just now. Open it on its binding, or read it with konjir read_work.</p>
+      {r.missing ? <p className="why-not" role="alert">Kolab couldn’t read this package’s details just now. Open it on its binding, or read it with kolab read_work.</p>
         : <div className="q">{r.title ? withAddrLinks(r.title) : r.title}</div>}
       <dl className="work-fields">
         <dt>Done when</dt><dd>{r.done_when ? withAddrLinks(r.done_when) : <span className="why-not">Not given: check the work against what it says above.</span>}</dd>
@@ -657,7 +657,7 @@ export function SignIn({ onSignedIn, onLeave, error: initial, methods }: {
               <div className="field"><label htmlFor="token">Session token</label>
                 <input id="token" type="password" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} aria-invalid={!!error} aria-describedby={error ? 'token-err' : undefined} />
                 {error && <span className="err" id="token-err" role="alert">{error}</span>}
-                <span className="hint">An admin opens one for you: <span className="addr">konjir admin_open_session actor=you role=product kolab=…</span></span></div>
+                <span className="hint">An admin opens one for you: <span className="addr">kolab admin_open_session actor=you role=product kolab=…</span></span></div>
               <div className="edit-row"><button type="submit" className="btn" disabled={!token.trim() || busy}>Sign in with a token</button></div>
             </form>
           </>

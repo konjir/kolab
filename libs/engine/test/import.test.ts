@@ -64,8 +64,8 @@ test('two passes write the whole file: as product the spec and its rulings, leav
     'version kj:test/shop-binding': 'other_pass', 'links kj:test/shop-binding (relies_on)': 'other_pass',
     'ruling D7': 'created', 'ruling D8': 'other_pass', 'ruling D9': 'created',
   });
-  expect(first).toMatchObject({ role: 'product', complete: false, failed: [], differs: [], waiting: [], next: 'konjir login --kolab test --role engineer, then konjir import again' });
-  expect(first.steps.find((s) => s.what === REPO)!.detail).toBe('for the engineer pass: konjir login --kolab test --role engineer, then konjir import again');
+  expect(first).toMatchObject({ role: 'product', complete: false, failed: [], differs: [], waiting: [], next: 'kolab login --kolab test --role engineer, then kolab import again' });
+  expect(first.steps.find((s) => s.what === REPO)!.detail).toBe('for the engineer pass: kolab login --kolab test --role engineer, then kolab import again');
   // Nothing of the technical layer is written by the product pass.
   expect((await kolab.db.query(`select id from node where kind = 'binding'`)).rows).toStrictEqual([]);
   expect(await count(kolab, 'repository')).toBe(0);
@@ -147,8 +147,8 @@ test('the passes run in either order: an engineer pass before the spec says what
     'version kj:test/shop-binding': 'waiting', 'links kj:test/shop-binding (relies_on)': 'waiting',
     'ruling D7': 'other_pass', 'ruling D8': 'waiting', 'ruling D9': 'other_pass',
   });
-  expect(first).toMatchObject({ complete: false, failed: [], next: 'konjir login --kolab test --role product, then konjir import again' });
-  expect(first.steps.find((s) => s.what === 'node kj:test/shop-binding')!.detail).toMatch(/it binds shop, which isn't made: the product pass writes the spec: konjir login --kolab test --role product/);
+  expect(first).toMatchObject({ complete: false, failed: [], next: 'kolab login --kolab test --role product, then kolab import again' });
+  expect(first.steps.find((s) => s.what === 'node kj:test/shop-binding')!.detail).toMatch(/it binds shop, which isn't made: the product pass writes the spec: kolab login --kolab test --role product/);
   expect(await count(kolab, 'node')).toBe(0);
   expect(await count(kolab, 'repository')).toBe(0);
 

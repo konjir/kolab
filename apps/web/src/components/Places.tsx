@@ -187,7 +187,7 @@ const blockWord = (w: WorkItem) => w.blocked.map((b, i) => (
 /**
  * The work board (PLN12, PLN19): each binding's work packages by state, as on an agile board, with
  * which are blocked and why, which are at risk, and who holds each. Agents pull work through MCP or
- * konjir work; the board only shows it.
+ * kolab work; the board only shows it.
  */
 export function WorkView({ me, tick, go }: { me: WebMe; tick: number; go(r: string): void }) {
   const href = useHref();

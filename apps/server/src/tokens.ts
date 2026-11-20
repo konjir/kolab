@@ -19,7 +19,7 @@ export interface ServerOptions {
   agentStateClock?: () => number;
   /**
    * Where each MCP client that connects is logged, by the name and version it gives (event
-   * mcp_client, McpClients): `konjir serve` gives Kolab's logger. Without one, none is logged.
+   * mcp_client, McpClients): `kolab serve` gives Kolab's logger. Without one, none is logged.
    */
   clientLog?: import('@konjir/log').Logger;
 }

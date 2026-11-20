@@ -16,6 +16,7 @@
 import { FileLock, SIGN_IN_WAIT_MS, StoredLogin, agentCredentials, checkKolabUrl, login, logout, openBrowser, safeUrl } from '@konjir/login';
 import { randomBytes } from 'node:crypto';
 import type { ChannelMessage } from './messages.js';
+import { KOLAB_CLIENT } from './words.js';
 
 /** What the bridge reaches Kolab with: exactly one of a token and a sign-in (and how that sign-in is made again). */
 export type BridgeAuth = { token: string; login?: undefined; awaiting?: undefined; loginCommand?: undefined; agent?: string }
@@ -39,7 +40,7 @@ export function scopeFrom(env: NodeJS.ProcessEnv): string | undefined {
 const shellWord = (w: string) => (/^[A-Za-z0-9_./:=@-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`);
 
 /** The name the bridge registers under, which Kolab's consent page shows. */
-export const CLIENT_NAME = 'konjir channel (Claude Code)';
+export const CLIENT_NAME = 'kolab channel (Claude Code)';
 
 /** How long the bridge's own sign-in waits for the person, by default: as long as Kolab's sign-in page lasts (W5.7). */
 const SIGN_IN_MS = SIGN_IN_WAIT_MS;
@@ -134,6 +135,7 @@ export async function bridgeAuth(url: string, env: NodeJS.ProcessEnv, io: {
       path,
       scope,
       clientName: CLIENT_NAME,
+      clientInfo: KOLAB_CLIENT,
       timeoutMs,
       yieldTo: '',
       log: (line) => io.log(mask(line)),

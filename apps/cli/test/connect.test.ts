@@ -366,7 +366,9 @@ test('done when: one command sets up two OpenCode agents, product and engineer, 
   expect(setups[0]).not.toContain('type="radio"');
   expect(setups[0]).not.toContain('type="text"');
   expect(listed(setups[0])).toStrictEqual(['anns: New: made now, private, yours', 'ann-product: New: made now', 'ann-engineer: New: made now']);
-  expect(setups[0]).toContain('<strong>konjir connect</strong> on this computer asks to set up Konjir');
+  expect(setups[0]).toContain('<strong>kolab connect</strong> on this computer asks to set up Konjir');
+  // Registered as kolab's, so Kolab's page names kolab's command (step 1b).
+  expect(setups[0]).toContain('Allow it only if you just ran <code>kolab connect</code>.');
   expect(entries.map((e) => [e.name, e.agent, e.role, e.kolab])).toStrictEqual([['konjir-product', 'ann-product', 'product', 'anns'], ['konjir-engineer', 'ann-engineer', 'engineer', 'anns']]);
   // The plan came first, with the diff, and asked nothing in the terminal.
   const said = io.lines.join('\n');
@@ -445,7 +447,7 @@ test('W3.8: kolab connect claude, five agents in one go: one page, each agent si
   // Five agents in one setup: past the 3 in 10 minutes one at a time, counted once.
   expect(pages).toHaveLength(1);
   expect(/<title>([^<]*)<\/title>/.exec(pages[0])?.[1]).toBe('Set up Konjir · Kolab');
-  expect(pages[0]).toContain('<strong>konjir channel (Claude Code)</strong> on this computer asks to set up Konjir');
+  expect(pages[0]).toContain('<strong>kolab channel (Claude Code)</strong> on this computer asks to set up Konjir');
   expect(listed(pages[0]).slice(0, 6)).toStrictEqual(['m5-check: New: made now, private, yours', ...entries.map((e) => `${e.agent}: New: made now`)]);
 
   // .mcp.json: a stdio server per agent, the bridge from this checkout; no token, no HTTP entry.
@@ -463,7 +465,7 @@ test('W3.8: kolab connect claude, five agents in one go: one page, each agent si
     const kept = new StoredLogin(server.url, { path: agentCredentialsPath(e.agent, env) });
     expect(kept.signedIn).toBe(true);
     const saved = kept.saved();
-    expect(saved.client).toMatchObject({ client_name: 'konjir channel (Claude Code)', redirect_uris: ['http://127.0.0.1/callback'] });
+    expect(saved.client).toMatchObject({ client_name: 'kolab channel (Claude Code)', redirect_uris: ['http://127.0.0.1/callback'] });
     expect(saved.tokens).toMatchObject({ token_type: 'Bearer', expires_in: 900, scope: `konjir kolab:m5-check role:${e.role}` });
     expect(saved.discovery?.authorizationServerUrl).toBe(new URL(server.url).origin);
     clients.add(saved.client!.client_id);
@@ -534,7 +536,7 @@ test('a kolab someone else holds: the page says so with Deny alone, and kolab co
   const project = scratch();
   const pages: string[] = [];
   const err = await rejection(connectHarness(options(server, project, { harness: 'claude', kolab: 'raes', agents: parseAgents(['pm:product']) }), world(server, idp, async () => 0, { pages, decision: 'deny' })));
-  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Kolab\'s page in your browser lists the kolabs you do reach: run konjir connect again with one of their names. Nothing was made or written');
+  expect(err).toBe('Error: the setup can\'t be allowed: a kolab named raes already exists, and you can\'t reach it: kolab names are unique across Konjir. Choose another name, or ask its owners to invite you. Kolab\'s page in your browser lists the kolabs you do reach: run kolab connect again with one of their names. Nothing was made or written');
   expect(pages[0]).toContain('<h1>This setup can\'t be allowed</h1>');
   expect(pages[0]).not.toContain('value="allow"');
   expect(existsSync(join(project, '.mcp.json'))).toBe(false);

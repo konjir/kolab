@@ -129,7 +129,7 @@ process.stdin.on('end', async () => {
     writeFileSync('cancel.ts', 'export const cancel = 1;\\n');
     execFileSync('git', ['add', '-A']);
     execFileSync('git', ['commit', '-q', '-m', 'Cancel', '--trailer', trailer]);
-    const run = (args, input) => { const r = spawnSync('konjir', args, { input, encoding: 'utf8' }); return { status: r.status, out: r.stdout + r.stderr, error: r.error && r.error.message }; };
+    const run = (args, input) => { const r = spawnSync('kolab', args, { input, encoding: 'utf8' }); return { status: r.status, out: r.stdout + r.stderr, error: r.error && r.error.message }; };
     const hook = JSON.parse(process.argv[process.argv.indexOf('--settings') + 1]).hooks.PreToolUse[0].hooks[0].command;
     const guarded = spawnSync('sh', ['-c', hook], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git push origin :main' } }), encoding: 'utf8' });
     writeFileSync(out('.konjir.json'), JSON.stringify({ found: execFileSync('sh', ['-c', 'command -v kolab'], { encoding: 'utf8' }).trim(),
@@ -488,7 +488,7 @@ test('sweepJobs removes the kolab, MCP FIFO and marker of each job no runner on 
     writeFileSync(join(jobs, '.live', '.hidden'), '1\n');
     // A person's rm -rf fails on a job's kolab, as it did after a killed runner (#116).
     expect(spawnSync('rm', ['-rf', join(jobs, '.bin', 'JDEAD')]).status).not.toBe(0);
-    expect(existsSync(join(jobs, '.bin', 'JDEAD', 'konjir'))).toBe(true);
+    expect(existsSync(join(jobs, '.bin', 'JDEAD', 'kolab'))).toBe(true);
 
     // This runner's own pid is one an earlier runner had (a reboot, a container), though it is running.
     expect(sweepJobs(jobs, { alive: (pid) => pid === other.pid || pid === process.pid })).toEqual(['JDEAD', 'JFIFO', 'JMARK', 'JNONE', 'JSELF']);
@@ -676,13 +676,13 @@ test('done-when: a kolab work that was killed leaves its job\'s kolab behind; th
     const killed = runner();
     await until(() => started().length === 2, 60_000);
     const gone = started().find((j) => j !== live)!;
-    expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
+    expect(existsSync(join(r.jobsDir, '.bin', live, 'kolab'))).toBe(true);
     expect(readFileSync(join(r.jobsDir, '.live', gone), 'utf8')).toBe(markerText(killed.p.pid!));
     // The second is killed outright: nothing of it runs to remove its job's kolab. Its harness, left running, finishes.
     killed.p.kill('SIGKILL');
     await killed.exited;
     h.go(gone);
-    expect(existsSync(join(r.jobsDir, '.bin', gone, 'konjir'))).toBe(true);
+    expect(existsSync(join(r.jobsDir, '.bin', gone, 'kolab'))).toBe(true);
     expect(spawnSync('rm', ['-rf', join(r.jobsDir, '.bin', gone)]).status).not.toBe(0);
 
     // The next kolab work on the machine sweeps the killed runner's job, and keeps the live one's.
@@ -693,7 +693,7 @@ test('done-when: a kolab work that was killed leaves its job\'s kolab behind; th
     expect(out.lines).toContain(`kolab work: swept what a job no runner here still runs left in ${r.jobsDir} (${gone})`);
     expect(existsSync(join(r.jobsDir, '.bin', gone))).toBe(false);
     expect(existsSync(join(r.jobsDir, '.live', gone))).toBe(false);
-    expect(existsSync(join(r.jobsDir, '.bin', live, 'konjir'))).toBe(true);
+    expect(existsSync(join(r.jobsDir, '.bin', live, 'kolab'))).toBe(true);
     expect(readFileSync(join(r.jobsDir, '.live', live), 'utf8')).toBe(markerText(still.p.pid!));
 
     // The live job ends as ever, taking its own with it, and the jobs directory then goes.
@@ -725,11 +725,11 @@ test('konjirCommand runs kolab as this process runs: node with its own options, 
   // Read and run only, in a directory nothing can be added to, and edits to it are denied: the guard hook runs it.
   expect(statSync(shim).mode & 0o777).toBe(0o555);
   expect(statSync(join(top, "b'in")).mode & 0o777).toBe(0o500);
-  // Named kolab, and konjir beside it, the same script, while Kolab's own texts still tell a job to run konjir.
+  // Named kolab, alone: Kolab's own texts tell a job to run kolab (step 1b), so a job has no konjir, nor Bash(konjir *).
   expect(shim).toBe(join(top, "b'in", 'kolab'));
-  expect(readFileSync(join(top, "b'in", 'konjir'), 'utf8')).toBe(readFileSync(shim, 'utf8'));
-  expect(statSync(join(top, "b'in", 'konjir')).mode & 0o777).toBe(0o555);
-  expect(ALLOWED_TOOLS).toEqual(expect.arrayContaining(['Bash(kolab *)', 'Bash(konjir *)']));
+  expect(readdirSync(join(top, "b'in"))).toEqual(['kolab']);
+  expect(ALLOWED_TOOLS).toContain('Bash(kolab *)');
+  expect(ALLOWED_TOOLS.filter((t) => /konjir/.test(t))).toEqual(['mcp__konjir']);
   expect(deniedTools('main', '/home/lee/.config/konjir', join(top, "b'in"))).toContain(`Edit(/${join(top, "b'in")}/**)`);
   expect(deniedTools('main', '/home/lee/.config/konjir')).not.toContainEqual(expect.stringContaining(top));
   // Written again over a job's earlier one, and removed, all the same.

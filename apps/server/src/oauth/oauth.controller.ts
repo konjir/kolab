@@ -6,6 +6,7 @@ import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
 import { choosePage, consentPage, formActionSource, lockAllowed, lockedTitle, sendError, sendPage, setupPage, teamPage, type ChooseView, type ConsentView, type SetupView, type TeamView } from './pages.js';
+import { oauthWording, worded, type Wording } from '../wording.js';
 
 /** The web interface's own client: first party, never registered, and only ever a person (W3.1). */
 export const WEB_CLIENT = 'konjir-web';
@@ -317,6 +318,16 @@ export class OAuthController {
     return c && { name: c.name, redirectUris: c.redirectUris, web: false };
   }
 
+  /**
+   * How a sign-in's pages, and what its app is told, name the CLI's commands (wording.ts): by the
+   * name the client registered with, `kolab` for the kolab CLI's, `konjir` for any other, published
+   * konnect's and konjir's among them, and for one unknown. Kolab's own web page is always current.
+   */
+  private async wordingOf(clientId: string): Promise<Wording> {
+    if (clientId === WEB_CLIENT) return 'kolab';
+    return oauthWording((await this.client(clientId, ''))?.name);
+  }
+
   @Get('oauth/authorize')
   async authorize(@Req() req: Request, @Res() res: Response, @Query() q: Record<string, unknown>) {
     const base = originOf(req, this.options);
@@ -352,7 +363,7 @@ export class OAuthController {
     const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
     await this.toIdentityProvider(req, res, base, {
       clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
-      // Which of several sign-ins this is (`konjir connect`'s "agent N of M"): display only, kept
+      // Which of several sign-ins this is (`kolab connect`'s "agent N of M"): display only, kept
       // only when both are whole numbers, never part of the scope, so it grants nothing. Only from
       // an app on the person's own machine (every redirect URI loopback, as konjir's are): from a
       // hosted one it would dress a lure up as a setup the person started, so it is ignored (D97).
@@ -456,9 +467,9 @@ export class OAuthController {
     const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const pre = preselect(pending.scope);
-    // `agent:` names an agent of theirs, or a label, as konjir login --agent takes it (<person>-<label>, API26).
+    // `agent:` names an agent of theirs, or a label, as kolab login --agent takes it (<person>-<label>, API26).
     const named = pre.agent && namedAgent(pre.agent, pending.person, agents);
-    // A kolab the scope names that the person can't reach (`konjir login --kolab`) is said so, with
+    // A kolab the scope names that the person can't reach (`kolab login --kolab`) is said so, with
     // the setup page's hint, and no other kolab is chosen in its place (D106).
     // Only a name a kolab can have is repeated on the page; anything else is said to be one they can't reach.
     const unreached = !invite && pre.kolab && !kolabs.some((k) => k.id === pre.kolab)
@@ -485,7 +496,7 @@ export class OAuthController {
     // A scope naming the agent, kolab and role together locks the page to them (D97).
     const locked = web ? undefined : scopeLock(pending.scope, (a) => namedAgent(a, pending.person!, agents));
     const view: ConsentView = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), web, konjirAdmin: !web && await this.kolab.isAdmin(pending.person), person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', wording: web ? 'kolab' : oauthWording(client?.name), redirect: redirectShown(pending.redirectUri), web, konjirAdmin: !web && await this.kolab.isAdmin(pending.person), person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
       kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
       ...(locked ? { lock: { ...locked, step: pending.step } } : {}),
       ...(unreached ? { unreached: { ...('kolab' in unreached ? { kolab: unreached.kolab } : {}), meant: unreached.meant, yours: unreached.yours } } : {}),
@@ -495,7 +506,7 @@ export class OAuthController {
 
   /**
    * Why a setup (setupScope) can't be allowed, or undefined when it can: a scope that names it
-   * badly, a client that isn't on the person's own machine (a setup is only for konjir connect and
+   * badly, a client that isn't on the person's own machine (a setup is only for kolab connect and
    * its like: every redirect URI loopback), or what setupPlan refuses. With the plan, for the page.
    */
   private async setupCheck(person: string, scope: string | null, client: { redirectUris: string[] } | undefined) {
@@ -507,14 +518,14 @@ export class OAuthController {
     return { plan, refused: plan.refused, forApp: plan.refusedForApp ?? plan.refused };
   }
 
-  /** The setup page (konjir connect): locked to what the app asked, Allow or Deny; or why it can't be allowed, with Deny alone. */
+  /** The setup page (kolab connect): locked to what the app asked, Allow or Deny; or why it can't be allowed, with Deny alone. */
   private async setupConsent(res: Response, status: number, id: string, csrf: string, pending: NonNullable<Awaited<ReturnType<Kolab['pendingAuthorization']>>>,
     client: { name: string; redirectUris: string[] } | undefined, extra: { login?: string; created?: boolean; error?: string }) {
     const person = pending.person!;
     const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
     const check = await this.setupCheck(person, pending.scope, client);
     const view: SetupView = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', wording: oauthWording(client?.name), redirect: redirectShown(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
       plan: check.plan, refused: extra.error ?? check.refused,
     };
     const target = formActionSource(pending.redirectUri);
@@ -629,11 +640,14 @@ export class OAuthController {
     if (!setup && pending.clientId !== WEB_CLIENT && personScope(pending.scope)) {
       return this.personConsented(res, base, str, { id, binding, csrf, person: pending.person, scope: pending.scope, clientId: pending.clientId });
     }
+    const wording = await this.wordingOf(pending.clientId);
     if (str('decision') !== 'allow') {
-      // A setup denied because it can't be allowed: the app is told why, so konjir connect can say it.
+      // A setup denied because it can't be allowed: the app is told why, so kolab connect can say it,
+      // in the app's wording (published konnect reads `konjir connect` in it).
       // Without the person's list of kolabs, which only their own page shows: this goes to the app's redirect URI.
       const check = setup ? await this.setupCheck(pending.person, pending.scope, await this.client(pending.clientId, '')) : undefined;
-      const why = check && ('forApp' in check ? check.forApp : check.refused);
+      const forApp = check && ('forApp' in check ? check.forApp : check.refused);
+      const why = forApp && worded(forApp, wording);
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return this.stopped(res, { binding }, id);
       clearBinding(res, this.options, id);
@@ -649,7 +663,7 @@ export class OAuthController {
         clearBinding(res, this.options, id);
         return res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
       } catch (e) {
-        if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
+        if (e instanceof OAuthGrantError) return sendError(res, 400, e.message, wording);
         if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) {
           return this.consent(res, 400, id, binding, csrf, { error: maskTokens(e) });
         }
@@ -676,7 +690,7 @@ export class OAuthController {
       if (pending.inviteKey) clearInviteCookie(res, this.options);
       res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
     } catch (e) {
-      if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
+      if (e instanceof OAuthGrantError) return sendError(res, 400, e.message, wording);
       if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) {
         return this.consent(res, 400, id, binding, csrf, { error: maskTokens(e), pick });
       }
@@ -701,7 +715,7 @@ export class OAuthController {
       if (grant === 'authorization_code') {
         const code = str('code'); const redirectUri = str('redirect_uri'); const verifier = str('code_verifier');
         if (!code || !redirectUri || !verifier) return oauthError(res, 400, 'invalid_request', 'send code, redirect_uri and code_verifier');
-        // A setup's code (konjir connect) is exchanged for its setup token alone: no refresh token, no session.
+        // A setup's code (kolab connect) is exchanged for its setup token alone: no refresh token, no session.
         const setup = await this.kolab.exchangeSetupCode({ code, clientId, redirectUri, codeVerifier: verifier, resource: str('resource') });
         if (setup) return json(res, 200, { access_token: setup.accessToken, token_type: 'Bearer', expires_in: setup.expiresIn, scope: setup.scope });
         t = await this.kolab.exchangeCode({ code, clientId, redirectUri, codeVerifier: verifier, resource: str('resource') });
@@ -720,7 +734,7 @@ export class OAuthController {
   }
 
   /**
-   * A setup token's one use (konjir connect, Lee's instruction of 2026-11-01): `Authorization:
+   * A setup token's one use (kolab connect, Lee's instruction of 2026-11-01): `Authorization:
    * Bearer <setup token>`, and the client it was issued to, `client_id`. With `mint` (the default),
    * Kolab issues each agent the person allowed on the setup's page its own grant and refresh token,
    * to that client, as that agent's own sign-in would; with `mint: false`, it only says what was set
@@ -735,6 +749,8 @@ export class OAuthController {
     const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
     const clientId = typeof body?.client_id === 'string' ? body.client_id : '';
     if (!token || !clientId) return oauthError(res, 400, 'invalid_request', 'send the setup token as a bearer token, and the client_id it was issued to');
+    // An error is said in the wording of the client named (wording.ts): published konnect reads `konjir connect` in it.
+    const say = async (text: string) => worded(text, await this.wordingOf(clientId));
     try {
       const r = await this.kolab.useSetup(token, clientId, { mint: body.mint !== false });
       json(res, 200, {
@@ -745,8 +761,8 @@ export class OAuthController {
         })),
       });
     } catch (e) {
-      if (e instanceof OAuthGrantError) return oauthError(res, 400, e.code === 'access_denied' ? 'invalid_grant' : e.code, e.message);
-      if (e instanceof AccessError) return oauthError(res, 403, 'access_denied', e.message);
+      if (e instanceof OAuthGrantError) return oauthError(res, 400, e.code === 'access_denied' ? 'invalid_grant' : e.code, await say(e.message));
+      if (e instanceof AccessError) return oauthError(res, 403, 'access_denied', await say(e.message));
       throw e;
     }
   }

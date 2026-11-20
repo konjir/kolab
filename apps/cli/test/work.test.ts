@@ -238,7 +238,7 @@ test('over MCP: a person takes a job, its agent works with the token it gives, a
   expect(await rejection(call(pm.c, 'take_job', { machine: 'x' }))).toMatch(/pm may not write the technical layer of kolab test, so it takes no job/);
   const job = await call(lead.c, 'take_job', { machine: 'lead-laptop' }) as Record<string, string>;
   expect(job).toMatchObject({ taken: true, kind: 'build', item: 'kj:orders-pg#W1', agent: 'lead-engineer-1', trailer: 'Konjir-Work: kj:test/orders-pg#W1' });
-  expect(job.instructions).toMatch(/konjir work deliver kj:orders-pg#W1 --submit/);
+  expect(job.instructions).toMatch(/kolab work deliver kj:orders-pg#W1 --submit/);
   // The agent signs in with its token: it holds W1.
   const agent = await connect(server.url, job.token);
   closeAtEnd(agent);

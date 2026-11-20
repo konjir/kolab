@@ -93,7 +93,7 @@ test('a person\'s session takes a review before a ready package; two takes give 
   expect(second.token).not.toBe(first.token);
   expect(second.instructions).toMatch(/Done when: Element 2 works\./);
   expect(second.instructions).toMatch(/Konjir-Work: kj:test\/orders-pg#W2/);
-  expect(second.instructions).toMatch(/konjir work deliver kj:orders-pg#W2 --submit/);
+  expect(second.instructions).toMatch(/kolab work deliver kj:orders-pg#W2 --submit/);
   expect(second.instructions).toMatch(/It is done in the repository https:\/\/github\.com\/acme\/orders/);
   expect(await row(kolab, 'W2')).toMatchObject({ state: 'in_progress', assignee_id: 'lee-engineer-2' });
   expect(await events(kolab, bob, W('W2'))).toStrictEqual([['added', 'bob'], ['pulled', 'lee-engineer-2']]);
@@ -379,7 +379,7 @@ test('a job\'s instructions are its kind\'s playbook filled in with its item, an
   expect(resumed).toMatch(/It was returned to you with changes requested/);
   expect(resumed).toMatch(/\n\nDone when: It works\.\n\nIt is done in the repository https:\/\/github\.com\/a\/b: work in a checkout of it\.\n\nHow to do it:\n/);
   expect(resumed).toMatch(/its events, the review note among them\./);
-  expect(resumed).toMatch(/\n4\. .*\(or push to the one already open\)\.\n5\. Deliver and submit it from the checkout: konjir work deliver kj:p#W1 --submit .*\n6\. /);
+  expect(resumed).toMatch(/\n4\. .*\(or push to the one already open\)\.\n5\. Deliver and submit it from the checkout: kolab work deliver kj:p#W1 --submit .*\n6\. /);
   expect(resumed).not.toMatch(/No repository is registered|already pulled it/);
   const r = fillPlaybook('review', { kolab: 'k', agent: 'ann-engineer-2', person: 'ann', item: 'kj:p#W1', subject: 'work', author: 'ann-engineer-1' });
   expect(r).toMatch(/check out its pull request/i);
