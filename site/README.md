@@ -10,7 +10,7 @@ The marketing site at `https://www.konjir.com` (D81), with a section for each pr
 | `/konnect/`, konnect's page | `src/konnect/main.html`: the page's `<main>`, written as the org page's is, until konnect has an artboard of its own |
 | `/konnect/guide/`, the guide to messages between people and agents | `src/konnect/guide.md`, in the same subset |
 
-`src/www/og.jpg` is the Open Graph image (1200×630, a crop of the Kolab page's hero photo), which every page names unless its section has its own `src/<section>/og.jpg` (give it alt text in `SECTIONS` in `deploy/site/build.mjs`). konnect's, `src/konnect/og.jpg`, is its name, its line and its install line on the Predawn palette, above the horizon bands.
+`src/www/og.jpg` is the Open Graph image (1200×630, a crop of the brand's reference photograph, first light over a field), which every page names unless its section has its own `src/<section>/og.jpg` (give it alt text in `SECTIONS` in `deploy/site/build.mjs`). konnect's, `src/konnect/og.jpg`, is its name, its line and its install line on the Predawn palette, above the horizon bands.
 
 The tutorial, the guide and konnect's page live only here. Kolab's artboard and its images are at the paths they have in the claude.ai artifact [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W), now Kolab's page, which is published from `site/src/kolab/` (below). The artifact holds other files too, its `project/canvas.json` and the design system's tokens (`project/ds/…`): those stay in the artifact, aren't part of the source here, and a publish from `site/src/kolab/` keeps them, since files a publish leaves out are kept. The `konjir-site` kolab (D15) is still the site's future home; until it has W4.1 prototypes to publish from, this is the source.
 
