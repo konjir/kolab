@@ -37,7 +37,7 @@ import { hostFile, pairFile, pairFileReady } from './teams.js';
 
 /** A hosting machine's name, as the service takes one. */
 export const HOST_NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
-/** The most words of the person's own a request carries as an agent's system prompt. */
+/** The most characters of the person's own words a request carries as an agent's system prompt. */
 export const MAX_PROMPT = 16_000;
 /** How long a hosting machine takes the word it gave: less than an asker waits for an answer, so a request it gave up on is never carried out after. */
 export const WORD_FRESH_MS = 120_000;

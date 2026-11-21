@@ -44,8 +44,8 @@ export const openCodeConfig = (mcp: string) => JSON.stringify({ $schema: 'https:
 
 /**
  * How to run the kolab CLI here (W3.7): `npx <spec>` only when this Kolab's operator named the
- * published package, pinned to an exact version (KONJIR_CLI_NPM_SPEC). Until then, never `npx
- * konjir`: with no version pinned, whatever is published under the name at the time would run on
+ * published package, pinned to an exact version (KONJIR_CLI_NPM_SPEC). Until then, never an
+ * unpinned `npx @konjir/kolab`: with no version pinned, whatever is published under the name at the time would run on
  * every machine that pasted the command. A checkout's bin/kolab instead, at ~/kolab.
  */
 export const CHECKOUT = '~/kolab';

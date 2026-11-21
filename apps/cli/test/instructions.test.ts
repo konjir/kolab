@@ -267,7 +267,7 @@ test('the CLI: kolab instructions, kolab instructions reviewer and kolab instruc
     process.env.KONJIR_URL = server.url;
     process.env.KONJIR_TOKEN = ann.token;
     const run = async (...argv: string[]) => { out.length = 0; await main(argv); return out.join('\n'); };
-    // Kolab's own text, with the command it names said as kolab says it (words.ts), until the server says kolab itself.
+    // Kolab's own text, with the command it names said as kolab says it (words.ts), as the CLI prints it.
     const operating = kolabWords(await promptText(ann.client, 'konjir_operating_instructions'));
     const reviewer = kolabWords(await promptText(ann.client, 'konjir_reviewer_instructions'));
     expect(operating).toContain('kolab work deliver <work> --submit');

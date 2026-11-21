@@ -1,5 +1,5 @@
 /**
- * A message for an agent to read (konnect_read, and the event that wakes it), framed so its words
+ * A message for an agent to read (konnect_receive and konnect_history), framed so its words
  * can't pass for anything around them: a header and an end line that both carry its id, which its
  * sender couldn't know as they wrote it, and any line of its words that starts as a frame line does
  * marked with `| `. No angle brackets, so a channel event, which escapes them, shows the frame as it is.

@@ -53,7 +53,7 @@ test('the page shows kolab connect first: one command per harness, naming this K
   render(<ConnectView me={eli} cli={{ npm: 'konjir@1.2.3' }} origin="https://kolab.example.com" />);
   const one = screen.getByRole('region', { name: 'One command: kolab connect' });
   expect(within(one).getByLabelText('Connect OpenCode with kolab connect').textContent).toBe('npx konjir@1.2.3 connect opencode --url https://kolab.example.com --kolab anns');
-  // Claude Code's entry is the Konjir channel (W3.8), which the published konjir carries (W9.5): no checkout to make; --http is the plain entry.
+  // Claude Code's entry is the Konjir channel (W3.8), which the published CLI carries (W9.5): no checkout to make; --http is the plain entry.
   expect(within(one).getByLabelText('Connect Claude Code with kolab connect').textContent).toBe('npx konjir@1.2.3 connect claude --url https://kolab.example.com --kolab anns');
   expect(within(one).queryByLabelText('Get the Konjir channel from its repository')).toBeNull();
   expect(one.textContent).not.toMatch(/checkout|git clone/);

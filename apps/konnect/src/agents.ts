@@ -2,7 +2,7 @@
  * `konnect agent add|run`: an agent of the person's, in their team, with konnect's tools
  * (`konnect mcp`), started in the harness they use.
  *
- * 1. The agent is made if it is new, and logged in, by Kolab's setup page, the same flow `konjir
+ * 1. The agent is made if it is new, and logged in, by Kolab's setup page, the same flow `kolab
  *    connect` uses (@konjir/login's setup: one page in the browser, scope
  *    `konjir kolab:<team> setup:<label>:engineer`, which mints the agent's own login). Every agent
  *    konnect makes has the role engineer, which konnect never shows: konnect's agents talk, and
@@ -31,7 +31,7 @@ export const HARNESSES: readonly Tool[] = ['claude', 'codex', 'opencode'];
 /** The role every agent konnect makes has, never shown. */
 export const AGENT_ROLE = 'engineer';
 
-/** The scope of Kolab's setup page for one agent in a team: the same as `konjir connect`'s. */
+/** The scope of Kolab's setup page for one agent in a team: the same as `kolab connect`'s. */
 export const agentSetupScope = (team: string, ...labels: string[]) => `konjir kolab:${team} ${labels.map((label) => `setup:${label}:${AGENT_ROLE}`).join(' ')}`;
 
 /** The name the agent's MCP server goes by in its tool. */
@@ -109,7 +109,7 @@ const running = (): Running => ({ version: typeof KONNECT_VERSION === 'string' ?
 const RUN_ONCE = /^(_npx|dlx|dlx-.+|bunx-.+)$/;
 
 /**
- * The command an entry runs `konnect mcp` with, as `konjir connect` resolves a published konjir:
+ * The command an entry runs `konnect mcp` with, as `kolab connect` resolves a published kolab:
  * the node running this konnect and its konnect.mjs where it is installed; when it runs from a
  * package runner's cache (npx), a copy konnect keeps in its config folder (`keep`), since the cache
  * is cleared under it, never `npx` in the project. From a checkout, the same node and flags (tsx's).

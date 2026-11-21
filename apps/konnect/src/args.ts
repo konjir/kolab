@@ -1,7 +1,7 @@
 /**
  * konnect's command line, read: its options, and the words that aren't options, in order.
  *
- * Options may go anywhere, with two exceptions where what follows belongs to someone else:
+ * Options may go anywhere, except where what follows belongs to someone else:
  *   konnect send <to> <message…>             everything after <to> is the message, as written
  *   konnect agent run <name> <harness> …     everything after <name> is the harness and its arguments
  *   konnect lease run <name> <command> …     everything after <name> is the command to run while holding it
@@ -35,7 +35,7 @@ export interface Args {
   yes: boolean;
   /** Plumbing: konnect logout --forget. */
   forget: boolean;
-  /** Names from 0.1.0, still read for one release (aliases in konnect.ts). */
+  /** Names from 0.1.0, still read (aliases in konnect.ts). */
   history?: true; list?: true; withdraw?: string; noStart?: true; listen?: string; reply?: string;
 }
 

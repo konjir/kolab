@@ -4,8 +4,9 @@ import { defineConfig } from '@playwright/test';
  * The web interface's end-to-end tests (W3.1): a real Kolab, seeded as the prototype's example
  * (scripts/demo-server.ts), and the built page in Chromium; and a second Kolab that signs people in
  * through its own authorization server with a stub identity provider (scripts/signin-server.ts), for
- * signing in from a real browser (D55), and a third like it whose sign-ins expire in seconds. `npx nx run @konjir/web:e2e` builds the page first. Needs
- * Playwright's Chromium (`npx playwright install chromium`); CI doesn't run it.
+ * signing in from a real browser (D55), a third like it whose sign-ins expire in seconds, and a
+ * fourth that signs in one person each time. `npx nx run @konjir/web:e2e` builds the page first.
+ * Needs Playwright's Chromium (`npx playwright install chromium`); CI doesn't run it.
  */
 const port = Number(process.env.KONJIR_E2E_PORT ?? 7432);
 const signinPort = Number(process.env.KONJIR_E2E_SIGNIN_PORT ?? port + 1);
@@ -16,7 +17,7 @@ export const INVITE = process.env.KONJIR_SIGNIN_INVITE ?? `${import.meta.dirname
 /** A third Kolab like the second, whose sign-ins last `SHORT_TTL_S` seconds, for one that expires. */
 export const SHORT_TTL_S = 4;
 export const SIGNIN_SHORT = `http://127.0.0.1:${signinPort + 1}`;
-/** A fourth, whose every sign-in is the same person, `ann`: for `konjir connect`, her agents signing in after her (W3.7). */
+/** A fourth, whose every sign-in is the same person, `ann`: for `kolab connect`, her agents signing in after her (W3.7). */
 export const SIGNIN_ANN = `http://127.0.0.1:${signinPort + 2}`;
 
 export default defineConfig({

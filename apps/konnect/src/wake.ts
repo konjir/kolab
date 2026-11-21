@@ -3,7 +3,7 @@
  * (notifications/claude/channel), when a message for the agent arrives: that messages wait, and
  * where, never their words. The Konjir channel bridge
  * (apps/channel-bridge, KolabBridge) holds the subscription to the agent's answers, reconnecting as
- * it does for `konjir bridge`; these are konnect's own words for what it reads there.
+ * it does for `kolab bridge`; these are konnect's own words for what it reads there.
  *
  * What wakes the agent, as Kolab marks it in the answers:
  *   - a direct message that may wake it: the answers' `messages.waking` count rises;

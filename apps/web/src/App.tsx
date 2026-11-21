@@ -14,8 +14,9 @@ import type { Act } from './components/Marks.js';
 
 /**
  * Where the page is: `#/node/<name>[@<version>][#<element>]`, `#/questions`, `#/cases`,
- * `#/reviews`, `#/lineage`, `#/activity`, `#/kolabs`, `#/people`, `#/connect` or `#/sessions`; another kolab read
- * in place (D49) is `#/read/<kolab>` and `#/read/<kolab>/<name>[@<version>][#<element>]`. The hash
+ * `#/reviews`, `#/lineage[/<name>#<element>]`, `#/activity`, `#/kolabs`, `#/people`, `#/connect`,
+ * `#/sessions`, `#/inbox`, `#/work`, `#/settings`, `#/new` or `#/rulings[/<ruling>]`; another kolab
+ * read in place (D49) is `#/read/<kolab>` and `#/read/<kolab>/<name>[@<version>][#<element>]`. The hash
  * keeps every place linkable without the server knowing any route but `/`. An invite's link,
  * `#/invite/<secret>` (W3.4), is taken out of the address as soon as the page reads it.
  *

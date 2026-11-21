@@ -3,9 +3,9 @@
  * command is built from these, so a new server tool is a new method here and nothing else changes
  * below the command.
  *
- * What the server can't do yet (invitations, removing a member) is here too, as methods that
- * refuse with NotYet: the commands that need them are wired to the method they will call, so the
- * track adding those tools fills in the method alone.
+ * A tool an older service may not have (leases, hosts, direct-message history, removing an agent,
+ * archiving or deleting a team, saying state) is called through `newer`, which refuses with NotYet,
+ * said plainly, where Kolab's own refusal would mislead.
  */
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StoredLogin, safeUrl } from '@konjir/login';
@@ -129,8 +129,8 @@ export class TeamClient {
   }
 
   /**
-   * The MCP client itself, for what outlives one call: `konnect mcp`'s subscription to the
-   * session's answers (subscriptions/listen), when it wakes an agent. Nothing here uses it yet.
+   * The MCP client itself, for what outlives one call. Nothing uses it: `konnect mcp` wakes an
+   * agent through the channel bridge's own subscription (KolabBridge, in mcp.ts).
    */
   get session(): Client { return this.mcp; }
 

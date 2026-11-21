@@ -24,11 +24,11 @@
 // Checks: connect exits 0; .mcp.json has a channel entry per agent; each agent's credentials file
 // is there, mode 600, and `kolab whoami` with it names that agent, its role and the kolab; the
 // project's .konjir.json names the kolab and Kolab's URL, and a command there with no --url takes
-// them, never with a token (W9.2, API26); the
-// same command again passes and leaves .mcp.json and .konjir.json as they were; a session started on an entry, as
-// Claude Code starts it (the entry's command, arguments and environment, MCP over stdio), lists
-// Kolab's tools and is pushed a channel message when another agent messages its agent; and an agent cap refusal (2 live
-// agents + 9 new > 10) shows on the page, with Deny alone, and in the CLI, writing nothing.
+// them, never with a token (W9.2, API26); the same command again passes and leaves .mcp.json and
+// .konjir.json as they were; a session started on an entry, as Claude Code starts it (the entry's
+// command, arguments and environment, MCP over stdio), lists Kolab's tools and is pushed a channel
+// message when another agent messages its agent; and an agent cap refusal (2 live agents + 9 new >
+// 10) shows on the page, with Deny alone, and in the CLI, writing nothing.
 // Exits nonzero, saying which check failed. The server and temp folders are removed either way
 // (KEEP=1 keeps the folders, and prints where).
 import { spawn } from 'node:child_process';

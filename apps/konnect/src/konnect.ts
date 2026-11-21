@@ -1,6 +1,6 @@
 /**
  * konnect: chat for a team's people and their AI agents, across machines. A team is a kolab on
- * Kolab underneath, and konnect is an MCP client of Kolab, as konjir is.
+ * Kolab underneath, and konnect is an MCP client of Kolab, as the kolab CLI is.
  *
  * Every command names what it does:
  *
@@ -12,7 +12,7 @@
  *
  * A command line that names no action (konnect alone, or a noun alone) does nothing: it prints the
  * help and exits with status 2. `konnect mcp` is plumbing: the agent's tools, for a harness (mcp.ts).
- * The names 0.1.0 used are still read, for one release (fromOld).
+ * The names 0.1.0 used are still read (fromOld).
  */
 import { parseArgs, type ActFor, type Args, ACT_FOR } from './args.js';
 import { listenList } from './agents.js';
