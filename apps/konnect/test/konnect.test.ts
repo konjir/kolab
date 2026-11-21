@@ -219,7 +219,7 @@ test('konnect login <team> never creates a team, and konnect team create <name> 
   expect(teamsAt(server.url, bo.env)).toStrictEqual(['bos-own']);
 });
 
-test('the names 0.1.0 used still work for one release, each saying its new name once on stderr; konnect team <name> is not kept', async () => {
+test('the names 0.1.0 used still work, each saying its new name once on stderr; konnect team <name> is not kept', async () => {
   const { kolab, server, idp, signIn, ann: annId, bo: boId } = await teams();
   const ann = machine(server.url, 'ann');
   const bo = machine(server.url, 'bo');
