@@ -483,6 +483,12 @@ test("the build refuses an element it doesn't know, a template hole, a footer li
     ['<p data-theme="{{theme}}">Hi</p>', 'an unhandled template hole'],
     ['<img src="https://example.com/x.png" alt="">', "a resource that isn't this site's own"],
     ['<p onclick="go()">Hi</p>', 'an event handler attribute'],
+    // What the CSP would block, refused before it can ship: scripts, frames, other files' styles, script URLs.
+    ['<script>alert(1)</script>', 'a <script>, <style>, <iframe>'],
+    ['<iframe src="/x/"></iframe>', 'a <script>, <style>, <iframe>'],
+    ['<link rel="stylesheet" href="/x.css">', 'a <script>, <style>, <iframe>'],
+    ['<a href="javascript:alert(1)">Hi</a>', 'a javascript: URL'],
+    ['<p style="background:url(/x.png)">Hi</p>', 'a style with url()'],
     ['</main>\n<main>', 'must be one <main>…</main>'],
   ]) {
     writeFileSync(page, original.replace('</main>', `${add}\n</main>`));
