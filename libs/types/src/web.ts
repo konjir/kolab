@@ -272,7 +272,7 @@ export type WebReviewEvidence = Omit<EvidenceView, 'files' | 'event'>;
  * `evidence_more` and `earlier_count` saying how many there are. Evidence is its assignee's claim,
  * which the reviewer checks against the done-when outside Kolab. `open_marks` counts the marks that
  * put it at risk (PLN10). `findings` are Kolab's own: the failed acceptance checks its evidence
- * records since it was last To do (REV9), which stay on its record whatever the verdict.
+ * records, in every round (REV9), which stay on its record whatever the verdict.
  */
 export interface WebWorkReview {
   kind: 'work'; subject: string; binding: string; id: string; title: string | null; done_when: string | null;

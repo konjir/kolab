@@ -148,8 +148,9 @@ export const ADMIN_DOER = 'admin';
  * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
  * a Konjir admin, and each admin verb the break-glass token runs; a kolab's lease length for work
  * set (PLN15, W5.1b); a repository registered or archived by a person (KON7, D98, W5.2a); a
- * kolab's autonomy policy changed by one of its Admins (POL2, W6.2); and a ruling recorded with a
- * date before the day it was recorded (W6.3).
+ * kolab's autonomy policy changed by one of its Admins (POL2, W6.2); a ruling recorded with a
+ * date before the day it was recorded (W6.3); a host ended by its owner (0055); and a kolab
+ * erased by its owner (0056).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
