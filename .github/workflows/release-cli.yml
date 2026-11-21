@@ -29,9 +29,8 @@ name: Release CLI
 #
 # Set up once (README, "Releasing the CLI"): a GitHub environment named npm-release whose
 # deployment branches are main only, and npm trusted publishing for @konjir/kolab (this
-# repository, this workflow, that environment), which `npm run release:trust` (tools/npm-trust.sh)
-# sets up once @konjir/kolab is on npm: a placeholder, 0.0.1, published by hand (README), so this
-# workflow publishes 0.9.0, the first real version, with provenance.
+# repository, this workflow, that environment), which `npm run release:trust`
+# (tools/npm-trust.sh) sets up.
 #
 # Recovery: a run that stops before job 3 has published nothing; delete its draft release, if
 # any, and run again. If job 3 published and job 4 failed, re-run job 4 ("Re-run failed jobs"),
@@ -112,10 +111,8 @@ jobs:
         env:
           SPECIFIER: ${{ inputs.version }}
         run: |
-          # release-version.mjs has nx release compute the version: a bump goes from the
-          # semver-highest kolab@* tag, or before the first from apps/cli/package.json's 0.8.0,
-          # konjir's last. It refuses, before anything is built, a version not above every kolab@*
-          # tag, every konjir@* tag and every version of @konjir/kolab on npm, then writes it to
+          # release-version.mjs has nx release compute the version and refuses, before anything is
+          # built, one that isn't above every release (the header says how), then writes it to
           # apps/cli/package.json in the runner. Its last line is the version.
           set -o pipefail
           node apps/cli/scripts/release-version.mjs "$SPECIFIER" | tee "$RUNNER_TEMP/release-version.out"
@@ -132,9 +129,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
 
-      # The Bun apps/cli/bun-runtimes.json pins, checked against its pin: GitHub's zip, or npm's
-      # tarball when the zip won't download (W7.18). Not dirname "$(…)": bash -e
-      # doesn't stop on a failure inside a command substitution whose outer command succeeds (W7.17).
+      # The Bun apps/cli/bun-runtimes.json pins, checked against its pin, as cli.yml installs it.
       - name: Install Bun
         run: |
           bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
@@ -150,8 +145,8 @@ jobs:
           cp apps/cli/dist-bin/* "$RUNNER_TEMP/release/"
           cd "$RUNNER_TEMP/release" && sha256sum konjir-kolab-*.tgz kolab-* LICENSE THIRD-PARTY-NOTICES.md > SHA256SUMS && cat SHA256SUMS
 
-      # kolab is Apache-2.0 (D63): the tarball and the release's binaries carry LICENSE and the third-party
-      # notices, and bundle none of the FSL-1.1-ALv2 rest of the repository (D64).
+      # kolab is Apache-2.0 (D63): the tarball and the release's binaries carry LICENSE and the
+      # third-party notices, and bundle none of the FSL-1.1-ALv2 rest of the repository (D64).
       - name: Check the licence ships
         run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/release/konjir-kolab-*.tgz "$RUNNER_TEMP/release"
 
@@ -173,10 +168,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/npx" && cd "$RUNNER_TEMP/npx"
           "$smoke" smoke-npx npm exec --yes --package="$tarball" -- kolab
 
-      # W9.5 (API29): the published kolab carries the channel bridge. kolab connect claude, from the
-      # binary and from the package installed outside the workspace, writes entries that run kolab
-      # bridge, and a session started on one lists Kolab's tools and is pushed a channel message
-      # (apps/cli/scripts/e2e-connect.mjs, against a Kolab of its own from the checkout).
+      # The channel bridge the published kolab carries (W9.5, API29), checked as cli.yml checks it.
       - name: kolab connect claude from the binary and the installed package; a session on its entry hears its channel
         timeout-minutes: 5
         run: |
@@ -248,8 +240,8 @@ jobs:
     needs: [build, draft]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
-    # @konjir/kolab trusts this workflow in this environment alone (trusted publishing); there is no npm
-    # secret anywhere. Its deployment branches must be main only.
+    # @konjir/kolab trusts this workflow in this environment alone (trusted publishing); there is no
+    # npm secret anywhere. Its deployment branches must be main only.
     environment: npm-release
     permissions:
       id-token: write # npm trusted publishing and provenance
@@ -271,9 +263,10 @@ jobs:
         working-directory: release
         run: grep ' konjir-kolab-.*\.tgz$' SHA256SUMS | sha256sum -c -
 
-      # npm exchanges this job's OIDC token for a short-lived token that can publish @konjir/kolab alone.
-      # Expired or missing trust fails with "OIDC token exchange error" (README, "Releasing the
-      # CLI"), which npm logs only at verbose level: without it, the failure is a bare 404 on the PUT.
+      # npm exchanges this job's OIDC token for a short-lived token that can publish
+      # @konjir/kolab alone. Expired or missing trust fails with "OIDC token exchange error"
+      # (README, "Releasing the CLI"), which npm logs only at verbose level: without it, the
+      # failure is a bare 404 on the PUT.
       - name: npm publish
         env:
           NPM_CONFIG_LOGLEVEL: verbose

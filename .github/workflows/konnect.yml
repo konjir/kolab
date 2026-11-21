@@ -7,7 +7,8 @@ name: konnect
 # One job, "Build konnect", on arm64 with production's Node version, as cli.yml's job runs:
 # - apps/konnect/scripts/package.mjs bundles konnect into one file for npm, with the Bun
 #   apps/cli/bun-runtimes.json pins, and fails on first-party code other than apps/konnect's,
-#   libs/login's and libs/brand's (tools/npm-bundle.mjs). The tarball is packed and its licence checked.
+#   libs/login's and libs/brand's (tools/npm-bundle.mjs). The tarball is packed and its licence
+#   checked.
 # - The bundle, and the package installed outside the workspace as npx installs it, each run
 #   apps/konnect/scripts/e2e.mjs against a local Kolab from the checkout (scripts/e2e-kolab.ts, on
 #   PGlite, with the stub identity in GitHub's place): a team made, a teammate recruited who joins by

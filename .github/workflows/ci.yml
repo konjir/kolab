@@ -2,15 +2,16 @@ name: CI
 
 # Checks every pull request into main, and main after each merge (W2.4, W2.9, binding element TST3).
 # Three jobs, so a pull request shows three checks, all of which main requires (D45):
-# - "Test on PGlite": that site/ is built from site/src/ (D92), then typecheck, build and the
-#   Jest suite, on embedded Postgres (PGlite), then `npm run e2e:connect` (kolab connect against
-#   a local Kolab from the checkout, headless, in seconds; on every run, not only when affected)
+# - "Test on PGlite": that site/ is built from site/src/ (D92), then typecheck, build, lint and
+#   the Jest suite, on embedded Postgres (PGlite), then `npm run e2e:connect` (kolab connect
+#   against a local Kolab from the checkout, headless, in seconds; on every run, not only when
+#   affected)
 # - "Test on Postgres": the Jest suite again, on Postgres 18 through Testcontainers, as a
 #   non-superuser like RDS's (jest.global-setup.js). The runner's Docker hosts the container.
 # - "Check Terraform": terraform fmt -check, validate and test (offline, mocked) on
-#   deploy/terraform and deploy/terraform/github-oidc. It runs on
-#   every change, not only ones under deploy/, so it can be required: a required check that a path
-#   filter skips never reports, and the pull request waits for it forever.
+#   deploy/terraform and deploy/terraform/github-oidc, and bash -n on the deploy scripts. It runs
+#   on every change, not only ones under deploy/, so it can be required: a required check that a
+#   path filter skips never reports, and the pull request waits for it forever.
 #
 # The two test jobs run as production does: on arm64 (the instance is a t4g, Graviton), with the
 # Node version production installs, read from node_version in deploy/terraform/modules/kolab/main.tf.
@@ -46,7 +47,7 @@ jobs:
   pglite:
     name: Test on PGlite
     runs-on: ubuntu-24.04-arm
-    # A full run took 28-29 minutes in November 2026, against a limit of 30.
+    # A full run took 28-29 minutes in November 2026, too near the earlier limit of 30.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -119,7 +120,7 @@ jobs:
   postgres:
     name: Test on Postgres
     runs-on: ubuntu-24.04-arm
-    # A full run took 17-19 minutes in November 2026, against a limit of 20.
+    # A full run took 17-19 minutes in November 2026, too near the earlier limit of 20.
     timeout-minutes: 30
     permissions:
       contents: read
@@ -195,7 +196,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # The version Lee deploys with (README.md); versions.tf requires 1.15 or later.
+      # The version CLAUDE.md runs locally, as in .github/actions/terraform-init; versions.tf
+      # requires 1.15 or later.
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.16.5
@@ -240,7 +242,7 @@ jobs:
           terraform validate
           terraform test
 
-      # The shell scripts the deploy workflow runs.
+      # The shell scripts deploy.yml runs (pack.sh, plan.sh, smoke.sh), konjir-ops.sh and simulate.sh.
       - name: Check the deploy scripts
         working-directory: deploy
         # One at a time: bash -n a b c parses only a, and takes the rest as its arguments.

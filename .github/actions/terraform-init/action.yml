@@ -22,7 +22,8 @@ runs:
       run: |
         [[ "$RELEASE" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || { echo "::error::release is a tree id"; exit 1; }
 
-    # The version Lee runs locally (CLAUDE.md); versions.tf requires 1.15 or later.
+    # The version CLAUDE.md runs locally, as ci.yml's Check Terraform does; versions.tf requires
+    # 1.15 or later.
     - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
       with:
         terraform_version: 1.16.5
