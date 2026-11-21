@@ -6,11 +6,11 @@ import { setup, els } from '@konjir/engine/testing';
  *              |   |
  * binding B:  b1  b2        (element -> element)
  *              |   |
- * plan W:     w1  w2        (B's plan: element -> element)
+ * binding W:  w1  w2        (relying on B's elements: element -> element; once B's plan, D104 retired the kind)
  *
  * binding C:  c1  c2        (another binding of S, relying on B's elements: c1 -> b1, c2 -> b2)
  *              |   |
- * plan X:     x1  x2        (C's plan: a third hop)
+ * binding X:  x1  x2        (relying on C's elements: a third hop)
  *  plus a diamond: binding D's d1 relies on both b1 and c1.
  */
 async function chain() {

@@ -367,7 +367,7 @@ test('a kolab holds at most MAX_CHANNELS channels, general among them', async ()
 });
 
 // On PGlite, one connection, these run one transaction at a time; under KONJIR_TEST_POSTGRES they
-// race for real, and the kolab's row lock is what keeps the order.
+// race for real, and the channel's row lock is what keeps the order (sendChannelMessage).
 test('messages sent at once to one channel are numbered in the order they commit, and a reader reading meanwhile skips none', async () => {
   const { kolab, ann, bo, annAgent, boAgent } = await hub();
   Object.assign(kolab.rates, { messages: Infinity });

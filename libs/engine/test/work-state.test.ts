@@ -380,7 +380,7 @@ test('a milestone is Done when every member is, a milestone of milestones too, a
   const { kolab, bob, commitWork } = await planned();
   await commitWork(bob, { deltas: [{ kind: 'add', element: 'M2', text: 'All of it.', work: { milestone: true, depends_on: ['M1'] } }] });
   const done = async (ids: string[], state = 'done') => {
-    // As W5.1c's approvals will, here straight in the database; the next plan commit works milestones out.
+    // As W5.1c's approvals will, here straight in the database; the next binding commit works milestones out.
     await kolab.db.query(`update work_package set state = $2, assignee_id = 'bob' where element_id = any($1)`, [ids, state]);
     await commitWork(bob, { deltas: [{ kind: 'override', element: 'W1.1', text: `Build the cancel endpoint (${Date.now()}).` }] });
   };

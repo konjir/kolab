@@ -533,7 +533,7 @@ test('a binding version that revises an at-risk Done package reopens it, so a bi
   }
   await commitWork(bob, { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
   expect((await workMarks(kolab)).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
-  // The plan's next version revises both: W1.1 (at risk) reopens; W1.2 (not at risk) stays Done.
+  // The binding's next version revises both: W1.1 (at risk) reopens; W1.2 (not at risk) stays Done.
   await commitWork(bob, { deltas: [
     { kind: 'override', element: 'W1.1', text: 'Build the cancel endpoint, idempotent.' },
     { kind: 'override', element: 'W1.2', text: 'Build the shipping queue, durable.' },
@@ -579,7 +579,7 @@ test('D102: a binding edit never settles the mark on an at-risk package In revie
   await commitWork(bob, { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
   const [mark] = (await workMarks(kolab)).filter((m) => m.element_id === 'W1.1');
   expect(mark.reason).toBe('changed');
-  // A plan version revises W1.1: the cascade leaves its mark open, and the package In review.
+  // A binding version revises W1.1: the cascade leaves its mark open, and the package In review.
   await commitWork(bob, { deltas: [{ kind: 'override', element: 'W1.1', text: 'Build the cancel endpoint, idempotent.' }] });
   expect((await workMarks(kolab)).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
   expect(await row(kolab, 'W1.1')).toMatchObject({ state: 'in_review' });
@@ -605,7 +605,7 @@ test('D102 with a delayed cascade: a package approved between a plan edit\'s com
   await kolab.submitWork(bob, W('W1.1'), { evidence: [COMMIT()] });
   await commitWork(bob, { deltas: [{ kind: 'override', element: 'b1', text: 'A cancel endpoint, idempotent.' }] });
   expect((await workMarks(kolab)).map((m) => [m.element_id, m.reason])).toStrictEqual([['W1.1', 'changed']]);
-  // An earlier cascade of the plan is still claimed elsewhere, so the next commit's cascade queues behind it.
+  // An earlier cascade of the binding is still claimed elsewhere, so the next commit's cascade queues behind it.
   await kolab.db.query(`insert into outbox(id, kind, version_id, claim, claimed_until)
                         values ('01JOB0000000000000000000ZZ', 'after_commit', $1, 'elsewhere', now() + interval '1 minute')`, [plan]);
   await commitWork(bob, { deltas: [{ kind: 'override', element: 'W1.1', text: 'Build the cancel endpoint, idempotent.' }] });
@@ -974,7 +974,7 @@ test('a submission racing the sweep of its lapsing lease: either it is submitted
   const other = new pg.Client({ connectionString: store.databaseUrl });
   await other.connect();
   try {
-    // A plan commit holds the plan's row: the verdict waits for it, then lands.
+    // A binding commit holds the binding's row: the verdict waits for it, then lands.
     await other.query('begin');
     await other.query(`select 1 from node where name = 'orders-pg' for no key update`);
     let done = false;

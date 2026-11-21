@@ -1,7 +1,7 @@
 // Property tests for the cascade and rebases (W2.5, binding element TST2, serving LNK4, LNK5 and
 // OVR3-OVR7). fast-check generates a spec family (cascade-model.ts) and a sequence of edits to it:
 // parent commits that change, delete and restore elements, variant overrides, edits of marked
-// binding, WBS and work-package elements, clears, override resolutions, links removed in a draft
+// elements of the bindings B, W and X, clears, override resolutions, links removed in a draft
 // (with or without an edit of their element) and linked again, some of which the review gate
 // rejects. After every step the test compares Kolab with the reference model, and
 // checks that every link either re-pins to the element it fingerprints or carries an open mark.

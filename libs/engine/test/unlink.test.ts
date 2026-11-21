@@ -24,7 +24,7 @@ const markRow = async (kolab: Kolab, id: string) =>
   (await kolab.db.query<{ state: string; cleared_by: string | null }>(`select state, cleared_by from invalidation where id = $1`, [id])).rows[0];
 
 /**
- * Spec `spec` (R1, R2, R3), binding `b` (b1 -> R1, b2 -> R2, b3 -> R3), and WBS `w` (w1 -> b1),
+ * Spec `spec` (R1, R2, R3), binding `b` (b1 -> R1, b2 -> R2, b3 -> R3), and binding `w` (w1 -> b1),
  * so a mark on b1 spreads to w1.
  */
 async function family(ctx: Ctx) {
