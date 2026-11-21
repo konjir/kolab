@@ -303,11 +303,14 @@ test("on a narrow screen every header is one row, the mark, the product switcher
   expect(css).toContain('@media (min-width: 1200px){.menu{--menu:wide;');
   expect(css).toContain('.menu>summary{display:none}');
   expect(css).toContain('@media (min-width: 1200px){.menu::details-content{content-visibility:visible}}');
-  expect(css).toMatch(/@media \(max-width: 1199\.98px\)\{\.menu\{--menu:narrow;[^\n]*\.menu-panel\{position:absolute;/);
-  // In min-width/max-width, not range syntax (width < 1200px), which Safari reads only from 16.4:
-  // before it, an older iPhone's Safari would apply neither, and show the menu both closed and open.
-  // Each max-width stops just short of the next min-width, so no width gets both.
-  for (const q of css.match(/@media[^{]*/g) ?? []) expect(q).not.toMatch(/\b(width|height)\s*[<>]|[<>]=?\s*(width|height)\b/);
+  expect(css).toMatch(/@media not all and \(min-width: 1200px\)\{\.menu\{--menu:narrow;[^\n]*\.menu-panel\{position:absolute;/);
+  // In min-width, not range syntax (width < 1200px), which Safari reads only from 16.4: before it, an
+  // older iPhone's Safari would apply neither, and show the menu both closed and open. A narrow rule
+  // is `not all and` the wide one's, so every width, a fractional one from zoom too, gets exactly one.
+  const queries = css.match(/@media[^{;]*/g) ?? [];
+  expect(queries).toContain('@media not all and (min-width: 440px)');
+  expect(queries).toContain('@media not all and (min-width: 380px)');
+  for (const q of queries) expect(q).not.toMatch(/\(\s*[a-z-]+\s*[<>]|[<>]=?\s*[a-z-]+\s*\)|[<>]/);
   const js = readFileSync(join(r, 'site', /src="(\/assets\/site\.[0-9a-f]{10}\.js)"/.exec(read(r, 'index.html'))![1]), 'utf8');
   expect(js).toContain("getPropertyValue('--menu')");
   expect(js).toContain("e.key !== 'Escape'");
