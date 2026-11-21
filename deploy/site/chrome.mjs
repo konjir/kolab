@@ -1,6 +1,9 @@
-// The header every page of www.konjir.com shares, and the footer of a section without an artboard
-// of its own, for deploy/site/build.mjs. Written as the artboard is, with inline styles, which the
-// build moves into classes like any other.
+// The root and the header every page of www.konjir.com shares, and the footer of a section without
+// a footer.html of its own, for deploy/site/build.mjs. Written as the pages in site/src/ are, with
+// inline styles, which the build moves into classes like any other.
+//
+// The root: the .kj element that holds the page and the theme's colours (site/src/site.css), written
+// dark (Predawn); site.js applies the stored or preferred theme before the page paints.
 //
 // The header: the Konjir mark, linking to the org page (/); a switcher between the products
 // (Kolab, konnect), the current one marked; and a menu holding the section's own links, the theme
@@ -9,7 +12,10 @@
 
 const esc = (s) => s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 
-/** The Konjir mark, as the artboard draws it, in its two sizes. */
+/** The opening tag of every page's root; the build closes it after the footer. */
+export const ROOT = `<div class="kj" data-theme="dark" style="background: var(--surface); color: var(--ink); font-family: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 26px; min-width: 0;">`;
+
+/** The Konjir mark, in its two sizes. */
 const mark = (width, height) => `<svg viewBox="0 0 122 56" width="${width}" height="${height}" role="img" aria-label="Konjir">
 <g fill="none" style="stroke: var(--ink)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
 <circle cx="36" cy="30" r="11.7" style="fill: var(--sun)"></circle>
@@ -25,8 +31,8 @@ export const PRODUCTS = [
 const SIGN_IN = `<a href="https://kolab.konjir.com/" style="font-size: 15px;">Sign in</a>
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 44px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 22px; color: var(--on-accent); font-weight: 600; font-size: 15px;">Sign up with GitHub</a>`;
 
-// The theme switch as the artboard's component renders it, dark first; site.js applies the stored
-// or preferred theme before the page paints.
+// The theme switch, a radio group, written dark first; site.js applies the stored or preferred
+// theme before the page paints, and keeps the radios in step with it.
 const THEME = `<div role="radiogroup" aria-label="Theme" class="kb line" style="--kb-h: 44px; --kb-line: var(--line-strong); padding: 0 4px; gap: 0; cursor: default;">
 <button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="false" tabindex="-1" data-theme-choice="light"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" style="fill: var(--sun)"></circle></svg></button>
 <button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="true" tabindex="0" data-theme-choice="dark"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" style="fill: var(--moon); stroke: var(--moon)"></path></svg></button>
@@ -42,7 +48,7 @@ const MENU_ICON = `<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="
  * section link is, so one link at most says "page".
  *
  * The section's links, the theme switch and the sign-in are in a <details>, the menu. On a wide
- * screen the stylesheet (the artboard's helmet) lays them out in the header's one row and hides
+ * screen the stylesheet (site/src/site.css) lays them out in the header's one row and hides
  * the menu's summary; on a narrow one the row is the mark, the switcher and the summary, the menu
  * button, and they open beneath it. It opens and closes with no script; site.js keeps it open on a
  * wide screen, and closes it on Escape, a click outside it, or focus leaving it.
@@ -84,8 +90,8 @@ ${signIn ? `${SIGN_IN}\n` : ''}</div>
 }
 
 /**
- * Where the source, the packages and their licences are: every footer's, the artboard's included
- * (its footer writes this nav as it is here; a test holds them equal). Kolab's server, the rest of
+ * Where the source, the packages and their licences are: every footer's, site/src/kolab/footer.html's
+ * included (it writes this nav as it is here; a test holds them equal). Kolab's server, the rest of
  * the repository, is FSL-1.1-ALv2 (LICENSE.md); the CLIs, kolab and konnect, are Apache-2.0, each
  * with its LICENSE (README.md, Licence). There is no privacy policy or terms yet, and the
  * repository names no contact, so neither is linked.
@@ -102,7 +108,7 @@ export const SOURCE_NAV = `<nav aria-label="Source and licences" style="display:
 ${SOURCE_LINKS.map((l) => `<a href="${l.href}">${esc(l.text)}</a>`).join('\n')}
 </nav>`;
 
-/** The footer of a section with no artboard to take its own from: the mark, every product's pages, the source and licences, the line the artboard ends on. */
+/** The footer of a section with no footer.html of its own: the mark, every product's pages, the source and licences, and the copyright line. */
 export function footer(links) {
   return `<footer style="border-top: 1px solid var(--line);">
 <div style="max-width: 1200px; margin: 0 auto; padding: 40px clamp(16px, 4vw, 48px) 48px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 24px 48px; align-items: flex-start; justify-content: space-between;">

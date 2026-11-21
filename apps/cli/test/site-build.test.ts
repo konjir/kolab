@@ -5,10 +5,10 @@
 // page shares one header and carries its canonical URL and Open Graph tags.
 import { afterAll, expect, test } from '@jest/globals';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 const dir = mkdtempSync(join(tmpdir(), 'konjir-site-'));
@@ -17,7 +17,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim();
 const build = (r: string) => spawnSync(process.execPath, [join(r, 'deploy/site/build.mjs')], { cwd: r, encoding: 'utf8' });
 const assetsOf = (r: string) => [...readFileSync(join(r, 'site/index.html'), 'utf8').matchAll(/\/assets\/(site\.[0-9a-f]{10}\.(?:css|js))/g)].map((m) => m[1]).sort();
-const artboard = (r: string) => join(r, 'site/src/kolab/project/Main.dc.html');
+const kolabPage = (r: string) => join(r, 'site/src/kolab/main.html');
 const read = (r: string, page: string) => readFileSync(join(r, 'site', page), 'utf8');
 // Every page the build writes, by its file in site/ and its URL.
 const PAGES: [string, string][] = [
@@ -29,6 +29,9 @@ const PAGES: [string, string][] = [
   ['konnect/guide/index.html', 'https://www.konjir.com/konnect/guide/'],
 ];
 const headerOf = (html: string) => /<header\b[^>]*>[\s\S]*?<\/header>/.exec(html)![0];
+// Every file under a folder, by its path from that folder.
+const filesIn = (d: string): string[] =>
+  readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesIn(join(d, e.name)).map((f) => `${e.name}/${f}`) : [e.name]));
 
 function copy(name: string) {
   const r = join(dir, name);
@@ -44,11 +47,11 @@ function commitBuild(r: string, message: string) {
   git(r, 'commit', '-qm', message);
 }
 
-// A change to the artboard that changes the stylesheet, so the CSS gets a new hash.
+// A change to Kolab's page that changes the stylesheet, so the CSS gets a new hash.
 const restyle = (r: string, from: string, to: string) => {
-  const text = readFileSync(artboard(r), 'utf8');
+  const text = readFileSync(kolabPage(r), 'utf8');
   expect(text).toContain(from);
-  writeFileSync(artboard(r), text.replace(from, to));
+  writeFileSync(kolabPage(r), text.replace(from, to));
 };
 
 test("a rebuild on a branch keeps main's assets, even after the branch's first build is committed, and changes nothing twice", () => {
@@ -314,12 +317,6 @@ test("on a narrow screen every header is one row, the mark, the product switcher
   const js = readFileSync(join(r, 'site', /src="(\/assets\/site\.[0-9a-f]{10}\.js)"/.exec(read(r, 'index.html'))![1]), 'utf8');
   expect(js).toContain("getPropertyValue('--menu')");
   expect(js).toContain("e.key !== 'Escape'");
-
-  // The artboard's own header, which the artifact shows, is written the same way.
-  const src = readFileSync(artboard(r), 'utf8');
-  const own = /<header\b[\s\S]*?<\/header>/.exec(src)![0];
-  expect(own).toMatch(/<nav aria-label="Main" class="hd" [^>]*>\n<div class="hd-brand">[\s\S]*?<\/div>\n<details class="menu" data-menu="">\n<summary class="kb line">[\s\S]*?<span class="menu-label">Menu<\/span><\/summary>\n<div class="menu-panel">\n<div class="menu-links">/);
-  expect(own.indexOf('role="radiogroup"')).toBeGreaterThan(own.indexOf('<details'));
 });
 
 test('every footer links to the source on GitHub, both packages on npm and their licences, and to no privacy policy, terms or contact yet', () => {
@@ -335,7 +332,7 @@ test('every footer links to the source on GitHub, both packages on npm and their
     ['https://github.com/konjir/kolab/blob/main/apps/konnect/LICENSE', 'konnect licence (Apache-2.0)'],
   ];
   const nav = new RegExp(`<nav aria-label="Source and licences" class="[^"]*">\\n${links.map(([href, text]) => `<a href="${href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`).join('\\n')}\\n</nav>`);
-  // The artboard's footer (Kolab's pages) and the shared one (every other page and the 404) alike.
+  // Kolab's own footer (site/src/kolab/footer.html, on Kolab's pages) and the shared one (every other page and the 404) alike.
   for (const file of [...PAGES.map(([f]) => f), '404.html']) {
     const foot = /<footer\b[\s\S]*<\/footer>/.exec(read(r, file))![0];
     expect([file, nav.test(foot)]).toStrictEqual([file, true]);
@@ -431,4 +428,87 @@ test("the org page says what Konjir is, gives a card to each product with its in
   expect(page).toMatch(/<h2 id="konnect-title"[^>]*>konnect<\/h2>[\s\S]*npm i -g @konjir\/konnect[\s\S]*<a href="\/konnect\/" class="kb line[^"]*">konnect’s page →<\/a>/);
   expect(page).toMatch(/<h2 id="which-title"[^>]*>Which one do I need\?<\/h2>/);
   expect(page).not.toMatch(/\sstyle\s*=|<style\b/i);
+});
+
+test("site/src/ is plain source the repository owns, of the kinds the build reads, and nothing in it, the build, its README or the built site links to claude.ai or holds a template hole", () => {
+  const src = join(ROOT, 'site/src');
+  const files = filesIn(src).sort();
+  // The shared stylesheet, and each section's main page, its own footer, its Markdown pages and its Open Graph image.
+  const KINDS = [/^site\.css$/, /^[a-z0-9-]+\/(main|footer)\.html$/, /^[a-z0-9-]+\/[a-z0-9-]+\.md$/, /^[a-z0-9-]+\/og\.jpg$/];
+  expect(files.filter((f) => !KINDS.some((k) => k.test(f)))).toStrictEqual([]);
+  expect(files).toEqual(expect.arrayContaining(['site.css', 'www/main.html', 'kolab/main.html', 'kolab/footer.html', 'konnect/main.html']));
+  // A main.html is one <main> and a footer.html one <footer>: never a whole document of its own.
+  for (const f of files.filter((n) => n.endsWith('.html'))) {
+    const text = readFileSync(join(src, f), 'utf8').trim();
+    expect([f, text.startsWith(f.endsWith('main.html') ? '<main>' : '<footer'), /<\/?(html|head|body|title|meta|link|script|style)\b/i.test(text)]).toStrictEqual([f, true, false]);
+  }
+  const built = filesIn(join(ROOT, 'site'))
+    .filter((f) => !f.startsWith('src/') && f !== 'README.md' && /\.(html|css|js|xml|txt)$/.test(f))
+    .map((f) => join(ROOT, 'site', f));
+  const sources = files.filter((f) => !f.endsWith('.jpg')).map((f) => join(src, f));
+  const tools = filesIn(join(ROOT, 'deploy/site'))
+    .filter((f) => /\.(mjs|js|css|html|json)$/.test(f))
+    .map((f) => join(ROOT, 'deploy/site', f));
+  const claudeLink = /https?:\/\/(?:[a-z0-9-]+\.)*claude\.ai\//i;
+  for (const f of [...sources, ...built, ...tools, join(ROOT, 'site/README.md')]) {
+    expect([relative(ROOT, f), claudeLink.test(readFileSync(f, 'utf8'))]).toStrictEqual([relative(ROOT, f), false]);
+  }
+  for (const f of [...sources, ...built]) expect([relative(ROOT, f), /\{\{/.test(readFileSync(f, 'utf8'))]).toStrictEqual([relative(ROOT, f), false]);
+});
+
+test('every path on this site that a built page or the stylesheet names is a file the build wrote', () => {
+  const r = copy('paths');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const missing: string[] = [];
+  const named = (file: string, text: string, re: RegExp) => {
+    for (const m of text.matchAll(re)) {
+      const path = m[1].replace(/[#?].*$/, '');
+      if (!existsSync(join(r, 'site', path.endsWith('/') ? `${path}index.html` : path))) missing.push(`${file}: ${m[1]}`);
+    }
+  };
+  for (const file of [...PAGES.map(([f]) => f), '404.html']) named(file, read(r, file), /\s(?:href|src)="(\/(?!\/)[^"]*)"/g);
+  const cssPath = /href="\/(assets\/site\.[0-9a-f]{10}\.css)"/.exec(read(r, 'index.html'))![1];
+  named(cssPath, read(r, cssPath), /url\((\/[^)]+)\)/g);
+  expect(missing).toStrictEqual([]);
+});
+
+test("the build refuses an element it doesn't know, a template hole, a footer link to an id its section's page lacks, a stylesheet that loads something, and any argument", () => {
+  const r = copy('source-refusals');
+  const page = kolabPage(r);
+  const original = readFileSync(page, 'utf8');
+  for (const [add, why] of [
+    ['<x-page><p>Hi</p></x-page>', "an element the build doesn't know, <x-page>"],
+    ['<wrapper><p>Hi</p></wrapper>', "an element the build doesn't know, <wrapper>"],
+    ['<p data-theme="{{theme}}">Hi</p>', 'an unhandled template hole'],
+    ['<img src="https://example.com/x.png" alt="">', "a resource that isn't this site's own"],
+    ['<p onclick="go()">Hi</p>', 'an event handler attribute'],
+    ['</main>\n<main>', 'must be one <main>…</main>'],
+  ]) {
+    writeFileSync(page, original.replace('</main>', `${add}\n</main>`));
+    const b = build(r);
+    expect([b.status, add]).toStrictEqual([1, add]);
+    expect(b.stderr).toContain('site/src/kolab/main.html');
+    expect(b.stderr).toContain(why);
+  }
+  writeFileSync(page, original);
+
+  const foot = join(r, 'site/src/kolab/footer.html');
+  const footer = readFileSync(foot, 'utf8');
+  expect(footer).toContain('<a href="#signup">');
+  writeFileSync(foot, footer.replace('<a href="#signup">', '<a href="#nowhere">'));
+  expect(build(r).stderr).toContain('site/src/kolab/footer.html links to #nowhere, which site/src/kolab/main.html has no id for');
+  writeFileSync(foot, footer);
+
+  const css = join(r, 'site/src/site.css');
+  const sheet = readFileSync(css, 'utf8');
+  writeFileSync(css, `${sheet}.x{background:url(/x.png)}\n`);
+  expect(build(r).stderr).toContain('site/src/site.css loads something');
+  writeFileSync(css, sheet);
+
+  const withArgs = spawnSync(process.execPath, [join(r, 'deploy/site/build.mjs'), 'page.html', 'images'], { cwd: r, encoding: 'utf8' });
+  expect([withArgs.status, withArgs.stderr]).toStrictEqual([2, 'usage: node deploy/site/build.mjs\n']);
+
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
 });

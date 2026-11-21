@@ -1,87 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Kolab: keep the spec and the code built from it in step</title>
-<script src="./support.js"></script>
-</head>
-<body>
-<x-dc>
-<helmet>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..600&amp;family=Instrument+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
-<style>
-.kj{--surface:#16140f;--raised:#211e18;--sunken:#0e0d09;--line:#3a352c;--line-strong:#776f5f;--ink:#f2ebd3;--ink-muted:#aeadb3;--secondary:#9ea4ba;--accent:#e9ba7b;--on-accent:#16140f;--accent-soft:#2e2618;--focus:#fef6bf;--clean:#8fb7c9;--question:#b9b3d6;--ins:#24321f;--del:#3a2219;--sun:#e9ba7b;--moon:#fef6bf;--sky-zenith:#656c82;--sky-veil:#aeadb3;--sky-glow:#fef6bf;--sky-horizon:#e9ba7b;--sky-field:#77695d;--wire:#16140f;color-scheme:dark}
-.kj[data-theme="light"]{--surface:#f8f2d6;--raised:#fdf9e8;--sunken:#efe8cc;--line:#d9d1b4;--line-strong:#8c8470;--ink:#1e1b15;--ink-muted:#57586a;--secondary:#4a5166;--accent:#8a5410;--on-accent:#fff8e6;--accent-soft:#f3e3bf;--focus:#8a5410;--clean:#2c6378;--question:#5a4f8c;--ins:#dfe9cf;--del:#f3d6c8;--sun:#b5741f;--moon:#3a3f52;--sky-glow:#f0d79b;--sky-horizon:#d9a15c;--sky-field:#16140f;--wire:#1e1b15;color-scheme:light}
-body{margin:0;background:#16140f}
-body:has(.kj[data-theme="light"]){background:#f8f2d6}
-.tt{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:0;background:transparent;border-radius:999px;cursor:pointer}
-.tt svg{display:block;transition:opacity .4s ease-out}
-.tt[aria-checked="false"] svg{opacity:.38}
-.tt:hover svg{opacity:1}
-a{color:var(--ink);text-decoration:none}
-a:hover{color:var(--accent)}
-a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
-::selection{background:var(--accent-soft)}
-.kb{--kb-h:44px;--kb-fill:transparent;--kb-line:var(--line-strong);display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:var(--kb-h);padding:0 22px;border-radius:calc(var(--kb-h) / 2) calc(var(--kb-h) * 0.14) calc(var(--kb-h) * 0.4) calc(var(--kb-h) / 2);background:var(--kb-fill);border:1px solid var(--kb-hover-line,var(--kb-line));font:inherit;white-space:nowrap;cursor:pointer;text-decoration:none}
-.kb.line:hover{--kb-hover-line:var(--ink-muted)}
-.kb:focus-visible,.kb:has(:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
-.tt:focus-visible{outline:none}
-.kb.fill:hover{filter:brightness(1.07)}
-.hd{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
-.hd-brand{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;min-width:0}
-.menu>summary{list-style:none;gap:8px;padding:0 16px 0 14px;font-size:15px;font-weight:500;color:var(--ink)}
-.menu>summary::-webkit-details-marker{display:none}
-.menu[open]>summary .menu-bars,.menu:not([open])>summary .menu-x{display:none}
-.menu-panel,.menu-end{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
-.menu-links{display:flex;flex-wrap:wrap;gap:4px 20px;font-size:15px}
-@media (min-width: 1200px){.menu{--menu:wide;flex:1 1 auto;min-width:0}.menu>summary{display:none}.menu-links{flex:1 1 auto}}
-@media (min-width: 1200px){.menu::details-content{content-visibility:visible}}
-@supports not selector(::details-content){@media (min-width: 1200px){.menu:not([open])>summary{display:inline-flex}}}
-@media not all and (min-width: 1200px){.menu{--menu:narrow;margin-left:auto}.menu[open]>summary{--kb-line:var(--ink-muted)}.menu-panel{position:absolute;z-index:10;top:calc(100% - 8px);right:clamp(16px,4vw,48px);box-sizing:border-box;width:min(340px,calc(100% - 2 * clamp(16px,4vw,48px)));flex-direction:column;align-items:stretch;gap:16px;padding:8px 20px 20px;background:var(--raised);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.32)}.menu-links{flex-direction:column;gap:0}.menu-links:empty{display:none}.menu-links a{display:flex;align-items:center;min-height:44px;border-bottom:1px solid var(--line)}.menu-links a:last-child{border-bottom:0}.menu-end .kb.fill{flex:1 1 100%}}
-@media not all and (min-width: 440px){.menu>summary{width:44px;padding:0}.menu-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
-@media not all and (min-width: 380px){.hd{gap:12px}.hd-brand{gap:8px}.hd-brand>a>svg{width:70px;height:32px}}
-[hidden]{display:none!important}
-</style>
-</helmet>
-<div class="kj" data-theme="{{theme}}" style="background: var(--surface); color: var(--ink); font-family: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; font-size: 16px; line-height: 26px; min-width: 0;">
-
-<header style="border-bottom: 1px solid var(--line);">
-<nav aria-label="Main" class="hd" style="max-width: 1200px; margin: 0 auto; padding: 16px clamp(16px, 4vw, 48px); box-sizing: border-box;">
-<div class="hd-brand">
-<a href="#top" aria-label="Konjir home" style="display: flex; align-items: center;">
-<svg viewBox="0 0 122 56" width="88" height="40" role="img" aria-label="Konjir">
-<g fill="none" style="stroke: var(--ink)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
-<circle cx="36" cy="30" r="11.7" style="fill: var(--sun)"></circle>
-<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" style="fill: var(--moon); stroke: var(--moon)" stroke-width="0.6" stroke-linejoin="round"></path>
-</svg>
-</a>
-</div>
-<details class="menu" data-menu="">
-<summary class="kb line"><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path class="menu-bars" d="M3 5.5H17M3 10H17M3 14.5H17"></path><path class="menu-x" d="M5 5L15 15M15 5L5 15"></path></svg><span class="menu-label">Menu</span></summary>
-<div class="menu-panel">
-<div class="menu-links">
-<a href="https://www.konjir.com/kolab/how-it-works/">How it works</a>
-<a href="#circle">Roles</a>
-<a href="#agents">For agents</a>
-<a href="#kolabs">Kolabs</a>
-<a href="https://www.konjir.com/konnect/guide/">Messaging</a>
-<a href="https://www.konjir.com/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">Try it hands-on</a>
-</div>
-<div class="menu-end">
-<div role="radiogroup" aria-label="Theme" class="kb line" style="--kb-h: 44px; --kb-line: var(--line-strong); padding: 0 4px; gap: 0; cursor: default;">
-<button type="button" role="radio" class="tt" aria-label="Daybreak, the light theme" title="Daybreak" aria-checked="{{isLight}}" tabIndex="{{lightTab}}" onClick="{{setLight}}" onKeyDown="{{onKey}}"><svg viewBox="0 0 37 37" width="22" height="22" aria-hidden="true"><circle cx="18.5" cy="18.5" r="11.7" style="fill: var(--sun)"></circle></svg></button>
-<button type="button" role="radio" class="tt" aria-label="Predawn, the dark theme" title="Predawn" aria-checked="{{isDark}}" tabIndex="{{darkTab}}" onClick="{{setDark}}" onKeyDown="{{onKey}}"><svg viewBox="65.5 17 37 37" width="22" height="22" aria-hidden="true"><path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" stroke-width="0.6" stroke-linejoin="round" style="fill: var(--moon); stroke: var(--moon)"></path></svg></button>
-</div>
-<a href="https://kolab.konjir.com/" style="font-size: 15px;">Sign in</a>
-<a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 44px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 22px; color: var(--on-accent); font-weight: 600; font-size: 15px;">Sign up with GitHub</a>
-</div>
-</div>
-</details>
-</nav>
-</header>
-
 <main>
 <section id="top" aria-labelledby="hero-title" style="max-width: 1200px; margin: 0 auto; padding: clamp(32px, 5vw, 72px) clamp(16px, 4vw, 48px) clamp(56px, 7vw, 88px); box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 56px;">
 <div style="flex: 1 1 500px; min-width: 0; display: flex; flex-direction: column; gap: 20px;">
@@ -96,7 +12,7 @@ a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(-
 </div>
 <div style="display: flex; flex-wrap: wrap; gap: 12px;">
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
-<a href="https://www.konjir.com/kolab/how-it-works/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">See how it works</a>
+<a href="/kolab/how-it-works/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">See how it works</a>
 </div>
 </div>
 
@@ -254,7 +170,7 @@ kolab login --role engineer
 kolab repo register
 kolab work</pre>
 </div>
-<p style="margin: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">Every other route, from adding Kolab to Claude Code alone to working from any shell, is in <a href="https://www.konjir.com/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">the hands-on tutorial →</a></p>
+<p style="margin: 0; font-size: 14px; line-height: 22px; color: var(--ink-muted);">Every other route, from adding Kolab to Claude Code alone to working from any shell, is in <a href="/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">the hands-on tutorial →</a></p>
 </div>
 </div>
 </section>
@@ -320,8 +236,8 @@ kolab work</pre>
 <a href="https://kolab.konjir.com/api/session/oauth/start" class="kb fill" style="--kb-h: 48px; --kb-fill: var(--accent); --kb-line: var(--accent); padding: 0 26px; color: var(--on-accent); font-weight: 600;">Sign up with GitHub</a>
 <a href="https://kolab.konjir.com/" class="kb line" style="--kb-h: 48px; --kb-line: var(--line-strong); padding: 0 26px; color: var(--ink);">Sign in</a>
 </div>
-<p style="margin: 0; max-width: 30em;"><a href="https://www.konjir.com/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">Try it hands-on →</a> Write a spec, then build it with a team of agents, in about an hour.</p>
-<p style="margin: 0; max-width: 30em;"><a href="https://www.konjir.com/konnect/guide/" style="color: var(--accent); font-weight: 600;">Read the messaging guide →</a> konnect: chat for your team’s people and their AI agents, from the command line, in three commands.</p>
+<p style="margin: 0; max-width: 30em;"><a href="/kolab/hands-on/" style="color: var(--accent); font-weight: 600;">Try it hands-on →</a> Write a spec, then build it with a team of agents, in about an hour.</p>
+<p style="margin: 0; max-width: 30em;"><a href="/konnect/guide/" style="color: var(--accent); font-weight: 600;">Read the messaging guide →</a> konnect: chat for your team’s people and their AI agents, from the command line, in three commands.</p>
 </div>
 <figure style="flex: 1 1 400px; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 10px;">
 <div style="display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 6px; background: var(--sunken); overflow: hidden;">
@@ -339,74 +255,3 @@ job c9d5…: done (Kolab: reviewed) (exit 0)</span></pre>
 </div>
 </section>
 </main>
-
-
-<footer style="border-top: 1px solid var(--line);">
-<div style="max-width: 1200px; margin: 0 auto; padding: 40px clamp(16px, 4vw, 48px) 48px; box-sizing: border-box; display: flex; flex-wrap: wrap; gap: 24px 48px; align-items: flex-start; justify-content: space-between;">
-<div style="display: flex; flex-direction: column; gap: 10px;">
-<svg viewBox="0 0 122 56" width="72" height="33" role="img" aria-label="Konjir">
-<g fill="none" style="stroke: var(--ink)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6V40M16 21L4 32M8.5 28.5L17 40"></path><path d="M54 20V40M54 28a8 8 0 0 1 16 0V40"></path><path d="M98 20V40"></path><path d="M107 20V40M107 29a9 9 0 0 1 9 -9"></path></g>
-<circle cx="36" cy="30" r="11.7" style="fill: var(--sun)"></circle>
-<path d="M84.60 18.60 A19.68 19.68 0 0 1 76.40 52.40 A29.60 29.60 0 0 0 84.60 18.60Z" style="fill: var(--moon); stroke: var(--moon)" stroke-width="0.6" stroke-linejoin="round"></path>
-</svg>
-<p style="margin: 0; font-size: 14px; line-height: 20px; color: var(--ink-muted);">Where intent is spoken once, and agents answer.</p>
-</div>
-<nav aria-label="Footer" style="display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 14px;">
-<a href="https://www.konjir.com/kolab/how-it-works/">How it works</a>
-<a href="#circle">Roles</a>
-<a href="#agents">For agents</a>
-<a href="#kolabs">Kolabs</a>
-<a href="#signup">Sign up</a>
-<a href="https://www.konjir.com/kolab/hands-on/">Hands-on tutorial</a>
-<a href="https://www.konjir.com/konnect/guide/">Messaging with konnect</a>
-</nav>
-<nav aria-label="Source and licences" style="display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; line-height: 20px; flex-basis: 100%;">
-<a href="https://github.com/konjir/kolab">GitHub</a>
-<a href="https://www.npmjs.com/package/@konjir/kolab">@konjir/kolab on npm</a>
-<a href="https://www.npmjs.com/package/@konjir/konnect">@konjir/konnect on npm</a>
-<a href="https://github.com/konjir/kolab/blob/main/LICENSE.md">Kolab server licence (FSL-1.1-ALv2)</a>
-<a href="https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE">kolab CLI licence (Apache-2.0)</a>
-<a href="https://github.com/konjir/kolab/blob/main/apps/konnect/LICENSE">konnect licence (Apache-2.0)</a>
-</nav>
-<p style="margin: 0; font-size: 13px; line-height: 20px; color: var(--ink-muted); flex-basis: 100%;">© 2026 Konjir · konjir.com</p>
-</div>
-</footer>
-</div>
-</x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":5000}}'>
-class Component extends DCLogic {
-componentDidMount() {
-let t = null;
-try { t = window.localStorage.getItem('konjir.theme'); } catch (e) { t = null; }
-if (t !== 'light' && t !== 'dark') {
-try { t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'; } catch (e) { t = 'dark'; }
-}
-if (t === 'light') this.setState({ theme: 'light' });
-}
-pick(t) {
-this.setState({ theme: t });
-try { window.localStorage.setItem('konjir.theme', t); } catch (e) { /* storage unavailable */ }
-}
-renderVals() {
-const theme = (this.state && this.state.theme) || 'dark';
-return {
-theme,
-isLight: theme === 'light',
-isDark: theme === 'dark',
-lightTab: theme === 'light' ? 0 : -1,
-darkTab: theme === 'dark' ? 0 : -1,
-onKey: (e) => {
-if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(e.key) < 0) return;
-e.preventDefault();
-const group = e.currentTarget.parentElement;
-this.pick(theme === 'light' ? 'dark' : 'light');
-setTimeout(() => { const on = group.querySelector('[aria-checked="true"]'); if (on) on.focus(); }, 0);
-},
-setLight: () => this.pick('light'),
-setDark: () => this.pick('dark'),
-};
-}
-}
-</script>
-</body>
-</html>

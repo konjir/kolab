@@ -1,0 +1,31 @@
+.kj{--surface:#16140f;--raised:#211e18;--sunken:#0e0d09;--line:#3a352c;--line-strong:#776f5f;--ink:#f2ebd3;--ink-muted:#aeadb3;--secondary:#9ea4ba;--accent:#e9ba7b;--on-accent:#16140f;--accent-soft:#2e2618;--focus:#fef6bf;--clean:#8fb7c9;--question:#b9b3d6;--ins:#24321f;--del:#3a2219;--sun:#e9ba7b;--moon:#fef6bf;--sky-zenith:#656c82;--sky-veil:#aeadb3;--sky-glow:#fef6bf;--sky-horizon:#e9ba7b;--sky-field:#77695d;--wire:#16140f;color-scheme:dark}
+.kj[data-theme="light"]{--surface:#f8f2d6;--raised:#fdf9e8;--sunken:#efe8cc;--line:#d9d1b4;--line-strong:#8c8470;--ink:#1e1b15;--ink-muted:#57586a;--secondary:#4a5166;--accent:#8a5410;--on-accent:#fff8e6;--accent-soft:#f3e3bf;--focus:#8a5410;--clean:#2c6378;--question:#5a4f8c;--ins:#dfe9cf;--del:#f3d6c8;--sun:#b5741f;--moon:#3a3f52;--sky-glow:#f0d79b;--sky-horizon:#d9a15c;--sky-field:#16140f;--wire:#1e1b15;color-scheme:light}
+body{margin:0;background:#16140f}
+body:has(.kj[data-theme="light"]){background:#f8f2d6}
+.tt{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;border:0;background:transparent;border-radius:999px;cursor:pointer}
+.tt svg{display:block;transition:opacity .4s ease-out}
+.tt[aria-checked="false"] svg{opacity:.38}
+.tt:hover svg{opacity:1}
+a{color:var(--ink);text-decoration:none}
+a:hover{color:var(--accent)}
+a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+::selection{background:var(--accent-soft)}
+.kb{--kb-h:44px;--kb-fill:transparent;--kb-line:var(--line-strong);display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:var(--kb-h);padding:0 22px;border-radius:calc(var(--kb-h) / 2) calc(var(--kb-h) * 0.14) calc(var(--kb-h) * 0.4) calc(var(--kb-h) / 2);background:var(--kb-fill);border:1px solid var(--kb-hover-line,var(--kb-line));font:inherit;white-space:nowrap;cursor:pointer;text-decoration:none}
+.kb.line:hover{--kb-hover-line:var(--ink-muted)}
+.kb:focus-visible,.kb:has(:focus-visible){outline:2px solid var(--focus);outline-offset:2px}
+.tt:focus-visible{outline:none}
+.kb.fill:hover{filter:brightness(1.07)}
+.hd{position:relative;display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+.hd-brand{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;min-width:0}
+.menu>summary{list-style:none;gap:8px;padding:0 16px 0 14px;font-size:15px;font-weight:500;color:var(--ink)}
+.menu>summary::-webkit-details-marker{display:none}
+.menu[open]>summary .menu-bars,.menu:not([open])>summary .menu-x{display:none}
+.menu-panel,.menu-end{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px}
+.menu-links{display:flex;flex-wrap:wrap;gap:4px 20px;font-size:15px}
+@media (min-width: 1200px){.menu{--menu:wide;flex:1 1 auto;min-width:0}.menu>summary{display:none}.menu-links{flex:1 1 auto}}
+@media (min-width: 1200px){.menu::details-content{content-visibility:visible}}
+@supports not selector(::details-content){@media (min-width: 1200px){.menu:not([open])>summary{display:inline-flex}}}
+@media not all and (min-width: 1200px){.menu{--menu:narrow;margin-left:auto}.menu[open]>summary{--kb-line:var(--ink-muted)}.menu-panel{position:absolute;z-index:10;top:calc(100% - 8px);right:clamp(16px,4vw,48px);box-sizing:border-box;width:min(340px,calc(100% - 2 * clamp(16px,4vw,48px)));flex-direction:column;align-items:stretch;gap:16px;padding:8px 20px 20px;background:var(--raised);border:1px solid var(--line-strong);border-radius:12px;box-shadow:0 16px 40px rgba(0,0,0,.32)}.menu-links{flex-direction:column;gap:0}.menu-links:empty{display:none}.menu-links a{display:flex;align-items:center;min-height:44px;border-bottom:1px solid var(--line)}.menu-links a:last-child{border-bottom:0}.menu-end .kb.fill{flex:1 1 100%}}
+@media not all and (min-width: 440px){.menu>summary{width:44px;padding:0}.menu-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
+@media not all and (min-width: 380px){.hd{gap:12px}.hd-brand{gap:8px}.hd-brand>a>svg{width:70px;height:32px}}
+[hidden]{display:none!important}

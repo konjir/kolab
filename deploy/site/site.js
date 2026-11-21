@@ -1,11 +1,11 @@
-// konjir.com's only script: the static stand-in for the artifact's component logic (D81), the
-// Kolab page's demo of a mark (the second block below), and the header's menu (the third).
+// konjir.com's only script (D81): the theme switch (this first block), the Kolab page's demo of a
+// mark (the second), and the header's menu (the third).
 // build.mjs places it, hashed, as the first child of the page's .kj root, so it runs
 // before the rest of the page is parsed and the chosen theme paints first.
 //
-// The artifact's logic, kept: the theme defaults to dark (Predawn); a stored choice
-// (localStorage 'konjir.theme') wins, else the system's preference. The two theme buttons
-// form a radio group: click to pick, arrow keys to swap, the checked one is the tab stop.
+// The theme defaults to dark (Predawn); a stored choice (localStorage 'konjir.theme') wins, else
+// the system's preference. The two theme buttons form a radio group: click to pick, arrow keys to
+// swap, the checked one is the tab stop.
 (function () {
   'use strict';
   var KEY = 'konjir.theme';
