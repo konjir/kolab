@@ -9,9 +9,10 @@
 #   the journal's _PID 1 and UNIT; and a heartbeat from each copy every 5 minutes. Nothing here
 #   touches the boot script, so nothing replaces the instance.
 # - Alarms: /healthz (a Route 53 health check), Kolab or Caddy exiting, a dead outbox job, a spike
-#   in Kolab's error lines, any use of the break-glass admin token, a person made a Konjir admin (W2.22), no fresh heartbeat from a journal copy for 30 minutes, a flood of log
-#   lines (cost), the instance's root disk filling, and RDS CPU and free storage. Each emails the SNS topic when it fires and when it
-#   recovers. README: "Alarms" says what each means and what to do.
+#   in Kolab's error lines, any use of the break-glass admin token, a person made a Konjir admin
+#   (W2.22), no fresh heartbeat from a journal copy for 30 minutes, a flood of log lines (cost),
+#   the instance's root disk filling, and RDS CPU and free storage. Each emails the SNS topic when
+#   it fires and when it recovers. README, "Logs and alarms", says what each means and what to do.
 
 variable "name" { type = string }
 variable "domain_name" { type = string }

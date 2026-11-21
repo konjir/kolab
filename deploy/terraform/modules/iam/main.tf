@@ -1,7 +1,7 @@
-# The Kolab instance's role: Systems Manager access (no SSH), read its releases, admin token and database URL,
-# and the GitHub OAuth app's client id and the secret Lee puts by hand, by name (D55). Both
-# SecureStrings use the AWS-managed SSM key, whose key policy lets the account's principals decrypt
-# through SSM, so no KMS statement is needed (the admin token reads the same way).
+# The Kolab instance's role: Systems Manager access (no SSH), and reads of its releases and, by
+# name, its admin token, database URL and CLI npm spec, and the GitHub OAuth app's client id and
+# the secret Lee puts by hand (D55). The SecureStrings use the AWS-managed SSM key, whose key policy
+# lets the account's principals decrypt through SSM, so no KMS statement is needed.
 # The CloudWatch agent (P11, D68) may write Kolab's log group and put metrics in its one namespace,
 # and nothing more: no other log group, no namespace of anyone else's.
 # Nothing else: Kolab makes no model calls (REV5), so it has no Bedrock access.
@@ -101,7 +101,7 @@ resource "aws_iam_instance_profile" "kolab" {
 output "instance_profile_name" { value = aws_iam_instance_profile.kolab.name }
 output "role_arn" { value = aws_iam_role.kolab.arn }
 
-# Renamed from "hub" on 2026-10-11 (Decisions Log D11).
+# Renamed from "hub" on 2026-10-11 (D11).
 moved {
   from = aws_iam_role.hub
   to   = aws_iam_role.kolab

@@ -3,8 +3,8 @@
 # so nothing untracked or ignored can ship (.env, .claude/, .konjir/, *.tfvars), it refuses a
 # checkout with uncommitted tracked changes, so a deploy is exactly a commit, and the release id
 # is the commit's tree id without site/ (konjir.com, D81, which the zip leaves out too), which
-# changes only when Kolab's tracked content does: a site-only change is no new release. A new id updates the
-# association and re-runs the install. `terraform apply` is the deploy.
+# changes only when Kolab's tracked content does: a site-only change is no new release. A new id
+# updates the association and re-runs the install. `terraform apply` is the deploy.
 #
 # In CI (W2.23, D76) the release is built before Terraform runs: .github/workflows/deploy.yml runs
 # pack.sh once on the commit and passes its zip and release id here (release_zip, release_id), so

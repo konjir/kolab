@@ -632,7 +632,7 @@ resource "aws_iam_policy" "write" {
         Resource = local.topic
       },
       # In the konjir.com zone only, each name only with the types production gives it. Never MX, NS
-      # or CAA (the CAA record below is Lee's), and no _acme-challenge or other proof of control:
+      # or CAA (the CAA record above is Lee's), and no _acme-challenge or other proof of control:
       # - A and AAAA: kolab.konjir.com, and the marketing site's apex and www aliases;
       # - CNAME: ACM's validation records, _<32 hex>.konjir.com and _<32 hex>.www.konjir.com;
       # - TXT: _dmarc, and the apex, which holds the site module's SPF record (v=spf1 -all). Moving
@@ -693,7 +693,8 @@ resource "aws_iam_policy" "write" {
         Resource  = "*"
         Condition = local.own_stack
       },
-      # Encrypted volumes, database and SecureStrings: the AWS-managed keys only, through their services.
+      # Encrypted volumes, database and SecureStrings: the AWS-managed keys only, through their
+      # services.
       {
         Sid       = "ManagedKeys"
         Effect    = "Allow"
@@ -889,9 +890,10 @@ resource "aws_iam_policy" "roles" {
 # Without them the plan job could read the token with no alarm (only a use of it alarms), or set it
 # to a known value or to off, outside rotate-admin-token. They close the direct routes only: code an
 # approved deploy runs on an instance with the instance role (user data, a release) can still read
-# it, as #71's review accepted, under Lee's approvals and the break-glass-used alarm. DescribeParameters
-# (read policy, every parameter) still shows its metadata, never its value. The role can't undo
-# this: it may change no policy and no IAM role but the instance and snapshot roles (tests pin it).
+# it, as #71's review accepted, under the deploy's approvals and the break-glass-used alarm.
+# DescribeParameters (read policy, every parameter) still shows its metadata, never its value. The
+# role can't undo this: it may change no policy and no IAM role but the instance and snapshot roles
+# (tests pin it).
 # - Every SSM action on its ARN: GetParameter, GetParameters, GetParameterHistory, PutParameter,
 #   DeleteParameter(s), LabelParameterVersion, UnlabelParameterVersion and the tag calls.
 # - GetParametersByPath on any path, since a path's ARN isn't the token's; production needs none.

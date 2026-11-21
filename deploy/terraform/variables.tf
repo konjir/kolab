@@ -110,7 +110,8 @@ variable "cli_npm_spec" {
   type        = string
   default     = "@konjir/kolab@0.9.1"
 
-  # The server's rule, isPinnedNpmSpec in apps/server/src/kolab-server.module.ts: Kolab refuses to start on anything else.
+  # The server's rule, isPinnedNpmSpec in apps/server/src/kolab-server.module.ts: Kolab refuses to
+  # start on anything else.
   validation {
     condition     = var.cli_npm_spec == "" || can(regex("^(@[a-z0-9][a-z0-9._~-]*/)?[a-z0-9][a-z0-9._~-]*@(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$", var.cli_npm_spec))
     error_message = "cli_npm_spec is a package pinned to an exact version, such as konjir@1.2.3, or empty."

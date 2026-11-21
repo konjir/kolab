@@ -8,7 +8,7 @@ terraform {
     }
   }
 
-  # Its own state, apart from both environments', which neither deploy role can read or write.
+  # Its own state, apart from production's, which the deploy role can neither read nor write.
   backend "s3" {
     bucket       = "konjir-terraform"
     key          = "konjir/github-oidc/terraform.tfstate"

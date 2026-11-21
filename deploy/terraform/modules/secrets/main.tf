@@ -10,14 +10,14 @@ variable "name" { type = string }
 
 # The GitHub OAuth app people sign in with (D55). Its client id is public, so Terraform keeps
 # it as a String parameter. Its client secret is never Terraform's: Lee puts it himself as the
-# SecureString /konjir/<name>/github-client-secret (README, "Deploying to AWS for testing"), so it
-# is in no Terraform variable, file or state. The instance may read it by that name.
+# SecureString /konjir/<name>/github-client-secret (README, "Deploying to AWS"), so it is in no
+# Terraform variable, file or state. The instance may read it by that name.
 variable "github_client_id" {
   type    = string
   default = ""
 }
 
-# The published konjir CLI's npm spec, pinned to an exact version (W3.7). The release's start.sh
+# The published kolab CLI's npm spec, pinned to an exact version (W3.7). The release's start.sh
 # reads it as KONJIR_CLI_NPM_SPEC, so the web page shows npx commands for it. Empty: no parameter.
 variable "cli_npm_spec" {
   type    = string
