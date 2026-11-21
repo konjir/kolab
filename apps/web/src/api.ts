@@ -71,8 +71,8 @@ export interface Patience { onWait?(): void; alive?(): boolean }
 
 /**
  * Runs a call, trying again with backoff while Kolab is away (transient); any other failure is
- * thrown at once. Given up on (`alive` false) before a try or while it waits, it asks nothing more
- * and throws the last failure.
+ * thrown at once. Given up on (`alive` false), it asks nothing more after a failed try, nor once a
+ * wait between tries ends, and throws the last failure.
  */
 export async function patiently<T>(fn: () => Promise<T>, p: Patience = {}): Promise<T> {
   for (let i = 0; ; i++) {
@@ -81,7 +81,7 @@ export async function patiently<T>(fn: () => Promise<T>, p: Patience = {}): Prom
     if (!transient(failed) || p.alive?.() === false) throw failed;
     p.onWait?.();
     await clock.wait(backoff(i));
-    // As after Try again now, which starts its own tries: this one's are no use to anyone.
+    // Given up on while it waited, as when Try again now starts tries of its own: this one asks no more.
     if (p.alive?.() === false) throw failed;
   }
 }
@@ -107,8 +107,13 @@ export async function whoAmI(p: Patience & { push?: boolean; first?: boolean } =
     if (p.alive?.() === false) throw failed ?? new Error('given up');
   }
   for (let i = 0; i < 2; i++) {
-    try { return await patiently(() => api<WebMe>('me', undefined, undefined, { push: p.push }), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
-    if (i === 0) await clock.wait(RECHECK_401_MS);
+    let refused: unknown;
+    try { return await patiently(() => api<WebMe>('me', undefined, undefined, { push: p.push }), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; refused = e; }
+    if (i === 0) {
+      await clock.wait(RECHECK_401_MS);
+      // Given up on during that moment: the 401 isn't asked again.
+      if (p.alive?.() === false) throw refused;
+    }
   }
   return null;
 }
