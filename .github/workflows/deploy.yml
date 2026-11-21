@@ -32,7 +32,7 @@ name: Deploy
 # if set, comes from a repository secret.
 #
 # DEPLOY_FROM_CI is a repository variable: every job checks it is true, the deploy job again after
-# approval, so turning it off pauses deploys (deploy/RECOVERY.md relies on that).
+# approval, so turning it off pauses deploys (docs/recovery.md relies on that).
 #
 # Hardening as ci.yml: actions pinned to commit SHAs, each job with only the permissions it needs.
 # No AWS key exists: the jobs get short-lived credentials through GitHub's OIDC token.

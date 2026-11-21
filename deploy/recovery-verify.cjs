@@ -12,7 +12,7 @@
 // gone:
 // 1. Migrations: kj_migration is exactly the live release's: every file it pins, each with its
 //    checksum, and none it doesn't know. A copy behind the release is the "a release caused it"
-//    case: roll the release back first (deploy/RECOVERY.md).
+//    case: roll the release back first (docs/recovery.md).
 // 2. Tables: every table the copy's recorded migrations create is there, and it isn't empty.
 // 3. Smoke, with no write: a second Kolab from the live release, `serve --no-migrate --no-worker`,
 //    on 127.0.0.1:7499, over a read-only session (default_transaction_read_only), answers /healthz,
@@ -104,7 +104,7 @@ function checkCopy(copy) {
   if (changed.length) fail(`migrations: checksums differ from the live release's pins: ${changed.join(', ')}`);
   if (unknown.length) fail(`migrations: the copy has ${unknown.join(', ')}, which the live release doesn't know`);
   if (missing.length) {
-    fail(`migrations: the copy lacks ${missing.join(', ')}, which the live release would apply on start. If that release caused this, roll it back first (deploy/RECOVERY.md, "If a release caused it"); otherwise, restore to a later point`);
+    fail(`migrations: the copy lacks ${missing.join(', ')}, which the live release would apply on start. If that release caused this, roll it back first (docs/recovery.md, "If a release caused it"); otherwise, restore to a later point`);
   }
   if (!changed.length && !unknown.length && !missing.length) {
     pass(`migrations: ${recorded.length} recorded, through ${result.lastMigration}, exactly the live release's, each checksum as it pins it`);

@@ -2,12 +2,14 @@
 
 Milestone M1 is done when an outside team could put a real product spec on Kolab. This walkthrough shows a team doing that, end to end, in about 30 seconds: Acme's product manager and engineer each bring two agents. Together they write a small functional spec, bind it to a stack, review each other's work, ask and answer questions across the layers, change the spec and apply a ruling. A second company, Globex, then shows that it can't see any of it.
 
+**It stops at step 4 today.** It was written before each kolab had an autonomy policy (W6.2). Under the default policy only a person approves a functional version (AUT2), so the spec's review request goes to Priya alone, not to her reviewer agent, and the walkthrough's check that both are asked fails. Steps 4 to 6 and 13 assume agents review functional versions, so the walkthrough needs bringing up to date before it runs to the end again.
+
 All the work goes through the `kolab` CLI, one agent session token per agent, exactly as a harness would use it. Every step prints the commands it runs, who runs them, and the addresses involved. It then checks what Kolab did and stops at the first surprise.
 
 | File | What it is |
 | --- | --- |
-| `m1-walkthrough.mjs` | The walkthrough, plain Node 22+ with no dependencies. It needs a Kolab URL and its admin token. `cleanup <state file>` ends a run's sessions and archives what it created. |
-| `run-local.sh` | Starts a throwaway Kolab from this checkout, runs the walkthrough with a restart and the cleanup, then stops Kolab and removes it. |
+| `deploy/demo/m1-walkthrough.mjs` | The walkthrough, plain Node 22+ with no dependencies. It needs a Kolab URL and its admin token. `cleanup <state file>` ends a run's sessions and archives what it created. |
+| `deploy/demo/run-local.sh` | Starts a throwaway Kolab from this checkout, runs the walkthrough with a restart and the cleanup, then stops Kolab and removes it. |
 
 ## Running it
 
@@ -37,7 +39,7 @@ No token is printed. The agents' tokens go to the state file (`~/.konjir-demo/<r
 | --- | --- | --- |
 | `KONJIR_URL` | `http://127.0.0.1:7420/mcp` | The Kolab |
 | `KONJIR_TOKEN` or `KONJIR_ADMIN_TOKEN` | none | Its admin token |
-| `KONJIR_BIN` | this checkout's `bin/kolab`, else `kolab` on PATH | The CLI to drive, for example `npx -y @konjir/kolab@<version>` for the published client, once it is published (pin the version; an unpinned `npx kolab` runs whatever is published under that name) |
+| `KONJIR_BIN` | this checkout's `bin/kolab`, else `kolab` on PATH | The CLI to drive, for example `npx -y @konjir/kolab@<version>` for the published client (pin the version: an unpinned one runs whatever is published under that name) |
 | `KONJIR_DEMO_RUN` | the date and 4 random characters | The suffix on every name |
 | `KONJIR_DEMO_STATE` | `~/.konjir-demo/<run>.json` | The state file |
 | `KONJIR_DEMO_RULING` | `D1` | The Decisions Log id the ruling step applies. It is Acme's own log, not Konjir's. |
@@ -84,7 +86,6 @@ The IDs are the requirements of Kolab's spec, `kj:kolab/kolab`, that each step d
 
 What the walkthrough leaves out of what Kolab does today: it sets tenancy up with the admin token and hand-issued session tokens, while people sign in with GitHub and a kolab's own Admins invite and grant access on the web page; and it plans and builds no work packages (PLN). Nothing imports another tool's spec files (FIL2). Kolabs and accounts are archived, never removed (D52), and can't be renamed or transferred yet (TEN5).
 
-## Rough edges it steers around
+## A rough edge it steers around
 
-- **A link to a quoted span could be left with a mark nothing could settle** (fixed since, D50). The quoted words changing ("7 days" to "14 days") with their prefix and suffix intact gave an `orphaned` mark that `clear_mark` refused, and that revising the element, linking it again or removing the element left open. Now that edit is a change (`fuzzy_reanchor`, ADR8); linking the element to the new words in a draft re-points the link, and the mark settles when the draft commits; `konjir_unlink` removes a link in a draft, settling its mark when the draft commits; and removing the element settles its marks. Step 8 still quotes words the walkthrough never changes, and links b2 to R3 as a whole element.
 - **An agent session calling an admin verb is refused** (step 12). The CLI says it is an admin verb that only a Konjir admin's own session or the break-glass token may call (`apps/cli/src/cli.ts`).

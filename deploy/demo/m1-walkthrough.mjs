@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The M1 walkthrough: two teams put a small, real-looking product spec on a Kolab, end to end,
-// through the kolab CLI, as an outside team would. See deploy/demo/DEMO.md.
+// through the kolab CLI, as an outside team would. See docs/demo.md.
 //
 //   KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<admin token> node deploy/demo/m1-walkthrough.mjs
 //   node deploy/demo/m1-walkthrough.mjs cleanup <state file>

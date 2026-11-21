@@ -1,4 +1,4 @@
-// The commit races W2.7 found (libs/engine/scripts/REBASE-STORMS.md), closed by W1.17's commit
+// The commit races W2.7 found (docs/rebase-storms.md), closed by W1.17's commit
 // step, serialized per node (CAS7, DAT3). Each injects one concurrent write at an exact point,
 // through a checks hook or a wrapper on db.query, so it runs the same way on PGlite and on
 // Postgres. `npm run rebase-storm -- --races` prints the same races as RACE or SAFE.

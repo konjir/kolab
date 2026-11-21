@@ -25,7 +25,7 @@ output "database_endpoint" {
 }
 
 output "database_recovery" {
-  description = "What a restore needs (deploy/RECOVERY.md, deploy/recovery-drill.sh): the database's identifier, its URL's SSM parameter, its subnet group, security group, class, storage type and backup retention."
+  description = "What a restore needs (docs/recovery.md, deploy/recovery-drill.sh): the database's identifier, its URL's SSM parameter, its subnet group, security group, class, storage type and backup retention."
   value       = module.database.recovery
 }
 
