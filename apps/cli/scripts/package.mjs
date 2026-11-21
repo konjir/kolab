@@ -7,7 +7,7 @@
 //   node scripts/package.mjs bun <dir>           -> installs the pinned Bun for this machine in <dir>, verified
 //
 // Both builds are one bundle, kolab.mjs, of the CLI and everything it imports (scripts/bundle.mjs,
-// with Bun): the npm package ships it, with no dependencies, so npx kolab works without this
+// with Bun): the npm package ships it, with no dependencies, so npx @konjir/kolab works without this
 // workspace, and each binary is compiled from it. @konjir/server isn't in it: it brings the
 // database, and only `kolab serve` loads it, so the published kolab has no serve (the CLI says
 // so). Of the @konjir/* packages only @konjir/login, the OAuth client and credentials store `kolab

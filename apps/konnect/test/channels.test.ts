@@ -1,7 +1,7 @@
 // konnect's channels end to end, against a Kolab started here (test/team.ts): two people in a
 // channel, a mention resolved from the words, each person's own place, `konnect receive` of
 // everything, `konnect channel list|create|follow|unfollow`, and the last line that says what else
-// waits. Then `konnect mcp`: an MCP client drives its five tools as an agent, and its instructions
+// waits. Then `konnect mcp`: an MCP client drives its eight tools as an agent, and its instructions
 // are the agent's system prompt.
 import { expect, test } from '@jest/globals';
 import { Client } from '@modelcontextprotocol/client';

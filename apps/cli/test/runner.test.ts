@@ -80,9 +80,9 @@ function repository(opts: { fork?: boolean; failWorktrees?: boolean } = {}) {
  * prompt) in <its dir>/<job>.json, then does what modes.json says for its job: `wait` (until
  * <job>.go appears, or SIGTERM, when it writes <job>.stopped and exits 143), `commit` (commits a
  * file and exits 0), `deliver` (commits with its trailer, runs kolab from PATH to deliver and submit
- * it and its guard hook on a delete, records what they said in <job>.konjir.json, and exits 0), `branch` (commits on a branch of its own, goes back to where it started and
- * exits 0), `leak` (prints its token, split across two writes, and exits 0) or `fail` (prints boom
- * and exits 3). It reads nothing from the environment but what a harness is given.
+ * it and its guard hook on a delete, records what they said in <job>.konjir.json, and exits 0),
+ * `branch` (commits on a branch of its own, goes back to where it started and exits 0), `leak`
+ * (prints its token, split across two writes, and exits 0) or `fail` (prints boom and exits 3). It reads nothing from the environment but what a harness is given.
  */
 function standIn(top: string, modes: Record<string, string> = {}) {
   const dir = join(top, 'standin');

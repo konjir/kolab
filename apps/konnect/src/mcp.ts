@@ -96,7 +96,7 @@ export function sessionGone(e: unknown): boolean {
 }
 
 /**
- * The server, connected to `transport`: its five tools, and the agent's session to the service.
+ * The server, connected to `transport`: its eight tools, and the agent's session to the service.
  * Resolves with it once connected; `close` ends both.
  */
 export async function serveMcp(opts: McpOptions, transport: Transport): Promise<{ server: McpServer; close: () => Promise<void>; readonly bridge: KolabBridge | undefined; readonly instructions: string }> {

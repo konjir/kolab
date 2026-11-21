@@ -1,6 +1,6 @@
 // konnect is Apache-2.0 (as kolab is, D63) and the rest of this repository FSL-1.1-ALv2 (D64): the
-// published konnect.mjs may carry the first-party source of apps/konnect, libs/login and libs/brand
-// alone (scripts/package.mjs fails the build on anything else, through tools/npm-bundle.mjs). The
+// published konnect.mjs may carry the first-party source of apps/konnect, libs/login, libs/brand
+// and the channel bridge's subscription alone (scripts/package.mjs fails the build on anything else, through tools/npm-bundle.mjs). The
 // check is tested here on inputs a bundle could have, and, where the pinned Bun is installed, on the
 // real bundle's (CI's "Build konnect" job always builds it).
 import { execFileSync } from 'node:child_process';

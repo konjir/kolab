@@ -1,8 +1,9 @@
 /**
- * Kolab's own words for the CLI, as the kolab command says them. Until the server words its texts
- * for the kolab CLI (step 1b of docs/plans/rebrand-and-site.md, for a client that says it is
- * `kolab`), the server and @konjir/login tell a person to run `konjir login`, `konjir connect`
- * and the like, the command's name before the rename. Where kolab, or its channel, prints such a
+ * Kolab's own words for the CLI, as the kolab command says them. The server words its texts for a
+ * client that says it is `kolab` (KOLAB_CLIENT; step 1b of docs/plans/rebrand-and-site.md), but
+ * @konjir/login's own texts, and the server's wherever that opt-in doesn't reach, still tell a
+ * person to run `konjir login`, `konjir connect` and the like, the command's name before the
+ * rename. Where kolab, or its channel, prints such a
  * text, it says `kolab` instead, as konnect's konnectWords makes them konnect's. Only the
  * command followed by one of its own subcommands changes: `konjir_<verb>` tools, `kj:` and
  * `konjir://` addresses, `konjir-<label>` entries and `konjir kolab:…` scopes stay as they are.
