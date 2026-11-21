@@ -8,7 +8,7 @@ Where this plan contradicts the kolab (D11, D63, D81, D94; the binding's API6, I
 
 Shipped and deployed:
 - The konnect guard (#179): the server logs each client's name and version, and CI runs every published konnect against every server change.
-- Step 1a (#180): the CLI is `@konjir/kolab`, command `kolab`. 0.9.0 is on npm, published by the workflow with provenance, and the web page's `npx` line names it (#185).
+- Step 1a (#180): the CLI is `@konjir/kolab`, command `kolab`. 0.9.0 is on npm, published by the workflow with provenance, and the web page's `npx` line names it (#185). 0.9.1, with the `--help` fix, is `latest` (the release fix, #194), and the tutorial and the web page's `npx` line name it (#196); 0.8.1, published in error, is deprecated.
 - Step 1b (#186): the server says `kolab`; errors and sign-in pages do only for a client that says it is kolab.
 - Step 2 (#178): www.konjir.com with `/`, `/kolab/`, `/konnect/`, and the old paths redirect. konjir.com served the same pages until it began redirecting to www (below).
 - Steps 3–5 (#183, #182, #184, #181): the org page, the reworked Kolab page with its working mark demo, `/kolab/how-it-works/`, and the konnect page. The tutorial installs `@konjir/kolab` (#188).
@@ -17,9 +17,8 @@ Shipped and deployed:
 - konjir.com redirects to www.konjir.com (Lee, 2026-11-20): every request to the apex is a 301 to the same path and query on www, a moved page's straight to its new path. Known consequence: a browser that still holds the old uncached www-to-apex 301 for a www URL it visited before 2026-11-19, `https://www.konjir.com/` above all, loops on that URL. The fix for an affected visitor is to clear the browser's cached data for konjir.com and www.konjir.com; otherwise it ages out of the browser's cache. URLs that never existed on www before, and the moved pages, aren't affected.
 
 Left:
-- Lee: release 0.9.1, so the published CLI has the `--help` fix (in 0.9.0, `kolab logout --help` signs out). Then the tutorial's install line and `cli_npm_spec` move to it.
 - Lee: the text of a privacy policy and terms, and a contact, for the footer.
-- Follow-ups: the site's media queries in `min-width`/`max-width` form, for Safari before 16.4; the web page's retry sends one stale request per press (apps/web/src/api.ts `patiently`); konnect's `hosts` and `review` tests time out now and then on CI's Postgres job.
+- Follow-ups: the site's media queries in `min-width`/`max-width` form, for Safari before 16.4; the web page's retry sends one stale request per press (apps/web/src/api.ts `patiently`); two konnect tests that fail now and then on CI's Postgres job (#195 fixed the others): `channels.test.ts`, where an agent's background read starts its place in a new channel while it is still empty, so a message that doesn't mention it is unread too (what an agent's place in an empty channel should be is a question for the server), and `agent-messages.test.ts`'s unread count.
 - Later, Lee's call: reconciling the kolab (D11, D63, D81, D94 and the binding elements above).
 
 ## Decisions
@@ -127,7 +126,7 @@ In order. Step 2 ships before any content changes, so every later step only chan
 - The login store path stays where it is, so existing sign-ins carry over.
 - `README.npm.md` and the package's `homepage` point at `https://www.konjir.com/kolab/`; `@konjir/konnect`'s at `https://www.konjir.com/konnect/`.
 - **Lee's step:** npm trusted publishing for `@konjir/kolab`. Change `tools/npm-trust.sh` to the new name and run it after `npm login`, as was done for `konjir` and `@konjir/konnect`.
-- **1b, done:** the server's texts say `kolab` as *What 1b did* (above) says: outright where no released client reads them, and in errors and sign-in pages only for a client that says it is kolab. The web page's `npx` line shows what `KONJIR_CLI_NPM_SPEC` names, `@konjir/kolab@0.9.0` from the first release, `@konjir/kolab@0.9.1` since 2026-11-21.
+- **1b, done:** the server's texts say `kolab` as *What 1b did* (above) says: outright where no released client reads them, and in errors and sign-in pages only for a client that says it is kolab. The web page's `npx` line shows what `KONJIR_CLI_NPM_SPEC` names, `@konjir/kolab@0.9.0` from the first release, `@konjir/kolab@0.9.1` since #196.
 - **Known consequence of leaving `konjir` alone:** once the server's texts say `kolab`, anyone still on konjir@0.8.0 is told to run a command they don't have, in instructions, descriptions and hints (its errors keep `konjir`). The release notes and the site's install lines say to install `@konjir/kolab`.
 
 ### 2. Split the site, with no change to content
