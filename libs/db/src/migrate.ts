@@ -242,7 +242,7 @@ export async function migrate(
 /**
  * Checks, writing nothing, that the database is at exactly this release's migrations: each one
  * recorded with its file's checksum, and none this release doesn't have. It is for a Kolab
- * started without migrating (`konjir serve --no-migrate`: a restore's smoke check, W2.24), which
+ * started without migrating (`kolab serve --no-migrate`: a restore's smoke check, W2.24), which
  * must never change the database it opens, so it refuses any database that `migrate` would change.
  */
 export async function checkMigrations(

@@ -220,7 +220,7 @@ export const MATCH_MAX_BITS = 32;
 /**
  * Below this many characters (code points), a near match needs its recorded context to agree.
  * At 4 characters one edit is exactly the threshold, so "cart" would otherwise re-anchor to
- * any "card"; by 10, it takes three edits elsewhere to pass for the quote.
+ * any "card"; by 10, a word must be within two edits of the quote to pass for it.
  */
 export const SHORT_QUOTE = 10;
 
@@ -572,8 +572,8 @@ type Reach = 'anchored' | 'local' | 'whole';
  * How far from loc a match may be:
  *   whole    - Hypothesis's setting: a match the whole text away costs 0.5, so
  *              loc steers ties without excluding distant matches
- *   local    - about a quote's length either side of where the context points,
- *              and at least 500 characters
+ *   local    - about 500 characters and a quote's length either side of where
+ *              the context points
  *   anchored - right where the context points: a match a quote's length away
  *              costs a full 1.0, so a closer, more edited match wins over a
  *              verbatim one elsewhere

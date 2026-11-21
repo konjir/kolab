@@ -9,9 +9,9 @@ import type {
 } from './index.js';
 
 /**
- * A work package's state on its binding's page (PLN12, W5.1b, D104), read only: where it stands, who holds
- * it and until when, and why it is blocked. Agents pull and release through MCP; the page has no
- * board yet (M6).
+ * A work package's state on its binding's page (PLN12, W5.1b, D104), read only: where it stands,
+ * who holds it and until when, and why it is blocked. Agents pull and release through MCP; the page
+ * has no board yet (M6).
  */
 export interface WebWorkState {
   state: WorkState; assignee: string | null; lease_until: string | null; blocked: WorkBlock[]; milestone: boolean; at_risk?: true;
@@ -29,7 +29,7 @@ export const REFRESH_HEADER = 'x-konjir-refresh';
 export interface WebSignInMethods { provider: string | null; token: boolean }
 
 /**
- * How this Kolab says to get the konjir CLI (W3.7): `npm` is the published package spec its
+ * How this Kolab says to get the kolab CLI (W3.7): `npm` is the published package spec its
  * operator set (KONJIR_CLI_NPM_SPEC, pinned to an exact version), for `npx <npm> …`; null while the
  * package isn't published, when the page shows a checkout's `bin/kolab` instead, and says so.
  */
@@ -256,7 +256,6 @@ export interface WebWorkView extends WebPaged {
   work: (WorkItemView & { yours: boolean })[];
 }
 
-/** A version in review that waits for the session's verdict. */
 /** A version in review that waits for the session's verdict; with `product_review`, a binding's product review (VER13), from a product session. */
 export interface WebVersionReview { kind: 'version'; subject: string; node: string; seq: number; author: string; at: string; product_review?: true }
 
@@ -289,8 +288,10 @@ export interface WebReviewsView extends WebPaged {
   for_me: (WebVersionReview | WebWorkReview)[];
   mine: { subject: string; node: string; seq: number; state: VersionState; note: string | null;
     verdicts: { reviewer: string; state: string; note: string | null }[] }[];
-  /** Verdicts the person's agents gave, newest first: what was reviewed on their behalf. */
-  /** A version's verdict has its `seq`, a work package's its `element`. */
+  /**
+   * Verdicts the person's agents gave, newest first: what was reviewed on their behalf. A version's
+   * verdict has its `seq`, a work package's its `element`.
+   */
   by_agents: { subject: string; node: string; seq: number | null; element: string | null; reviewer: string; state: 'approved' | 'changes_requested'; note: string | null; at: string; product_review?: true }[];
 }
 

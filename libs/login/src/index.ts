@@ -1,14 +1,14 @@
 /**
- * `konjir login`: one command connects a shell harness to Kolab, with no admin (W3.4, D55). The CLI
+ * `kolab login`: one command connects a shell harness to Kolab, with no admin (W3.4, D55). The CLI
  * signs in as any MCP client does, through Kolab's OAuth 2.1 authorization server: it registers
  * itself (RFC 7591) as a public client whose redirect is a loopback address (RFC 8252), opens the
  * browser at Kolab's sign-in, where the person signs in with GitHub and chooses who the CLI works as
  * (an agent of theirs by default, D30), in which kolab and role, and receives the code on a port of
  * its own on 127.0.0.1. Its tokens are kept in a file only the person can read, and every later
- * `konjir` command uses them, refreshing the 15-minute access token as it expires. `konjir logout`
+ * `kolab` command uses them, refreshing the 15-minute access token as it expires. `kolab logout`
  * revokes the grant and forgets them.
  *
- * Several konjir processes may share the file at once (a `konjir watch` beside other commands, a
+ * Several konjir processes may share the file at once (a `kolab watch` beside other commands, a
  * harness's parallel calls). Kolab's refresh tokens rotate, and one used twice is refused, so the
  * file has a lock: every write takes it, and a refresh holds it from reading the refresh token to
  * saving the next one. A process that finds its access token refused while another refreshed waits
@@ -107,7 +107,7 @@ export function keptSignIns(path: string = credentialsPath()): string[] {
 
 /**
  * Where one agent's own sign-in is kept, apart from the CLI's: `agents/<agent>.json` beside the
- * credentials file. `konjir connect claude` signs each Konjir channel entry in there (W3.8), and the
+ * credentials file. `kolab connect claude` signs each Konjir channel entry in there (W3.8), and the
  * channel bridge started with KONJIR_AGENT uses it, so two entries, each its own agent, never share
  * one sign-in. The agent's id is a Kolab actor id, checked, so it can't name a path elsewhere.
  */
@@ -143,7 +143,7 @@ const LOCK_TOUCH_MS = 10_000;
 const LOCK_WAIT_MS = 40_000;
 /**
  * The longest one hold may last: a refresh takes well under a second. Past it the heartbeat stops
- * and the lock is let go, so a hold leaked by an error that escaped the SDK (in a long `konjir
+ * and the lock is let go, so a hold leaked by an error that escaped the SDK (in a long `kolab
  * watch`, say) never keeps other konjir waiting.
  */
 const LOCK_MAX_HOLD_MS = 30_000;
@@ -319,7 +319,8 @@ class Store {
           if (statSync(dir).mode & 0o022) console.error(`warning: others may write in ${dir}, which holds your konjir sign-in (${this.path}); konjir leaves the folder as it is`);
         } catch { /* made just now */ }
       }
-      // Written whole to a new file of a random name (a `.tmp` left behind only if the write or rename throws) (O_EXCL: never through a link someone left there), then moved into place.
+      // Written whole to a new file of a random name, with O_EXCL so never through a link someone
+      // left there, then moved into place; a `.tmp` is left behind only if the write or rename throws.
       const tmp = `${this.path}.${randomBytes(8).toString('hex')}.tmp`;
       writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600, flag: 'wx' });
       renameSync(tmp, this.path);
@@ -337,7 +338,7 @@ function bearerOf(init?: RequestInit): string | undefined {
 
 /**
  * The CLI as an OAuth client of one Kolab, its state in the credentials file. Interactive (during
- * `konjir login`), it sends the person to the browser; otherwise, a sign-in that is needed again is
+ * `kolab login`), it sends the person to the browser; otherwise, a sign-in that is needed again is
  * an error saying to run `konjir login`.
  */
 export class StoredLogin implements OAuthClientProvider {
@@ -347,7 +348,7 @@ export class StoredLogin implements OAuthClientProvider {
   private readonly owner = `p${process.pid}_${randomBytes(12).toString('hex')}`;
   /** The refresh token this instance last read to refresh with: the only one it may forget. */
   private refreshing?: string;
-  /** With `fresh` (a new `konjir login`), whether this instance has saved its own tokens yet: until it has, it sees none. */
+  /** With `fresh` (a new `kolab login`), whether this instance has saved its own tokens yet: until it has, it sees none. */
   private savedOwn = false;
   /** The registration this instance saved, if any: what its own tokens were issued to. */
   private ownClient?: StoredOAuthClientInformation;
@@ -358,7 +359,7 @@ export class StoredLogin implements OAuthClientProvider {
    * `fresh`: a new sign-in, which ignores the tokens kept from before (they stay kept, and working,
    * until it saves its own). `yieldTo`, with `fresh`: the refresh token kept when it started ('' for
    * none); if, when it saves, another konjir has kept a sign-in since, that one is kept and this
-   * one's tokens are revoked (the channel bridge's own sign-in yields to a `konjir login`).
+   * one's tokens are revoked (the channel bridge's own sign-in yields to a `kolab login`).
    * `lockWaitMs`: how long to wait for another konjir's lock. The URL must be https, or http on
    * loopback (checkKolabUrl).
    */
@@ -377,7 +378,7 @@ export class StoredLogin implements OAuthClientProvider {
   }
   state() { return this.expectedState; }
   /**
-   * This instance's own registration once it has one (a fresh sign-in), so a `konjir login` that
+   * This instance's own registration once it has one (a fresh sign-in), so a `kolab login` that
    * registered meanwhile can't swap the client its code was issued to; otherwise the one kept.
    */
   clientInformation() { return this.ownClient ?? this.store.get(this.url).client; }
@@ -661,22 +662,22 @@ async function signInWithBrowser<P extends OAuthClientProvider & { expectedState
 }
 
 /**
- * How long `konjir login` (and the channel's own sign-in) waits for the person in the browser: as
+ * How long `kolab login` (and the channel's own sign-in) waits for the person in the browser: as
  * long as Kolab's sign-in page lasts, 20 minutes (its oauth.requestTtlS), so neither gives up while
  * the other still waits (W5.7).
  */
 export const SIGN_IN_WAIT_MS = 20 * 60_000;
 
 /**
- * Signs in (`konjir login`): `scope` may preselect the kolab and role on Kolab's page
+ * Signs in (`kolab login`): `scope` may preselect the kolab and role on Kolab's page
  * (`konjir kolab:<name> role:<role>`). `open` is how the person's browser is sent to Kolab; by
  * default it is opened, and the URL printed to `log`. A sign-in kept from before is revoked first,
  * so no grant is left behind. Resolves once the CLI's session works, with who it is.
  *
  * `yieldTo`: the sign-in yields (see StoredLogin) to any kept since that refresh token was seen
  * ('' for none), as the caller saw it under the lock; never read here, where another konjir's
- * could slip in first. The reverse race, a `konjir login` that started first and saves last, keeps
- * the later one and leaves the other's grant to lapse unused within 30 days, as two `konjir login`s
+ * could slip in first. The reverse race, a `kolab login` that started first and saves last, keeps
+ * the later one and leaves the other's grant to lapse unused within 30 days, as two `kolab login`s
  * at once always have.
  */
 export async function login(url: string, opts: { path?: string; clientName?: string; yieldTo?: string } & BrowserOpts = {}) {
@@ -802,7 +803,7 @@ export function signInToTeam(url: string, name: string, opts: { path?: string; c
 }
 
 /**
- * A sign-in kept in this process's memory only, never written anywhere: `konjir connect`'s setup
+ * A sign-in kept in this process's memory only, never written anywhere: `kolab connect`'s setup
  * (setup), whose token is used once, then revoked.
  */
 export class MemoryLogin implements OAuthClientProvider {
@@ -837,11 +838,11 @@ export class MemoryLogin implements OAuthClientProvider {
   }
 }
 
-/** One agent a setup set up (konjir connect): made now or found again, and, when its sign-in was issued, its tokens. */
+/** One agent a setup set up (kolab connect): made now or found again, and, when its sign-in was issued, its tokens. */
 export interface SetupAgent { label: string; agent: string; role: string; made: boolean; tokens?: StoredOAuthTokens }
 
 /**
- * What a setup gives konjir connect: who allowed it, the kolab (made now or theirs already), each
+ * What a setup gives kolab connect: who allowed it, the kolab (made now or theirs already), each
  * agent, and the client its agents' sign-ins were issued to, with what was discovered of Kolab, so
  * each agent's credentials file holds what that agent's own browser sign-in would have kept.
  */
@@ -851,7 +852,7 @@ export interface SetupDone {
 }
 
 /**
- * `konjir connect`'s one sign-in (Lee's instruction of 2026-11-01): the browser opens once, at
+ * `kolab connect`'s one sign-in (Lee's instruction of 2026-11-01): the browser opens once, at
  * Kolab's setup page, whose scope (`konjir kolab:<k> setup:<label>:<role> …`) names the kolab and
  * the agents; the person signs in and allows it there. Its code is exchanged, as any code is, for a
  * setup token, kept in memory only and used once, at Kolab's POST /oauth/setup: with `mint`, Kolab
@@ -904,7 +905,7 @@ export async function setup(url: string, opts: { scope: string; mint: boolean; c
       })),
     };
   } finally {
-    // Used up already when it worked; revoked anyway, so a setup token never outlives konjir connect.
+    // Used up already when it worked; revoked anyway, so a setup token never outlives kolab connect.
     await fetch(new URL('/oauth/revoke', url), {
       method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ token, token_type_hint: 'access_token', client_id: client.client_id }).toString(),
@@ -913,7 +914,7 @@ export async function setup(url: string, opts: { scope: string; mint: boolean; c
 }
 
 /**
- * Revokes sign-ins a setup issued (konjir connect, when something after the setup fails): each
+ * Revokes sign-ins a setup issued (kolab connect, when something after the setup fails): each
  * refresh token, which revokes its grant and ends its session, at Kolab's own /oauth/revoke, by the
  * client it was issued to. Returns how many Kolab confirmed; never throws.
  */
@@ -943,7 +944,7 @@ export async function keepSignIn(url: string, path: string, saved: { client: Sto
 }
 
 /**
- * `konjir logout`: revokes the grant at Kolab (RFC 7009), then forgets the sign-in. If Kolab can't
+ * `kolab logout`: revokes the grant at Kolab (RFC 7009), then forgets the sign-in. If Kolab can't
  * be reached, or refuses, the sign-in is kept, so the person can try again, and this throws, saying
  * so; with `forget`, it is forgotten anyway, unrevoked, and that is said too.
  */
