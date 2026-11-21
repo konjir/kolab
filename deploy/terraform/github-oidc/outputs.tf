@@ -9,7 +9,7 @@ output "subject" {
 }
 
 output "install_document" {
-  description = "The SSM document deploy/terraform's release module installs with (its install_document variable)."
+  description = "The SSM document deploy/terraform's release module installs with, by its name, <name>-install-release."
   value       = aws_ssm_document.install.name
 }
 

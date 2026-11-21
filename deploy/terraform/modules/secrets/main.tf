@@ -61,7 +61,7 @@ output "github_client_secret_param_name" { value = local.github_client_secret_na
 resource "aws_ssm_parameter" "cli_npm_spec" {
   count       = var.cli_npm_spec == "" ? 0 : 1
   name        = "/konjir/${var.name}/cli-npm-spec"
-  description = "The published konjir CLI's npm spec, pinned to an exact version, that Kolab's web page shows (W3.7)"
+  description = "The published kolab CLI's npm spec, pinned to an exact version, that Kolab's web page shows (W3.7)"
   type        = "String"
   value       = var.cli_npm_spec
 }

@@ -221,7 +221,7 @@ jobs:
           role: ${{ env.ROLE }}
           release: ${{ needs.release.outputs.release }}
 
-      - name: Plan again, and check it is the plan Lee read
+      - name: Plan again, and check it is the plan that was approved
         env:
           APPROVED: ${{ needs.plan.outputs.digest }}
         run: |

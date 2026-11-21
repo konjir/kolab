@@ -1270,7 +1270,7 @@ export class Kolab {
     });
     if (r?.state === 'dead') {
       // One line, at error level, with event outbox_job_dead: the deployed stack's metric filter
-      // counts these, and its alarm emails the operator (P11, D68; README: Alarms).
+      // counts these, and its alarm emails the operator (P11, D68; README: Logs and alarms).
       log.error(`outbox job ${job.kind} for version ${job.versionId} is dead after ${r.attempts} failed attempts. `
         + 'No worker runs it, or any later cascade of its node, until an admin retries it (konjir_admin_outbox retry=<id>).',
       { event: 'outbox_job_dead', id: r.id, job: job.kind, version: job.versionId, kolab: r.kolab_id, attempts: r.attempts, error });
