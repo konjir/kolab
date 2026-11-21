@@ -298,7 +298,7 @@ ${canServe ? `Server: kolab serve [--port 7420] [--data .konjir | --database-url
         [--no-migrate] [--no-worker] [--quiet]
         Kolab runs structural checks only and makes no model calls; reviewing agents review.
         --no-migrate applies no migration (a database that needs one is refused) and --no-worker runs no
-        outbox jobs, so a restored database can be checked without changing it (deploy/RECOVERY.md). --quiet
+        outbox jobs, so a restored database can be checked without changing it (docs/recovery.md). --quiet
         doesn't print the admin token a local Kolab makes when none is given. KONJIR_KOLABS_PER_PERSON caps how many
         kolabs of their own a person may make.
         The admin token (or KONJIR_ADMIN_TOKEN) is a break-glass only: Konjir's admins are people who sign in as

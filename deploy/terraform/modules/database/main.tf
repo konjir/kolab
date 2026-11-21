@@ -6,7 +6,7 @@
 # Recovery (P12, D75, D81; W2.24): the automated backups give point-in-time recovery to any second
 # from the last 7 days up to the latest restorable time. RDS uploads the log every 5 minutes, so a
 # restore can lose up to about 5 to 6 minutes of writes. Deletion protection is on, and deleting the instance keeps those backups (and a final
-# snapshot) unless the teardown asks to leave nothing. deploy/RECOVERY.md is the runbook, and
+# snapshot) unless the teardown asks to leave nothing. docs/recovery.md is the runbook, and
 # deploy/recovery-drill.sh the drill.
 
 variable "name" { type = string }
@@ -92,7 +92,7 @@ output "endpoint" { value = aws_db_instance.this.endpoint }
 output "identifier" { value = aws_db_instance.this.identifier }
 output "ca_path" { value = local.ca_path }
 
-# What a restore into a new instance needs (deploy/RECOVERY.md), from state, so it works when the
+# What a restore into a new instance needs (docs/recovery.md), from state, so it works when the
 # instance itself is gone.
 output "recovery" {
   value = {

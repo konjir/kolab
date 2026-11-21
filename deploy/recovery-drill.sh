@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The restore drill (P12, D75, D81; W2.24), and the restore runbook's verify step (deploy/RECOVERY.md).
+# The restore drill (P12, D75, D81; W2.24), and the restore runbook's verify step (docs/recovery.md).
 #
 #   deploy/recovery-drill.sh --env production
 #        restore the stack's latest restorable time into a scratch RDS instance, <db>-drill-<UTC date-time>;
@@ -18,7 +18,7 @@
 # a line in stack_of. Its state is read as deploy/konjir-ops.sh reads it: with W2.23's
 # environments/<env>.s3.tfbackend in its own TF_DATA_DIR, if that file exists, or production's one state.
 # The state's database and the SSM parameter holding its URL must both have that environment's
-# names, or it refuses; `vars` prints them, for the runbook (deploy/RECOVERY.md). It never
+# names, or it refuses; `vars` prints them, for the runbook (docs/recovery.md). It never
 # modifies, restarts or deletes the stack's database, and never changes a parameter: the database is
 # only described, restored from, and read through read-only sessions. The scratch instance gets the
 # stack's subnet group, security group and class, so only Kolab's instance can reach it, and costs
@@ -233,7 +233,7 @@ drill_exit() {
 
 drill() {
   local status retention latest kolab ping scratch leftovers t_start t_avail t_verified lag verified=0 last="" s
-  exists "$DB" || die "$ENV's database $DB not found; the drill restores a running database (deploy/RECOVERY.md covers a lost one)"
+  exists "$DB" || die "$ENV's database $DB not found; the drill restores a running database (docs/recovery.md covers a lost one)"
   status="$(field "$DB" DBInstanceStatus)"
   retention="$(field "$DB" BackupRetentionPeriod)"
   latest="$(field "$DB" LatestRestorableTime)"

@@ -32,7 +32,7 @@ Or point it at a Kolab server with a session token:
 export KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<your session token>
 kolab whoami
 kolab instructions          # the operating rules and precedent: read this first
-kolab tools                 # every verb with its parameters
+kolab tools                 # every verb with its parameters (also at https://github.com/konjir/kolab/blob/main/docs/verbs.md)
 kolab login --help          # any command's usage, flags and an example (-h too)
 kolab watch --once          # wait for the next change to your inbox
 ```
@@ -54,4 +54,4 @@ This package is the client and the channel. Kolab itself, and `kolab serve`, run
 
 ## Licence
 
-kolab is licensed under the [Apache License 2.0](LICENSE). The packages it bundles keep their own licences, which are in `THIRD-PARTY-NOTICES.md`; the single-file binaries carry the same `LICENSE` and notices on each GitHub release.
+kolab is licensed under the [Apache License 2.0](https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE). The packages it bundles keep their own licences, which are in `THIRD-PARTY-NOTICES.md`; the single-file binaries carry the same `LICENSE` and notices on each GitHub release.

@@ -1,6 +1,6 @@
 # Recovering Kolab's database
 
-The targets (P12, D75, D81): a recovery point at RDS's documented guarantee, through point-in-time recovery, and a restore in under 1 hour, proven by a restore drill. RDS uploads the log every 5 minutes, so a restore can lose up to about 5 to 6 minutes of writes, and each drill records the real figure (D81). This runbook is the written procedure, and `deploy/recovery-drill.sh` is the drill. Export per kolab comes later, with the FIL file format.
+The targets (P12, D75, D81): a recovery point at RDS's documented guarantee, through point-in-time recovery, and a restore in under 1 hour, proven by a restore drill. RDS uploads the log every 5 minutes, so a restore can lose up to about 5 to 6 minutes of writes, and each drill records the real figure (D81). This runbook is the written procedure, and `deploy/recovery-drill.sh` is the drill. [`README.md`](../README.md), *Deploying to AWS*, says how production is deployed.
 
 **Who does what.** Lee, the operator, runs every step from a checkout with the `icedlee337` profile. The one exception is a Terraform apply: it runs in CI (D73, W2.23), approved in the `production` environment by Claude, after reading the plan, or by Lee (D107). An agent may prepare commands and read their output, but it doesn't run the steps that change production, which are 4 to 7, nor step 2, which creates a billed instance.
 

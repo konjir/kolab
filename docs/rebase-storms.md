@@ -1,6 +1,8 @@
 # Rebase storms (W2.7, CAS8)
 
-What one parent commit costs when many variants inherit from it, measured on 16 October 2026 with [`rebase-storm.ts`](rebase-storm.ts). This file records the numbers and a recommendation. The limit, if any, is Lee's ruling. The engine wasn't changed.
+A record of measurements taken in October 2026, kept for the figures and the recommendation. The script that took them, `npm run rebase-storm`, prints its results rather than writing this file, and it needs bringing up to date before it runs again: it builds variants of a spec in the parent's own kolab, which one spec per kolab (KON1) now refuses.
+
+What one parent commit costs when many variants inherit from it, measured on 16 October 2026 with [`rebase-storm.ts`](../libs/engine/scripts/rebase-storm.ts). This file records the numbers and a recommendation. The limit, if any, is Lee's ruling. The engine wasn't changed.
 
 **Since this report:** W1.17 made each node's commit step serial, as recommended below, and closed bugs 1 and 2. `--races` now prints `SAFE` for all four races on both backends, and `libs/engine/test/concurrency.test.ts` runs them as tests. Race 2a now starts the human's commit at the storm's version-number read without awaiting it there, since that read now holds the variant's lock. The measurements below were taken before W1.17.
 
