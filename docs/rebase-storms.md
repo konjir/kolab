@@ -1,10 +1,10 @@
 # Rebase storms (W2.7, CAS8)
 
-A record of measurements taken in October 2026, kept for the figures and the recommendation. The script that took them, `npm run rebase-storm`, prints its results rather than writing this file, and it needs bringing up to date before it runs again: it builds variants of a spec in the parent's own kolab, which one spec per kolab (KON1) now refuses.
+A record of measurements taken in October 2026, and taken again in November 2026, kept for the figures and the recommendation. The script that took them, `npm run rebase-storm`, prints its results rather than writing this file.
 
 What one parent commit costs when many variants inherit from it, measured on 16 October 2026 with [`rebase-storm.ts`](../libs/engine/scripts/rebase-storm.ts). This file records the numbers and a recommendation. The limit, if any, is Lee's ruling. The engine wasn't changed.
 
-**Since this report:** W1.17 made each node's commit step serial, as recommended below, and closed bugs 1 and 2. `--races` now prints `SAFE` for all four races on both backends, and `libs/engine/test/concurrency.test.ts` runs them as tests. Race 2a now starts the human's commit at the storm's version-number read without awaiting it there, since that read now holds the variant's lock. The measurements below were taken before W1.17.
+**Since this report:** W1.17 made each node's commit step serial, as recommended below, and closed bugs 1 and 2. `--races` now prints `SAFE` for all four races on both backends, and `libs/engine/test/concurrency.test.ts` runs them as tests. Race 2a now starts the human's commit at the storm's version-number read without awaiting it there, since that read now holds the variant's lock. October's measurements below were taken before W1.17.
 
 **Since P6 (PR #40, D43):** the parent's commit no longer waits for the storm. It queues one `rebase` job per variant and returns, and the outbox worker rebases them level by level, one variant per job. The script now times both: `commitMs`, what the parent's author waits, and `ms`, the commit plus every rebase, with this process draining the outbox at once as a worker would. On 18 October 2026, on the same machine, PGlite, E = 20 and 100, K = 10, three runs each with the median shown. The load average was 5 to 6 while these ran, other agents' work included, so the figures are comparable with each other but not with the tables below. The pre-P6 column ran the engine as merged on main (5540d3d) over the same shapes, at a load average of 2 to 5, about half an hour later:
 
@@ -16,6 +16,8 @@ What one parent commit costs when many variants inherit from it, measured on 16 
 | 100 | 200 × 5 × 1 | 1,000 | 114 | 59,980 (60) | not run | 180 / not run |
 
 The parent's commit now returns in 59 to 114 ms, against 3 to 60 s for the whole storm. The storm as a whole costs 3% to 20% more, which comes to 5 statements more per rebase. Those are the job's claim, its delete in a transaction of its own that checks for a rerun, the commit step's listing of the rebase's own variants and its delete of moot jobs, and the cascade's second listing. Each rebase also takes about one more transaction. A separate count of one 50-variant storm at E = 20, K = 1 gives 75.7 statements per rebase against 70.7, and at E = 100, 157.3 against 152.3. The longest transaction is unchanged, since a job never holds more than one rebase's. Postgres was not rerun for this note.
+
+**Since one spec per kolab (KON1, KON9):** a kolab holds exactly one spec, so the script now builds each variant as a fork: the one spec of a kolab of its own, written by a person of its own (a person holds one hand-issued session at a time), who reads its parent's kolab. On 20 and 21 November 2026 it ran the whole grid again on PGlite, three runs per shape, on the same machine, with the script as PR #208 left it. [Results](#results) and [the full grid](#the-full-grid) give those figures, with October's beside them. The Postgres grid was not rerun: the PGlite grid alone took 2 hours 40 minutes on a busy machine. `--races` printed `SAFE` for every race on both backends, and `--probe` ran on both, with the change to when its storm ends that this file's update brings (see *Other writers during a storm*).
 
 ## What was measured
 
@@ -29,47 +31,61 @@ For each storm the script counts:
 - the SQL statements and transactions run, and the longest transaction
 - the peak resident memory of the Node process
 
-It ran on PGlite in process, and on Postgres 18 (`postgres:18-alpine` in Docker 28.4, through Testcontainers, as a non-superuser like the RDS master user), on an Apple M3 Max with 14 cores and 36 GB. The machine was shared with other work, so its load varied. A probe mode also runs other writers during a storm, and a races mode reproduces the races it found.
+In October it ran on PGlite in process, and on Postgres 18 (`postgres:18-alpine` in Docker 28.4, through Testcontainers, as a non-superuser like the RDS master user), on an Apple M3 Max with 14 cores and 36 GB. The machine was shared with other work, so its load varied. A probe mode also runs other writers during a storm, and a races mode reproduces the races it found.
 
 The grid is E ∈ {20, 100}, K ∈ {1, 10}, D ∈ {1, 3, 5} and W ∈ {1, 10, 50, 200} with B = 1, plus branching trees with B = 2 and D = 5. That makes 54 shapes per backend, up to 1,000 variants. Each backend first runs one throwaway warm-up storm. Each shape then runs three times, each on a fresh database, and the tables report the run with the median time. Three Postgres shapes were still noisy after that, all three runs slow while the machine was busy. They were rerun alone, five times each, and those medians are marked \* below. One earlier, single-run PGlite storm used 2,000 variants. No storm went over the 60 s budget. The grid stops at 1,000 variants because building the families takes as long as the storms do. With three runs per shape, the grid took 22 minutes on PGlite and 26 on Postgres.
 
 ## Results
 
-### Cost is linear in the number of variants, at about 10 to 33 ms each
+The figures below are from the grid run again on 20 and 21 November 2026, on PGlite, with each variant a fork in a kolab of its own (see *Since one spec per kolab* above). Each table also gives October's figures, for the same shapes, built in one kolab before KON1. Postgres was not rerun for the grid, so its October figures are the latest.
+
+### Cost is linear in the number of variants, at about 21 to 48 ms each
 
 With K = 10, so each run commits ten changed elements. Each figure is the median of three runs:
 
-| E | W × D × B | Variants | Rebased, per depth | PGlite ms (ms per rebase) | Postgres ms (ms per rebase) | Statements per rebase | Transactions per rebase | Longest transaction, PGlite / Postgres (ms) | Marks (all `override_stale`) = queries |
+| E | W × D × B | Variants | Rebased, per depth | PGlite ms (ms per rebase) | Statements per rebase | Transactions per rebase | Longest transaction (ms) | Marks (all `override_stale`) = queries | October: PGlite / Postgres ms (ms per rebase), statements per rebase |
 |---|---|---|---|---|---|---|---|---|---|
-| 20 | 10 × 1 × 1 | 10 | 10 | 140 (14) | 151 (15.1) | 78 | 7.7 | 8 / 9.5 | 22 |
-| 20 | 200 × 1 × 1 | 200 | 200 | 2,205 (11) | 2,543 (12.7) | 70 | 7 | 7.4 / 9.9 | 400 |
-| 20 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 526 (10.5) | 590 (11.8) | 66 | 5.9 | 6.9 / 9.8 | 70 |
-| 20 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 2,613 (10.5) | 2,882 (11.5) | 65 | 5.8 | 6.8 / 9.6 | 350 |
-| 20 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 11,202 (11.2) | 12,239 (12.2) | 65 | 5.8 | 10.4 / 11.2 | 1,400 |
-| 20 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 4,951 (10) | 5,656 (11.4) | 63 | 5.2 | 7 / 10.9 | 550 |
-| 100 | 10 × 1 × 1 | 10 | 10 | 286 (28.6) | 324 (32.4) | 175 | 5.9 | 22.9 / 32 | 13 |
-| 100 | 200 × 1 × 1 | 200 | 200 | 4,904 (24.5) | 6,086 (30.4) | 167 | 7 | 25.7 / 37.2 | 400 |
-| 100 | 50 × 3 × 1 | 150 | 50/50/50 | 3,464 (23.1) | 4,334 (28.9) | 160 | 5.2 | 22.2 / 62.1 | 167 |
-| 100 | 200 × 3 × 1 | 600 | 200/200/200 | 14,592 (24.3) | 18,563 (30.9) | 159 | 5.3 | 24.7 / 58.2 | 680 |
-| 100 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 5,635 (22.5) | 7,417 (29.7) | 158 | 4.9 | 22.6 / 35 | 237 |
-| 100 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 27,135 (27.1) | 32,964 (33) | 158 | 4.9 | 23.5 / 53.9 | 960 |
-| 100 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 11,492 (23.2) | 14,957 (30.2) | 158 | 4.9 | 25 / 38.6 | 466 |
+| 20 | 10 × 1 × 1 | 10 | 10 | 289 (28.9) | 131 | 9.6 | 20.8 | 22 | 140 (14) / 151 (15.1), 78 |
+| 20 | 200 × 1 × 1 | 200 | 200 | 4,956 (24.8) | 119 | 9 | 30.2 | 400 | 2,205 (11) / 2,543 (12.7), 70 |
+| 20 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 1,224 (24.5) | 116 | 8.5 | 22.9 | 70 | 526 (10.5) / 590 (11.8), 66 |
+| 20 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 6,510 (26) | 114 | 8.4 | 32.8 | 350 | 2,613 (10.5) / 2,882 (11.5), 65 |
+| 20 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 27,851 (27.9) | 114 | 8.4 | 200.1 | 1,400 | 11,202 (11.2) / 12,239 (12.2), 65 |
+| 20 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 12,559 (25.3) | 112 | 8.1 | 61.9 | 550 | 4,951 (10) / 5,656 (11.4), 63 |
+| 100 | 10 × 1 × 1 | 10 | 10 | 476 (47.6) | 228 | 8.7 | 61.9 | 13 | 286 (28.6) / 324 (32.4), 175 |
+| 100 | 200 × 1 × 1 | 200 | 200 | 8,179 (40.9) | 215 | 9 | 73.3 | 400 | 4,904 (24.5) / 6,086 (30.4), 167 |
+| 100 | 50 × 3 × 1 | 150 | 50/50/50 | 6,352 (42.3) | 209 | 8.1 | 75 | 167 | 3,464 (23.1) / 4,334 (28.9), 160 |
+| 100 | 200 × 3 × 1 | 600 | 200/200/200 | 26,988 (45) | 208 | 8.1 | 97.5 | 680 | 14,592 (24.3) / 18,563 (30.9), 159 |
+| 100 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 10,866 (43.5) | 207 | 8 | 80.8 | 237 | 5,635 (22.5) / 7,417 (29.7), 158 |
+| 100 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 45,746 (45.7) | 207 | 8 | 194.1 | 960 | 27,135 (27.1) / 32,964 (33), 158 |
+| 100 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 21,651 (43.7) | 207 | 7.9 | 88.4 | 466 | 11,492 (23.2) / 14,957 (30.2), 158 |
 
-Every variant was rebased exactly once, and every rebase committed. The counts of statements, transactions, marks and queries were identical on both backends and across repeated runs. Only the times vary. [The full grid](#the-full-grid), with every run's time, is at the end of this file.
+Every variant was rebased exactly once, and every rebase committed. The counts of marks and queries match October's in every shape of the grid. Only the times, statements and transactions changed. [The full grid](#the-full-grid), with every run's time, is at the end of this file.
 
-- **Time is linear in V, the total number of variants, and depth only matters as a multiplier of V.** The cost per rebase stays flat from 10 variants to 1,000. With E = 20 and at least 10 variants, it's 8 to 15 ms per rebase on both backends. Trees of 3 or 5 variants cost a little more per rebase, up to 15.9 ms on PGlite and 19.8 ms on Postgres, and the single-variant rows include the parent's own commit. The single PGlite storm with 2,000 variants (E = 20, W = 400, D = 5, K = 1) took 20.8 s, or 10.4 ms per rebase. Ten roots five deep cost the same as fifty roots one deep. A deep chain is no worse per variant than a wide fan, and a branching tree (B = 2) costs the same per variant as chains. To a good approximation, the parent's commit takes V × (6 + 0.25 × E) ms.
-- **Element count drives the cost per rebase.** A rebase runs about 55 + E statements, because `writeVersion` inserts every materialized element one row at a time, whether or not it changed. Going from 20 to 100 elements raises the cost from about 11 ms to about 21 to 29 ms per rebase on PGlite, and 26 to 33 ms on Postgres. K changes it only a little: about 10 more statements per rebase, for the marks and queries.
-- **Postgres is usually slower than PGlite** at the same shape: 8% to 32% in the table above, and 6% to 43% in 49 of the full grid's 54 shapes. Writing shapes as E/K/W × D × B, the other five are: 20/10/50 × 1 × 1, 11% faster on Postgres; 20/1/50 × 5 × 1 and 100/10/50 × 1 × 1, the same on both; and two small shapes, 20/1/1 × 5 × 1 and 100/1/1 × 3 × 1, 87% and 232% slower. PGlite's runs spread widely in the first three, and the last one's Postgres runs ranged from 265 to 519 ms. The gap tends to grow with E, since each statement is a round trip to the container rather than a call into the same process. An earlier version of this report used one run per shape. In it the Postgres 200 × 1 × 1 row above took 4,311 ms, which made Postgres look twice as slow; as a median of three it takes 2,543 ms.
-- **Every variant is re-minted, even when nothing it shows changed.** With K = 1 a variant that overrides the changed element ends up with identical content, and it still gets a new version. That new version cascades to its own children. This is the "lockstep re-versioning" Prior Art warns about. Here it costs a version per descendant rather than a mark per dependent.
-- **Marks flood the inbox.** Each dirty override on each variant opens one `override_stale` mark and one query. With E = 20 and K = 10, one parent commit put 1,400 marks and 1,400 queries into the functional inbox at 1,000 variants, and 400 at 200 variants. No other reason appeared, because the measured families have no dependency edges into the variants. With edges, each rebased version also re-checks its inbound edges (cascade steps 1 to 3), so marks would grow further.
-- **Memory is not a concern.** The runs used `--expose-gc`, so each baseline was taken after a collection. On Postgres the Node process's resident set grew by at most 4 MB during a storm, and stayed between 200 and 240 MB. On PGlite the resident set is 350 MB to 1.2 GB before a storm, mostly the WASM heap of this and earlier storms' databases, and grew by at most 190 MB. Resident-set growth is still an upper bound on what the storm itself needs, since collection can lag.
+- **Time is still linear in V, the total number of variants, and depth still only matters as a multiplier of V.** The cost per rebase stays flat from 10 variants to 1,000: 21 to 29 ms per rebase at E = 20, and 40 to 48 ms at E = 100. The exceptions are the single-variant rows, which include the parent's own commit, the trees of 3 to 5 variants (up to 70 ms), and one noisy shape, 10 variants at E = 100 and K = 1, at 128 ms per rebase, with a 251 ms transaction. A branching tree (B = 2) costs the same per variant as chains. To a good approximation, a storm now takes V × (20 + 0.25 × E) ms, against October's V × (6 + 0.25 × E).
+- **Each rebase runs about 50 more statements than in October.** At K = 1 a rebase runs about 85 + E statements, against October's 55 + E: 105 at E = 20, and 201 at E = 100. The extra 50 is the same at both sizes, so it isn't per element. It comes from the forks, each in its own kolab with its own holder, and from what the engine has added since October (the outbox, P6's jobs, work packages, the autonomy policy). This run doesn't separate the two. With that, a rebase costs about twice what it did in October: 24 to 29 ms against 10 to 14 ms at E = 20, and 41 to 48 ms against 23 to 29 ms at E = 100, with K = 10.
+- **The parent's commit call, and the longest transaction, now grow with the number of forks on the server.** The parent's commit returns in 31 to 150 ms in every shape up to 250 variants but the noisy one (278 ms). It takes 210 to 300 ms at 600 variants, and 450 to 530 ms at 1,000, although `P` has 200 children in each of the shapes with W = 200. The longest transaction is 14 to 81 ms in the same shapes, the noisy one aside, about 95 ms at 600 and about 200 ms at 1,000. Building a family slows down the same way: 15 to 28 s for 200 variants, but 6 to 8 minutes for 1,000. Each fork adds a kolab, a person, a grant and a session, so some step of a write seems to read more as those grow. The run doesn't say which, and a server with 1,000 kolabs is far beyond today's.
+- **Every variant is re-minted, even when nothing it shows changed.** This is unchanged since October. With K = 1 a variant that overrides the changed element ends up with identical content, and it still gets a new version, which cascades to its own children. This is the "lockstep re-versioning" Prior Art warns about.
+- **Marks flood the inbox.** Unchanged too: each dirty override on each variant opens one `override_stale` mark and one query. With E = 20 and K = 10, one parent commit put 1,400 marks and 1,400 queries into the variants' inboxes at 1,000 variants, and 400 at 200 variants. Each fork's marks are in its own kolab's inbox now, rather than all in one. No other reason appeared.
+- **Memory is not a concern.** The run used `--expose-gc`. The resident set was 470 MB to 1.3 GB, mostly the WASM heap of this and earlier storms' databases, and grew by at most 190 MB during a storm, as in October.
+- **The machine was busier than in October.** The load average was 20 to 26 for most of the run, other agents' work included, against 2 to 6 in October. That inflates every time here by an amount the run can't measure. The counts of statements, transactions, marks and queries don't depend on it.
 
-### Transactions are short, but the committer waits for the whole storm
+### Transactions are short, and the committer no longer waits for the storm
 
-- **A storm is not one transaction.** Each rebase writes in its own short transaction, for the version, elements and deltas, and then in a few more for review state, supersede, marks and queries. That makes about 3 transactions per rebase, plus 2 for each dirty override (a mark and its query): 3.2 to 7.7 per rebase in the grid's shapes of 10 or more variants, up to 10.7 in its trees of 3 to 5 variants, and 3,200 to 5,800 for its storms of 1,000 variants, the most at E = 20 and K = 10. In the median runs the longest was 4.5 to 30 ms on PGlite and 6 to 62 ms on Postgres, except for one PGlite outlier of 41 ms, in 100/10/50 × 1 × 1, whose runs spread from 1,369 to 2,248 ms, and one Postgres outlier of 93 ms, in the noisy 100/1/1 × 3 × 1. The busy Postgres grid runs that were rerun for the rows marked \* reached 147 and 217 ms. Transactions took 48% to 89% of the storm's wall time, all of it in those short bursts. So no lock is held across the storm, and no table or node is locked while it runs.
-- **The parent's author is blocked for the whole storm.** `commit`, and through it `konjir_commit` over MCP, returns only after the last descendant is rebased: 11 to 12 s for 1,000 small variants, and 27 to 33 s for 1,000 variants of 100 elements. Those times are already near common HTTP client timeouts. A timeout would leave the client unsure whether the commit happened. The parent version is in fact committed before the first rebase starts.
+- **A storm is not one transaction.** Each rebase writes in a few short transactions of its own: 7.1 to 9.6 per rebase in the grid's shapes of 10 or more variants, against October's 3.2 to 7.7. Transactions took 59% to 80% of the storm's wall time, all of it in short bursts. The longest stays short, apart from its growth with the number of forks (above). No lock is held across the storm, and no table or node is locked while it runs.
+- **The parent's author waits only for the parent's own commit (P6, D43).** In October, before P6, `commit` returned only after the last descendant was rebased: 11 to 12 s for 1,000 small variants, and 27 to 33 s at 100 elements. Now it returns once `P` is committed and its variants' rebases are queued, in 31 to 531 ms here, and the outbox worker runs the storm: 25 to 28 s for 1,000 small variants, and 42 to 46 s at 100 elements.
 
 ### Other writers during a storm: no blocking, but two correctness bugs
+
+On 21 November 2026, with W1.17 and P6 in place and each variant a fork, `--probe` lost no edit and raised no error on either backend, and left no variant behind its parent. Since P6 its storm is the parent's commit plus the outbox work that carries `P`'s new version to every variant; it ends once each variant's live version descends from that version, since the variant writer's own edits keep queueing rebases of their children and the outbox would never empty while it runs. It then stops the writers and drains the outbox before it counts variants behind their parent, so that count means a variant no queued work would catch up. One run each:
+
+| Backend | Shape | Storm | Unrelated commit p50 / max, idle → during (ms) | Variant edit p50 / max, idle → during (ms) | Human edits committed / lost | Errors |
+|---|---|---|---|---|---|---|
+| PGlite | 150 variants, E = 20 | 22.7 s | 47 / 49 → 145 / 185 | 70 / 71 → 161 / 264 | 138 / 0 | none |
+| PGlite | 250 variants, E = 100 | 114.6 s | 68 / 70 → 318 / 421 | 202 / 206 → 341 / 589 | 323 / 0 | none |
+| Postgres | 150 variants, E = 20 | 9.0 s | 74 / 79 → 81 / 110 | 97 / 106 → 116 / 174 | 87 / 0 | none |
+| Postgres | 250 variants, E = 100 | 36.4 s | 109 / 113 → 136 / 181 | 284 / 292 → 304 / 401 | 126 / 0 | none |
+
+The storms take longer than October's because each rebase costs about twice as much, the variant writer's edits are rebased inside them, and the PGlite run shared the machine at a load average of about 24. The rest of this section is October's, from before W1.17.
 
 `--probe` runs two writers in a loop while the parent commits, with E = 20, W = 50, D = 3 (150 variants) and with E = 100, W = 50, D = 5 (250 variants). One writer commits to a node outside the family. The other commits human edits to the variants, in reverse creation order. The cascade's child query has no order, so this makes it likely, but not certain, that edits land on variants still waiting for their rebase. `--races`, described under bug 1, is the deterministic version. The probe's timings vary widely between runs, partly because the variant writer triggers extra catch-up rebases inside the timed storm: a review of this PR measured 50.6 s for the second PGlite storm below. Its results, from one run each:
 
@@ -109,6 +125,8 @@ An earlier Postgres probe run failed the storm's commit in both shapes, leaving 
 
 **No cap on inheritance depth or variant count yet. Make each node's commit step serial first (W1.17). Then move rebasing off the commit call before any kolab has more than about 100 descendants under one node.** Lee to rule.
 
+This is October's recommendation. W1.17 and P6 have since done items 2 and 3. November's run changes item 1's formula to V × (20 + 0.25 × E) ms, and adds one thing to watch: the parent's commit and the longest transaction grow with the number of forks on the server.
+
 1. **No depth or count limit is needed now.** The cost is linear and doesn't grow worse with depth: a parent commit takes about V × (6 + 0.25 × E) ms. Today's kolabs, Kolab's own included, have a handful of variants. At 50 variants a storm takes 0.5 to 1.5 s, and nothing is locked for longer than one rebase. A depth cap would protect nothing, since depth costs only by adding variants. A count cap would refuse legitimate work to hide a latency problem that has a better fix (item 3).
 2. **Both bugs need the fix at any scale, and it is one fix.** One concurrent write is enough to trigger either bug, and a limit closes neither. Both have the same root cause:
    - **Drafts don't record their base**, the live version they were built from.
@@ -133,8 +151,8 @@ The CAS8 Today column can move from "not measured yet" to measured, with no limi
 ## How to rerun
 
 ```
-npm run rebase-storm                            # the grid on PGlite, 3 runs per shape: about 22 minutes
-npm run rebase-storm -- --postgres              # the grid on Postgres 18 in a container: about 26 minutes, needs Docker
+npm run rebase-storm                            # the grid on PGlite, 3 runs per shape: 2 h 40 min in November, 22 min in October
+npm run rebase-storm -- --postgres              # the grid on Postgres 18 in a container: 26 min in October, needs Docker
 npm run rebase-storm -- --races [--postgres]    # deterministic reproductions of the races, in seconds; all SAFE since W1.17
 npm run rebase-storm -- --probe [--postgres]    # other writers during a storm
 npm run rebase-storm -- --E 100 --W 50 --D 3 --B 1 --K 10 --F 0.2   # one shape
@@ -145,63 +163,63 @@ Before measuring, each run does one throwaway warm-up storm. Each storm prints a
 
 ## The full grid
 
-F = 0.2 throughout. "ms" is the parent's commit call, which includes every rebase, as the median of three runs; the runs columns give each run's time in ms. The longest transaction is shown in ms, from the median run. Rows marked \* were rerun alone, five times, after their grid runs were all slow while the machine was busy.
+F = 0.2 throughout. November's run, on PGlite, with each variant a fork in a kolab of its own. "ms" is the storm: the parent's commit and every rebase it queues, as the median of three runs; the runs column gives each run's time in ms. The longest transaction is from the median run. The last column gives October's figures for the same shape, built in one kolab, its times from before P6.
 
-| E | K | W × D × B | V | Rebased per depth | PGlite ms (per rebase) | Postgres ms (per rebase) | PGlite runs | Postgres runs | Statements per rebase | Transactions per rebase | Longest tx, PGlite / Postgres | Marks = queries |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| 20 | 1 | 1 × 1 × 1 | 1 | 1 | 21 (21.4) | 26 (26) | 21/22/21 | 24/26/33 | 116 | 8 | 4.9 / 5.9 | 1 |
-| 20 | 1 | 10 × 1 × 1 | 10 | 10 | 93 (9.3) | 120 (12) | 92/94/93 | 151/120/113 | 60 | 3.5 | 4.5 / 6.6 | 1 |
-| 20 | 1 | 50 × 1 × 1 | 50 | 50 | 423 (8.5) | 484 (9.7) | 426/423/418 | 496/469/484 | 57 | 3.4 | 5.4 / 6 | 9 |
-| 20 | 1 | 200 × 1 × 1 | 200 | 200 | 1,667 (8.3) | 1,860 (9.3) | 1681/1667/1662 | 1867/1860/1851 | 56 | 3.4 | 4.8 / 6.7 | 40 |
-| 20 | 1 | 1 × 3 × 1 | 3 | 1/1/1 | 37 (12.4) | 44 (14.8) | 37/40/37 | 44/41/55 | 75 | 4.7 | 5 / 5.6 | 1 |
-| 20 | 1 | 10 × 3 × 1 | 30 | 10/10/10 | 268 (8.9) | 286 (9.5) | 261/271/268 | 300/283/286 | 57 | 3.4 | 4.8 / 6.4 | 5 |
-| 20 | 1 | 50 × 3 × 1 | 150 | 50/50/50 | 1,255 (8.4) | 1,410 (9.4) | 1290/1254/1255 | 1410/1410/1439 | 56 | 3.4 | 4.7 / 7.1 | 29 |
-| 20 | 1 | 200 × 3 × 1 | 600 | 200/200/200 | 5,168 (8.6) | 5,745 (9.6) | 5168/5186/5165 | 5745/5736/7280 | 56 | 3.4 | 11.7 / 7.5 | 120 |
-| 20 | 1 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 53 (10.6) | 99 (19.8) | 53/53/55 | 80/99/100 | 66 | 4 | 5.1 / 9.2 | 1 |
-| 20 | 1 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 411 (8.2) | 496 (9.9)\* | 429/409/411 | 528/523/490/496/485\* (grid: 1485/1618/1746) | 56 | 3.3 | 4.6 / 7.6 | 7 |
-| 20 | 1 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 2,372 (9.5) | 2,364 (9.5) | 2038/2372/2587 | 2463/2364/2362 | 55 | 3.3 | 11.7 / 9 | 37 |
-| 20 | 1 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 9,624 (9.6) | 10,495 (10.5) | 9286/9624/14186 | 12435/10263/10495 | 55 | 3.3 | 14.8 / 13.8 | 150 |
-| 20 | 10 | 1 × 1 × 1 | 1 | 1 | 32 (32.2) | 38 (37.8) | 119/32/29 | 38/33/44 | 149 | 14 | 8.9 / 8.7 | 4 |
-| 20 | 10 | 10 × 1 × 1 | 10 | 10 | 140 (14) | 151 (15.1) | 145/140/136 | 169/151/142 | 78 | 7.7 | 8 / 9.5 | 22 |
-| 20 | 10 | 50 × 1 × 1 | 50 | 50 | 724 (14.5) | 647 (12.9) | 617/724/835 | 631/661/647 | 72 | 7.1 | 17 / 9.6 | 102 |
-| 20 | 10 | 200 × 1 × 1 | 200 | 200 | 2,205 (11) | 2,543 (12.7) | 2298/2205/2185 | 2660/2528/2543 | 70 | 7 | 7.4 / 9.9 | 400 |
-| 20 | 10 | 1 × 3 × 1 | 3 | 1/1/1 | 48 (15.9) | 59 (19.8) | 48/48/47 | 54/59/64 | 94 | 8.7 | 7.1 / 9.3 | 7 |
-| 20 | 10 | 10 × 3 × 1 | 30 | 10/10/10 | 331 (11) | 398 (13.3) | 331/326/333 | 407/398/394 | 73 | 7.2 | 7 / 9.3 | 62 |
-| 20 | 10 | 50 × 3 × 1 | 150 | 50/50/50 | 1,643 (11) | 1,928 (12.9) | 1578/1663/1643 | 1928/1894/1929 | 71 | 7 | 6.6 / 9.8 | 302 |
-| 20 | 10 | 200 × 3 × 1 | 600 | 200/200/200 | 6,926 (11.5) | 7,762 (12.9) | 6609/6926/9269 | 7762/8387/7693 | 70 | 7 | 8.9 / 9.9 | 1,200 |
-| 20 | 10 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 72 (14.4) | 76 (15.2) | 72/72/74 | 75/76/80 | 79 | 6.8 | 9 / 9.3 | 8 |
-| 20 | 10 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 526 (10.5) | 590 (11.8) | 548/526/520 | 590/588/595 | 66 | 5.9 | 6.9 / 9.8 | 70 |
-| 20 | 10 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 2,613 (10.5) | 2,882 (11.5) | 2558/2613/2847 | 2964/2820/2882 | 65 | 5.8 | 6.8 / 9.6 | 350 |
-| 20 | 10 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 11,202 (11.2) | 12,239 (12.2) | 13055/11202/10966 | 12165/12239/12258 | 65 | 5.8 | 10.4 / 11.2 | 1,400 |
-| 100 | 1 | 1 × 1 × 1 | 1 | 1 | 49 (48.5) | 65 (65.3) | 47/52/49 | 65/64/74 | 292 | 8 | 19.5 / 28.4 | 1 |
-| 100 | 1 | 10 × 1 × 1 | 10 | 10 | 226 (22.6) | 292 (29.2) | 224/226/257 | 292/293/292 | 164 | 3.5 | 18.7 / 25.1 | 1 |
-| 100 | 1 | 50 × 1 × 1 | 50 | 50 | 1,111 (22.2) | 1,347 (26.9) | 1243/1111/1053 | 1459/1344/1347 | 154 | 3.4 | 19.9 / 32.8 | 9 |
-| 100 | 1 | 200 × 1 × 1 | 200 | 200 | 4,222 (21.1) | 5,636 (28.2)\* | 4252/4222/4218 | 5728/5471/5423/5702/5636\* (grid: 5436/14179/7952) | 152 | 3.4 | 18.9 / 34.1 | 40 |
-| 100 | 1 | 1 × 3 × 1 | 3 | 1/1/1 | 87 (29.1) | 289 (96.3) | 87/91/87 | 265/519/289 | 197 | 4.7 | 18.7 / 93.3 | 1 |
-| 100 | 1 | 10 × 3 × 1 | 30 | 10/10/10 | 626 (20.9) | 891 (29.7)\* | 626/656/621 | 1012/891/876/917/862\* (grid: 1278/994/800) | 156 | 3.4 | 18.7 / 32.2 | 4 |
-| 100 | 1 | 50 × 3 × 1 | 150 | 50/50/50 | 3,126 (20.8) | 3,908 (26.1) | 3832/3126/3115 | 3892/3933/3908 | 152 | 3.2 | 21.9 / 30 | 17 |
-| 100 | 1 | 200 × 3 × 1 | 600 | 200/200/200 | 13,933 (23.2) | 16,661 (27.8) | 14335/13465/13933 | 16617/16661/16784 | 151 | 3.2 | 26.1 / 52.3 | 68 |
-| 100 | 1 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 128 (25.6) | 161 (32.2) | 138/126/128 | 161/154/167 | 178 | 4 | 19 / 28.8 | 1 |
-| 100 | 1 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 1,034 (20.7) | 1,311 (26.2) | 1135/1034/1029 | 1320/1311/1307 | 153 | 3.2 | 19.4 / 28 | 4 |
-| 100 | 1 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 5,738 (23) | 6,586 (26.3) | 5232/6526/5738 | 6586/6651/6536 | 151 | 3.2 | 30.2 / 36.7 | 24 |
-| 100 | 1 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 24,368 (24.4) | 29,336 (29.3) | 24422/24145/24368 | 29336/29161/31070 | 151 | 3.2 | 19.8 / 56.9 | 100 |
-| 100 | 10 | 1 × 1 × 1 | 1 | 1 | 62 (61.8) | 88 (87.5) | 61/62/66 | 84/88/97 | 373 | 26 | 21.3 / 30.3 | 10 |
-| 100 | 10 | 10 × 1 × 1 | 10 | 10 | 286 (28.6) | 324 (32.4) | 263/286/353 | 341/324/324 | 175 | 5.9 | 22.9 / 32 | 13 |
-| 100 | 10 | 50 × 1 × 1 | 50 | 50 | 1,471 (29.4) | 1,474 (29.5) | 2248/1369/1471 | 1455/1487/1474 | 169 | 7 | 41.2 / 34 | 98 |
-| 100 | 10 | 200 × 1 × 1 | 200 | 200 | 4,904 (24.5) | 6,086 (30.4) | 4896/4930/4904 | 6066/6210/6086 | 167 | 7 | 25.7 / 37.2 | 400 |
-| 100 | 10 | 1 × 3 × 1 | 3 | 1/1/1 | 104 (34.5) | 129 (43.1) | 105/104/102 | 133/129/128 | 224 | 10.7 | 20.7 / 29.7 | 10 |
-| 100 | 10 | 10 × 3 × 1 | 30 | 10/10/10 | 674 (22.5) | 893 (29.8) | 678/674/672 | 853/893/898 | 165 | 5.6 | 20.8 / 30.8 | 37 |
-| 100 | 10 | 50 × 3 × 1 | 150 | 50/50/50 | 3,464 (23.1) | 4,334 (28.9) | 3353/3465/3464 | 4316/4560/4334 | 160 | 5.2 | 22.2 / 62.1 | 167 |
-| 100 | 10 | 200 × 3 × 1 | 600 | 200/200/200 | 14,592 (24.3) | 18,563 (30.9) | 14592/17527/14486 | 18563/18176/19398 | 159 | 5.3 | 24.7 / 58.2 | 680 |
-| 100 | 10 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 152 (30.5) | 217 (43.4) | 152/153/144 | 226/217/199 | 195 | 7.6 | 23.1 / 33.9 | 10 |
-| 100 | 10 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 1,316 (26.3) | 1,416 (28.3) | 1083/1316/1577 | 1419/1408/1416 | 160 | 4.9 | 24.4 / 34.5 | 45 |
-| 100 | 10 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 5,635 (22.5) | 7,417 (29.7) | 6257/5561/5635 | 7417/7478/7195 | 158 | 4.9 | 22.6 / 35 | 237 |
-| 100 | 10 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 27,135 (27.1) | 32,964 (33) | 27135/28528/25521 | 32964/32393/33452 | 158 | 4.9 | 23.5 / 53.9 | 960 |
-| 20 | 10 | 1 × 5 × 2 | 31 | 1/2/4/8/16 | 291 (9.4) | 345 (11.1) | 289/294/291 | 353/345/340 | 63 | 4.9 | 6.8 / 9.2 | 28 |
-| 20 | 10 | 4 × 5 × 2 | 124 | 4/8/16/32/64 | 1,192 (9.6) | 1,545 (12.5) | 1195/1180/1192 | 1474/1545/1588 | 63 | 5.3 | 6.6 / 12.3 | 139 |
-| 20 | 10 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 4,951 (10) | 5,656 (11.4) | 4951/5406/4827 | 5924/5656/5450 | 63 | 5.2 | 7 / 10.9 | 550 |
-| 100 | 10 | 1 × 5 × 2 | 31 | 1/2/4/8/16 | 676 (21.8) | 845 (27.2) | 687/676/662 | 845/831/848 | 157 | 3.7 | 20.8 / 36.6 | 10 |
-| 100 | 10 | 4 × 5 × 2 | 124 | 4/8/16/32/64 | 2,707 (21.8) | 3,550 (28.6) | 2713/2707/2704 | 3577/3400/3550 | 159 | 5 | 20.6 / 34.9 | 123 |
-| 100 | 10 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 11,492 (23.2) | 14,957 (30.2) | 13464/11492/11413 | 15040/14957/14452 | 158 | 4.9 | 25 / 38.6 | 466 |
+| E | K | W × D × B | V | Rebased per depth | PGlite ms (per rebase) | PGlite runs | Statements per rebase | Transactions per rebase | Longest tx (ms) | Marks = queries | October: PGlite / Postgres ms (per rebase), statements per rebase |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 20 | 1 | 1 × 1 × 1 | 1 | 1 | 55 (55.4) | 55/57/55 | 213 | 12 | 13.8 | 1 | 21 (21.4) / 26 (26), 116 |
+| 20 | 1 | 10 × 1 × 1 | 10 | 10 | 242 (24.2) | 242/242/238 | 115 | 7.5 | 13.6 | 1 | 93 (9.3) / 120 (12), 60 |
+| 20 | 1 | 50 × 1 × 1 | 50 | 50 | 1,071 (21.4) | 1077/1071/1067 | 107 | 7.3 | 13.9 | 9 | 423 (8.5) / 484 (9.7), 57 |
+| 20 | 1 | 200 × 1 × 1 | 200 | 200 | 4,314 (21.6) | 4268/4429/4314 | 106 | 7.2 | 30.4 | 40 | 1,667 (8.3) / 1,860 (9.3), 56 |
+| 20 | 1 | 1 × 3 × 1 | 3 | 1/1/1 | 97 (32.4) | 96/97/98 | 140 | 8.7 | 14.1 | 1 | 37 (12.4) / 44 (14.8), 75 |
+| 20 | 1 | 10 × 3 × 1 | 30 | 10/10/10 | 656 (21.9) | 652/656/656 | 109 | 7.3 | 13.8 | 5 | 268 (8.9) / 286 (9.5), 57 |
+| 20 | 1 | 50 × 3 × 1 | 150 | 50/50/50 | 3,218 (21.5) | 3395/3218/3183 | 106 | 7.2 | 16.8 | 29 | 1,255 (8.4) / 1,410 (9.4), 56 |
+| 20 | 1 | 200 × 3 × 1 | 600 | 200/200/200 | 13,993 (23.3) | 13993/13590/14288 | 106 | 7.2 | 93.8 | 120 | 5,168 (8.6) / 5,745 (9.6), 56 |
+| 20 | 1 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 147 (29.4) | 146/147/148 | 126 | 8 | 14.5 | 1 | 53 (10.6) / 99 (19.8), 66 |
+| 20 | 1 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 1,161 (23.2) | 1115/1161/1163 | 107 | 7.2 | 15.3 | 7 | 411 (8.2) / 496 (9.9), 56 |
+| 20 | 1 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 5,306 (21.2) | 5306/5234/5492 | 105 | 7.2 | 27.4 | 37 | 2,372 (9.5) / 2,364 (9.5), 55 |
+| 20 | 1 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 24,780 (24.8) | 24780/26796/24730 | 105 | 7.2 | 199.3 | 150 | 9,624 (9.6) / 10,495 (10.5), 55 |
+| 20 | 10 | 1 × 1 × 1 | 1 | 1 | 70 (70.5) | 70/70/73 | 243 | 15 | 21.8 | 4 | 32 (32.2) / 38 (37.8), 149 |
+| 20 | 10 | 10 × 1 × 1 | 10 | 10 | 289 (28.9) | 289/287/292 | 131 | 9.6 | 20.8 | 22 | 140 (14) / 151 (15.1), 78 |
+| 20 | 10 | 50 × 1 × 1 | 50 | 50 | 1,261 (25.2) | 1261/1326/1251 | 121 | 9.1 | 21.8 | 102 | 724 (14.5) / 647 (12.9), 72 |
+| 20 | 10 | 200 × 1 × 1 | 200 | 200 | 4,956 (24.8) | 5133/4956/4931 | 119 | 9 | 30.2 | 400 | 2,205 (11) / 2,543 (12.7), 70 |
+| 20 | 10 | 1 × 3 × 1 | 3 | 1/1/1 | 112 (37.5) | 112/111/157 | 157 | 10.7 | 20.1 | 7 | 48 (15.9) / 59 (19.8), 94 |
+| 20 | 10 | 10 × 3 × 1 | 30 | 10/10/10 | 729 (24.3) | 729/726/766 | 122 | 9.2 | 20.5 | 62 | 331 (11) / 398 (13.3), 73 |
+| 20 | 10 | 50 × 3 × 1 | 150 | 50/50/50 | 3,579 (23.9) | 3579/3525/3766 | 119 | 9 | 22.3 | 302 | 1,643 (11) / 1,928 (12.9), 71 |
+| 20 | 10 | 200 × 3 × 1 | 600 | 200/200/200 | 15,971 (26.6) | 16666/15774/15971 | 118 | 9 | 94.9 | 1,200 | 6,926 (11.5) / 7,762 (12.9), 70 |
+| 20 | 10 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 163 (32.7) | 163/165/163 | 137 | 9.4 | 21.4 | 8 | 72 (14.4) / 76 (15.2), 79 |
+| 20 | 10 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 1,224 (24.5) | 1229/1215/1224 | 116 | 8.5 | 22.9 | 70 | 526 (10.5) / 590 (11.8), 66 |
+| 20 | 10 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 6,510 (26) | 6510/5827/12115 | 114 | 8.4 | 32.8 | 350 | 2,613 (10.5) / 2,882 (11.5), 65 |
+| 20 | 10 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 27,851 (27.9) | 27851/26194/74440 | 114 | 8.4 | 200.1 | 1,400 | 11,202 (11.2) / 12,239 (12.2), 65 |
+| 100 | 1 | 1 × 1 × 1 | 1 | 1 | 194 (193.8) | 150/194/712 | 389 | 12 | 65.1 | 1 | 49 (48.5) / 65 (65.3), 292 |
+| 100 | 1 | 10 × 1 × 1 | 10 | 10 | 1,285 (128.5) | 1293/1285/1075 | 219 | 7.5 | 250.7 | 1 | 226 (22.6) / 292 (29.2), 164 |
+| 100 | 1 | 50 × 1 × 1 | 50 | 50 | 2,028 (40.6) | 2403/2000/2028 | 205 | 7.3 | 59.3 | 9 | 1,111 (22.2) / 1,347 (26.9), 154 |
+| 100 | 1 | 200 × 1 × 1 | 200 | 200 | 8,031 (40.2) | 8031/7995/8207 | 202 | 7.2 | 69.8 | 40 | 4,222 (21.1) / 5,636 (28.2), 152 |
+| 100 | 1 | 1 × 3 × 1 | 3 | 1/1/1 | 204 (67.9) | 204/195/228 | 263 | 8.7 | 58.6 | 1 | 87 (29.1) / 289 (96.3), 197 |
+| 100 | 1 | 10 × 3 × 1 | 30 | 10/10/10 | 1,255 (41.8) | 1234/1257/1255 | 207 | 7.3 | 56.8 | 4 | 626 (20.9) / 891 (29.7), 156 |
+| 100 | 1 | 50 × 3 × 1 | 150 | 50/50/50 | 6,058 (40.4) | 6003/6058/6421 | 202 | 7.1 | 63.8 | 17 | 3,126 (20.8) / 3,908 (26.1), 152 |
+| 100 | 1 | 200 × 3 × 1 | 600 | 200/200/200 | 26,769 (44.6) | 26769/32671/25668 | 201 | 7.1 | 98.8 | 68 | 13,933 (23.2) / 16,661 (27.8), 151 |
+| 100 | 1 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 275 (55.1) | 275/277/271 | 238 | 8 | 56.7 | 1 | 128 (25.6) / 161 (32.2), 178 |
+| 100 | 1 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 2,117 (42.3) | 2025/2117/2127 | 204 | 7.2 | 59.6 | 4 | 1,034 (20.7) / 1,311 (26.2), 153 |
+| 100 | 1 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 10,849 (43.4) | 10639/12397/10849 | 201 | 7.1 | 75.6 | 24 | 5,738 (23) / 6,586 (26.3), 151 |
+| 100 | 1 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 41,505 (41.5) | 141267/41505/40524 | 201 | 7.1 | 197.6 | 100 | 24,368 (24.4) / 29,336 (29.3), 151 |
+| 100 | 10 | 1 × 1 × 1 | 1 | 1 | 134 (134.3) | 134/133/134 | 461 | 21 | 62.2 | 10 | 62 (61.8) / 88 (87.5), 373 |
+| 100 | 10 | 10 × 1 × 1 | 10 | 10 | 476 (47.6) | 475/476/477 | 228 | 8.7 | 61.9 | 13 | 286 (28.6) / 324 (32.4), 175 |
+| 100 | 10 | 50 × 1 × 1 | 50 | 50 | 2,083 (41.7) | 2090/2081/2083 | 218 | 9 | 64.5 | 98 | 1,471 (29.4) / 1,474 (29.5), 169 |
+| 100 | 10 | 200 × 1 × 1 | 200 | 200 | 8,179 (40.9) | 8174/8187/8179 | 215 | 9 | 73.3 | 400 | 4,904 (24.5) / 6,086 (30.4), 167 |
+| 100 | 10 | 1 × 3 × 1 | 3 | 1/1/1 | 209 (69.6) | 209/209/209 | 287 | 11.7 | 61.2 | 10 | 104 (34.5) / 129 (43.1), 224 |
+| 100 | 10 | 10 × 3 × 1 | 30 | 10/10/10 | 1,256 (41.9) | 1256/1248/1342 | 215 | 8.4 | 63.8 | 37 | 674 (22.5) / 893 (29.8), 165 |
+| 100 | 10 | 50 × 3 × 1 | 150 | 50/50/50 | 6,352 (42.3) | 6352/6221/6753 | 209 | 8.1 | 75 | 167 | 3,464 (23.1) / 4,334 (28.9), 160 |
+| 100 | 10 | 200 × 3 × 1 | 600 | 200/200/200 | 26,988 (45) | 27016/26988/26817 | 208 | 8.1 | 97.5 | 680 | 14,592 (24.3) / 18,563 (30.9), 159 |
+| 100 | 10 | 1 × 5 × 1 | 5 | 1/1/1/1/1 | 303 (60.6) | 309/303/301 | 252 | 9.8 | 66.3 | 10 | 152 (30.5) / 217 (43.4), 195 |
+| 100 | 10 | 10 × 5 × 1 | 50 | 10/10/10/10/10 | 2,220 (44.4) | 2220/2235/2191 | 210 | 8 | 71.5 | 45 | 1,316 (26.3) / 1,416 (28.3), 160 |
+| 100 | 10 | 50 × 5 × 1 | 250 | 50/50/50/50/50 | 10,866 (43.5) | 10866/10836/10922 | 207 | 8 | 80.8 | 237 | 5,635 (22.5) / 7,417 (29.7), 158 |
+| 100 | 10 | 200 × 5 × 1 | 1,000 | 200/200/200/200/200 | 45,746 (45.7) | 44586/47550/45746 | 207 | 8 | 194.1 | 960 | 27,135 (27.1) / 32,964 (33), 158 |
+| 20 | 10 | 1 × 5 × 2 | 31 | 1/2/4/8/16 | 780 (25.2) | 772/782/780 | 114 | 8 | 20.8 | 28 | 291 (9.4) / 345 (11.1), 63 |
+| 20 | 10 | 4 × 5 × 2 | 124 | 4/8/16/32/64 | 3,027 (24.4) | 3045/3027/3003 | 113 | 8.2 | 22.9 | 139 | 1,192 (9.6) / 1,545 (12.5), 63 |
+| 20 | 10 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 12,559 (25.3) | 12535/12705/12559 | 112 | 8.1 | 61.9 | 550 | 4,951 (10) / 5,656 (11.4), 63 |
+| 100 | 10 | 1 × 5 × 2 | 31 | 1/2/4/8/16 | 1,371 (44.2) | 1359/1383/1371 | 208 | 7.5 | 65.4 | 10 | 676 (21.8) / 845 (27.2), 157 |
+| 100 | 10 | 4 × 5 × 2 | 124 | 4/8/16/32/64 | 5,342 (43.1) | 5395/5342/5326 | 208 | 8 | 70.4 | 123 | 2,707 (21.8) / 3,550 (28.6), 159 |
+| 100 | 10 | 16 × 5 × 2 | 496 | 16/32/64/128/256 | 21,651 (43.7) | 21652/21651/21555 | 207 | 7.9 | 88.4 | 466 | 11,492 (23.2) / 14,957 (30.2), 158 |
 
 With a single variant, the counts per rebase include the parent's own commit.
