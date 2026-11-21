@@ -13,12 +13,12 @@ Shipped and deployed:
 - Step 2 (#178): www.konjir.com with `/`, `/kolab/`, `/konnect/`, and the old paths redirect. konjir.com served the same pages until it began redirecting to www (below).
 - Steps 3–5 (#183, #182, #184, #181): the org page, the reworked Kolab page with its working mark demo, `/kolab/how-it-works/`, and the konnect page. The tutorial installs `@konjir/kolab` (#188).
 - Step 6 (#191, #190): footer links to source, npm and licences; a one-row header at any width; a signed-out view on kolab.konjir.com.
-- Also: every `kolab` subcommand answers `--help` without acting (#187); CI's test jobs have room (#189).
+- Also: every `kolab` subcommand answers `--help` without acting (#187); CI's test jobs have room (#189); konnect's intermittent CI failures in hosts, review, wake and watch, and a shutdown hang in kysely 0.29.6 (#195); the site's media queries work in Safari before 16.4 (#198); the web page's replaced tries ask nothing more (#197).
 - konjir.com redirects to www.konjir.com (Lee, 2026-11-20): every request to the apex is a 301 to the same path and query on www, a moved page's straight to its new path. Known consequence: a browser that still holds the old uncached www-to-apex 301 for a www URL it visited before 2026-11-19, `https://www.konjir.com/` above all, loops on that URL. The fix for an affected visitor is to clear the browser's cached data for konjir.com and www.konjir.com; otherwise it ages out of the browser's cache. URLs that never existed on www before, and the moved pages, aren't affected.
 
 Left:
 - Lee: the text of a privacy policy and terms, and a contact, for the footer.
-- Follow-ups: the site's media queries in `min-width`/`max-width` form, for Safari before 16.4; the web page's retry sends one stale request per press (apps/web/src/api.ts `patiently`); two konnect tests that fail now and then on CI's Postgres job (#195 fixed the others): `channels.test.ts`, where an agent's background read starts its place in a new channel while it is still empty, so a message that doesn't mention it is unread too (what an agent's place in an empty channel should be is a question for the server), and `agent-messages.test.ts`'s unread count.
+- Follow-ups: two konnect tests that fail now and then on CI's Postgres job (#195 fixed the others): `channels.test.ts`, where an agent's background read starts its place in a new channel while it is still empty, so a message that doesn't mention it is unread too (what an agent's place in an empty channel should be is a question for the server), and `agent-messages.test.ts`'s unread count.
 - Later, Lee's call: reconciling the kolab (D11, D63, D81, D94 and the binding elements above).
 
 ## Decisions
