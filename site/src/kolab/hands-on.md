@@ -16,10 +16,10 @@ You need:
 The `kolab` CLI is on npm, as `@konjir/kolab`. Install the version this tutorial was written for into a folder of its own, with nothing global and nothing to clone:
 
 ```sh
-npm install --prefix ~/.konjir @konjir/kolab@0.9.0
+npm install --prefix ~/.konjir @konjir/kolab@0.9.1
 ```
 
-Step 1 puts it on your `PATH`. A quick `npx @konjir/kolab@0.9.0 …` runs the same package, but this tutorial keeps `kolab work` running for a long time and stops it with Ctrl-C, which reaches a kolab started by `npx` twice and so stops its jobs without giving back what they held. An installed kolab gets it once.
+Step 1 puts it on your `PATH`. A quick `npx @konjir/kolab@0.9.1 …` runs the same package, but this tutorial keeps `kolab work` running for a long time and stops it with Ctrl-C, which reaches a kolab started by `npx` twice and so stops its jobs without giving back what they held. An installed kolab gets it once.
 
 ## 1. Make the repository
 

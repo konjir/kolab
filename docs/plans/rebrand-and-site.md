@@ -127,7 +127,7 @@ In order. Step 2 ships before any content changes, so every later step only chan
 - The login store path stays where it is, so existing sign-ins carry over.
 - `README.npm.md` and the package's `homepage` point at `https://www.konjir.com/kolab/`; `@konjir/konnect`'s at `https://www.konjir.com/konnect/`.
 - **Lee's step:** npm trusted publishing for `@konjir/kolab`. Change `tools/npm-trust.sh` to the new name and run it after `npm login`, as was done for `konjir` and `@konjir/konnect`.
-- **1b, done:** the server's texts say `kolab` as *What 1b did* (above) says: outright where no released client reads them, and in errors and sign-in pages only for a client that says it is kolab. The web page's `npx` line shows what `KONJIR_CLI_NPM_SPEC` names, `@konjir/kolab@0.9.0` since the first release.
+- **1b, done:** the server's texts say `kolab` as *What 1b did* (above) says: outright where no released client reads them, and in errors and sign-in pages only for a client that says it is kolab. The web page's `npx` line shows what `KONJIR_CLI_NPM_SPEC` names, `@konjir/kolab@0.9.0` from the first release, `@konjir/kolab@0.9.1` since 2026-11-21.
 - **Known consequence of leaving `konjir` alone:** once the server's texts say `kolab`, anyone still on konjir@0.8.0 is told to run a command they don't have, in instructions, descriptions and hints (its errors keep `konjir`). The release notes and the site's install lines say to install `@konjir/kolab`.
 
 ### 2. Split the site, with no change to content
