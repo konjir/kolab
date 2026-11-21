@@ -404,7 +404,7 @@ resource "aws_cloudwatch_metric_alarm" "db_cpu" {
 
 resource "aws_cloudwatch_metric_alarm" "db_storage" {
   alarm_name          = "${var.name}-rds-storage-low"
-  alarm_description   = "Kolab's database has under ${var.db_free_storage_gib} GiB free. Raise db_allocated_gib in deploy/terraform/variables.tf and deploy it (RDS grows storage in place), before writes start failing; see README, Logs and alarms."
+  alarm_description   = "Kolab's database has under ${var.db_free_storage_gib} GiB free. Raise db_allocated_gib in deploy/terraform/variables.tf and deploy it, before writes start failing: RDS grows storage in place, but at its next maintenance window, as the module doesn't apply immediately, so raise it early; see README, Logs and alarms."
   namespace           = "AWS/RDS"
   metric_name         = "FreeStorageSpace"
   dimensions          = { DBInstanceIdentifier = var.db_instance_identifier }
