@@ -14,7 +14,7 @@
 #   logs                                                last 200 lines from Kolab and Caddy
 #   cloudwatch-logs [since]                             Kolab's and Caddy's lines in CloudWatch Logs (default: the last 1h), following
 #   alarms                                              each alarm's state, and the reason for it
-#   inject <kind> [min] [--yes-production]              set off one alarm on purpose, to check it emails (README: Alarms):
+#   inject <kind> [min] [--yes-production]              set off one alarm on purpose, to check it emails (README: Logs and alarms):
 #                                                       crash, down [min], dead-job, errors, log-flood, disk-high [min],
 #                                                       no-logs [min], rds-cpu, rds-storage; those but dead-job, errors
 #                                                       and the RDS ones touch the instance: they need --yes-production
@@ -113,14 +113,14 @@ require_an_admin_who_signs_in() {
   local current admins
   current="$(admin_token)"
   if [ "$current" = off ]; then unset current; return 0; fi
-  [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first: --off checks Konjir's admins with the konjir CLI"
+  [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first: --off checks Konjir's admins with the kolab CLI"
   admins="$(KONJIR_URL="$(out url)" KONJIR_TOKEN="$current" "$ROOT/bin/kolab" admin_list_admins)" || { unset current; die "couldn't list Konjir's admins: $admins"; }
   unset current
   python3 -c '
 import json, sys
 live = [a["actor"] for a in json.load(sys.stdin)["admins"] if not a["archived"] and a.get("signs_in")]
 if not live:
-    sys.exit("no live Konjir admin can sign in with GitHub, so with the break-glass off no one could run an admin verb. Make one first (konjir admin_make_admin, then admin_link_identity if they have no GitHub identity linked), or run rotate-admin-token --off-without-an-admin-who-signs-in to disable it anyway")
+    sys.exit("no live Konjir admin can sign in with GitHub, so with the break-glass off no one could run an admin verb. Make one first (kolab admin_make_admin, then admin_link_identity if they have no GitHub identity linked), or run rotate-admin-token --off-without-an-admin-who-signs-in to disable it anyway")
 print("Konjir admins who can sign in: " + ", ".join(live))' <<<"$admins" || exit 1
 }
 
@@ -173,7 +173,7 @@ runuser -u konjir -- /usr/local/bin/node \"\$d/run.cjs\" \"\$d\" '$migration'"
 cmd_connect() {
   local actor="${1:-}" role="${2:-}" owner="${3:-}" kolab="${KONJIR_KOLAB:-kolab}" url admin token expires opened added granted existing
   [ -n "$actor" ] && [[ "$role" =~ ^(product|engineer)$ ]] || die "usage: konjir-ops.sh connect <actor> <product|engineer> [owner]"
-  [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first (the konjir CLI runs locally)"
+  [ -d "$ROOT/node_modules" ] || die "run npm install in $ROOT first (the kolab CLI runs locally)"
   url="$(out url)"
   admin="$(admin_token)"
   # An actor registered already is reused only if it is what was asked for: a person, or an agent of
@@ -616,5 +616,5 @@ case "${1:-}" in
   inject)        shift; cmd_inject "$@" ;;
   preflight)     shift; cmd_preflight "$@" ;;
   terraform)     shift; tf "$@" ;;
-  *)             sed -n '2,30p' "$0"; exit 1 ;;
+  *)             sed -n '2,31p' "$0"; exit 1 ;;
 esac

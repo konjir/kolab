@@ -34,7 +34,7 @@ function fieldsOf(params: unknown[], withStack: boolean): LogFields {
 /**
  * Logs every response with a 5xx status, at error level, as `event: http_5xx`, with its method,
  * path (never its query, which may carry an authorization code) and status: the deployed stack's
- * server-error alarm counts error lines (README: Alarms).
+ * server-error alarm counts error lines (README: Logs and alarms).
  */
 export function serverErrors(logger: Logger = log) {
   return (req: Request, res: Response, next: NextFunction) => {

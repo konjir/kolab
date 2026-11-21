@@ -108,7 +108,7 @@ resource "aws_route53_health_check" "healthz" {
 
 resource "aws_cloudwatch_metric_alarm" "healthz" {
   alarm_name        = "${var.name}-healthz-failing"
-  alarm_description = "https://${var.domain_name}/healthz has failed for 2 minutes: Kolab is down, or can't reach its database, or Caddy or DNS is broken. Run deploy/konjir-ops.sh status, then logs; see README, Alarms."
+  alarm_description = "https://${var.domain_name}/healthz has failed for 2 minutes: Kolab is down, or can't reach its database, or Caddy or DNS is broken. Run deploy/konjir-ops.sh status, then logs; see README, Logs and alarms."
   namespace         = "AWS/Route53"
   metric_name       = "HealthCheckStatus"
   dimensions        = { HealthCheckId = aws_route53_health_check.healthz.id }
@@ -155,7 +155,7 @@ resource "aws_cloudwatch_log_metric_filter" "service_exits" {
 
 resource "aws_cloudwatch_metric_alarm" "service_exits" {
   alarm_name          = "${var.name}-service-exited"
-  alarm_description   = "Kolab (konjir.service) or Caddy exited with a failure and systemd is restarting it. Read why with deploy/konjir-ops.sh logs, or CloudWatch Logs ${local.log_group} (streams konjir and caddy); see README, Alarms."
+  alarm_description   = "Kolab (konjir.service) or Caddy exited with a failure and systemd is restarting it. Read why with deploy/konjir-ops.sh logs, or CloudWatch Logs ${local.log_group} (streams konjir and caddy); see README, Logs and alarms."
   namespace           = local.namespace
   metric_name         = "ServiceExits"
   statistic           = "Sum"
@@ -185,7 +185,7 @@ resource "aws_cloudwatch_log_metric_filter" "outbox_dead" {
 
 resource "aws_cloudwatch_metric_alarm" "outbox_dead" {
   alarm_name          = "${var.name}-outbox-job-dead"
-  alarm_description   = "An outbox job died after 10 failed attempts: its cascade or rebase, and any later cascade of its node, waits. List them with konjir admin_outbox state=dead, read last_error, fix the cause, then konjir admin_outbox retry=<id>; see README, Alarms."
+  alarm_description   = "An outbox job died after 10 failed attempts: its cascade or rebase, and any later cascade of its node, waits. List them with kolab admin_outbox state=dead, read last_error, fix the cause, then kolab admin_outbox retry=<id>; see README, Logs and alarms."
   namespace           = local.namespace
   metric_name         = "OutboxJobsDead"
   statistic           = "Sum"
@@ -215,7 +215,7 @@ resource "aws_cloudwatch_log_metric_filter" "break_glass" {
 
 resource "aws_cloudwatch_metric_alarm" "break_glass" {
   alarm_name          = "${var.name}-break-glass-used"
-  alarm_description   = "The break-glass admin token was used. Admins run admin verbs from their own sign-in; the token is for bootstrapping and emergencies. If that wasn't you, rotate it now: deploy/konjir-ops.sh rotate-admin-token, then read konjir admin_audit for break_glass.used; see README, Admins."
+  alarm_description   = "The break-glass admin token was used. Admins run admin verbs from their own sign-in; the token is for bootstrapping and emergencies. If that wasn't you, rotate it now: deploy/konjir-ops.sh rotate-admin-token, then read kolab admin_audit for break_glass.used; see README, Konjir's admins."
   namespace           = local.namespace
   metric_name         = "BreakGlassUses"
   statistic           = "Sum"
@@ -246,7 +246,7 @@ resource "aws_cloudwatch_log_metric_filter" "admin_granted" {
 
 resource "aws_cloudwatch_metric_alarm" "admin_granted" {
   alarm_name          = "${var.name}-admin-granted"
-  alarm_description   = "A person was made a Konjir admin. If you didn't expect it, read konjir admin_audit for admin.granted (who, and by whom), remove them with konjir admin_remove_admin, and check what they did; see README, Konjir's admins."
+  alarm_description   = "A person was made a Konjir admin. If you didn't expect it, read kolab admin_audit for admin.granted (who, and by whom), remove them with kolab admin_remove_admin, and check what they did; see README, Konjir's admins."
   namespace           = local.namespace
   metric_name         = "AdminsGranted"
   statistic           = "Sum"
@@ -278,7 +278,7 @@ resource "aws_cloudwatch_log_metric_filter" "errors" {
 
 resource "aws_cloudwatch_metric_alarm" "errors" {
   alarm_name          = "${var.name}-server-errors"
-  alarm_description   = "At least ${var.server_error_threshold} error-level lines from Kolab in 5 minutes, twice in 15 minutes (5xx answers among them). In CloudWatch Logs ${local.log_group}, stream konjir, filter { $.level = \"error\" } to see which; see README, Alarms."
+  alarm_description   = "At least ${var.server_error_threshold} error-level lines from Kolab in 5 minutes, twice in 15 minutes (5xx answers among them). In CloudWatch Logs ${local.log_group}, stream konjir, filter { $.level = \"error\" } to see which; see README, Logs and alarms."
   namespace           = local.namespace
   metric_name         = "ErrorLines"
   statistic           = "Sum"
@@ -316,7 +316,7 @@ resource "aws_cloudwatch_log_metric_filter" "heartbeats" {
 
 resource "aws_cloudwatch_metric_alarm" "no_logs" {
   alarm_name          = "${var.name}-no-logs"
-  alarm_description   = "No fresh heartbeat from the journal copy of konjir.service or caddy.service for 30 minutes: the copy, journalctl, the CloudWatch agent or observe.sh has stopped, so the log alarms are blind. In a shell: systemctl status konjir-journal@konjir konjir-journal@caddy amazon-cloudwatch-agent, and journalctl -t konjir-observe for an observe_failed line; see README, Alarms."
+  alarm_description   = "No fresh heartbeat from the journal copy of konjir.service or caddy.service for 30 minutes: the copy, journalctl, the CloudWatch agent or observe.sh has stopped, so the log alarms are blind. In a shell: systemctl status konjir-journal@konjir konjir-journal@caddy amazon-cloudwatch-agent, and journalctl -t konjir-observe for an observe_failed line; see README, Logs and alarms."
   comparison_operator = "LessThanThreshold"
   threshold           = 1
   evaluation_periods  = 3
@@ -349,7 +349,7 @@ resource "aws_cloudwatch_metric_alarm" "no_logs" {
 # A log flood is rotated on the instance, but every line shipped is paid for ($0.50 a GB).
 resource "aws_cloudwatch_metric_alarm" "log_flood" {
   alarm_name          = "${var.name}-log-flood"
-  alarm_description   = "Over ${var.log_flood_gib_per_hour} GiB of log lines in an hour into ${local.log_group}, at $0.50 a GB. Find the line that repeats (CloudWatch Logs Insights: stats count(*) by message), then fix or restart what writes it; see README, Alarms."
+  alarm_description   = "Over ${var.log_flood_gib_per_hour} GiB of log lines in an hour into ${local.log_group}, at $0.50 a GB. Find the line that repeats (CloudWatch Logs Insights: stats count(*) by message), then fix or restart what writes it; see README, Logs and alarms."
   namespace           = "AWS/Logs"
   metric_name         = "IncomingBytes"
   dimensions          = { LogGroupName = aws_cloudwatch_log_group.kolab.name }
@@ -368,7 +368,7 @@ resource "aws_cloudwatch_metric_alarm" "log_flood" {
 # flood is rotated every 10 minutes; this catches what else fills the disk (releases, the journal).
 resource "aws_cloudwatch_metric_alarm" "disk" {
   alarm_name          = "${var.name}-disk-high"
-  alarm_description   = "The instance's root disk is over ${var.disk_used_percent}% full: deploys and Caddy's certificate renewals fail when it fills. In a shell: sudo du -xh -d1 / | sort -h; check /var/log/konjir, /var/log/journal and /opt/konjir/releases; see README, Alarms."
+  alarm_description   = "The instance's root disk is over ${var.disk_used_percent}% full: deploys and Caddy's certificate renewals fail when it fills. In a shell: sudo du -xh -d1 / | sort -h; check /var/log/konjir, /var/log/journal and /opt/konjir/releases; see README, Logs and alarms."
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.disk_used_percent
   evaluation_periods  = 2
@@ -388,7 +388,7 @@ resource "aws_cloudwatch_metric_alarm" "disk" {
 
 resource "aws_cloudwatch_metric_alarm" "db_cpu" {
   alarm_name          = "${var.name}-rds-cpu-high"
-  alarm_description   = "Kolab's database has averaged over ${var.db_cpu_percent}% CPU for 15 minutes. Look in the logs for a runaway cascade or rebase storm; a db.t4g.micro out of CPU credits (CPUCreditBalance) is throttled. Consider a bigger db_instance_class; see README, Alarms."
+  alarm_description   = "Kolab's database has averaged over ${var.db_cpu_percent}% CPU for 15 minutes. Look in the logs for a runaway cascade or rebase storm; a db.t4g.micro out of CPU credits (CPUCreditBalance) is throttled. Consider a bigger db_instance_class; see README, Logs and alarms."
   namespace           = "AWS/RDS"
   metric_name         = "CPUUtilization"
   dimensions          = { DBInstanceIdentifier = var.db_instance_identifier }
@@ -404,7 +404,7 @@ resource "aws_cloudwatch_metric_alarm" "db_cpu" {
 
 resource "aws_cloudwatch_metric_alarm" "db_storage" {
   alarm_name          = "${var.name}-rds-storage-low"
-  alarm_description   = "Kolab's database has under ${var.db_free_storage_gib} GiB free. Raise db_allocated_gib and terraform apply (RDS grows storage in place), before writes start failing; see README, Alarms."
+  alarm_description   = "Kolab's database has under ${var.db_free_storage_gib} GiB free. Raise db_allocated_gib in deploy/terraform/variables.tf and deploy it (RDS grows storage in place), before writes start failing; see README, Logs and alarms."
   namespace           = "AWS/RDS"
   metric_name         = "FreeStorageSpace"
   dimensions          = { DBInstanceIdentifier = var.db_instance_identifier }

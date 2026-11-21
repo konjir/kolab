@@ -45,7 +45,7 @@ output "alarm_topic" {
 }
 
 output "alarms" {
-  description = "The CloudWatch alarms (README: Alarms)."
+  description = "The CloudWatch alarms (README: Logs and alarms)."
   value       = module.monitoring.alarm_names
 }
 
