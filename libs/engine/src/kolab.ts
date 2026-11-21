@@ -183,7 +183,7 @@ export function scopeLock(scope: string | null | undefined, agentOf: (named: str
 
 /**
  * The agent a sign-in's scope means by `agent:<named>` (API26): the person's agent of that name, or
- * else their agent `<person>-<named>`, so `kolab login --agent <label>` takes a label as konjir
+ * else their agent `<person>-<named>`, so `kolab login --agent <label>` takes a label as kolab
  * connect does. A name that is neither stays as it is, and so names no agent of theirs.
  */
 export function namedAgent(named: string, person: string, agents: readonly string[]): string {
@@ -296,7 +296,7 @@ export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$
 /** How an identity provider's account is looked up by username: undefined when there is none. Injected, so Kolab itself never calls the provider. */
 export type AccountLookup = (login: string) => Promise<{ subject: string; login: string; person: boolean } | undefined>;
 
-/** Whether a redirect URI is on the person's own machine: http on 127.0.0.1 or [::1], any port, as konjir's own are. */
+/** Whether a redirect URI is on the person's own machine: http on 127.0.0.1 or [::1], any port, as kolab's own are. */
 export function loopbackRedirect(uri: string): boolean {
   try {
     const u = new URL(uri);
@@ -504,15 +504,15 @@ export class ChecksError extends Error { name = 'ChecksError'; }
  */
 export class CascadeError extends Error { name = 'CascadeError'; }
 
+/** Kolab names kept for Konjir's own kolabs (D15, D54): `kolab`, and anything starting `konjir`. */
+export const isReservedKolabName = (name: string) => name === 'kolab' || name.startsWith('konjir');
+
 /**
  * A session's key: the sha256 of its bearer token, base64url. It is the session's id in the
  * database, which stores no token (P1, migration 0011), and how events, logs and whoami name the
  * session. The token itself is shown once, when the session opens, and never leaves the process
  * after that: events cross processes (W2.2) and can reach logs.
  */
-/** Kolab names kept for Konjir's own kolabs (D15, D54): `kolab`, and anything starting `konjir`. */
-export const isReservedKolabName = (name: string) => name === 'kolab' || name.startsWith('konjir');
-
 export const sessionKey = (id: string) => createHash('sha256').update(id).digest('base64url');
 
 /** A sessionKey's form: 43 base64url characters. A token is `kjs_` and 32, so the two never look alike. */
@@ -564,7 +564,7 @@ export type ListenerState =
   | { state: 'restored' }
   | { state: 'resync_failed'; retryInMs: number; error: string };
 
-// An error's message, fit to log or return, with Kolab's tokens masked; and Kolab's JSON log lines (P11, D68).
+// An error's message, fit to log or return, with Kolab's tokens masked (P11, D68).
 export { maskTokens };
 
 /**
@@ -2546,7 +2546,7 @@ export class Kolab {
   /**
    * The person allows a setup (POST /oauth/consent, with the form's `csrf` token): its sign-in's
    * scope names the kolab and agents (setupScope), and nothing posted changes them. Only for a
-   * registered client on the person's own machine (every redirect URI loopback, as konjir's are),
+   * registered client on the person's own machine (every redirect URI loopback, as kolab's are),
    * so no hosted app can have agents made and signed in for it. Checked again as setupPlan checks
    * it, then: the kolab is made if it is new (makeOwnKolab, with its limits, D54), each agent made
    * if it is new (addOwnAgent, counted once for the setup, not against its 3 in 10 minutes, the cap
@@ -3574,8 +3574,9 @@ export class Kolab {
 
   /**
    * In `tx`, removes `person`'s direct grant on `kolab` and their agents' grants there, each
-   * audited as by `by`: a member removed, or leaving, takes their agents with them. Returns the
-   * agents whose grants went.
+   * audited as by `by`: a member removed, or leaving, takes their agents with them. Their leases,
+   * hosts and sessions there go too. Returns the agents whose grants went, and how many sessions
+   * ended.
    */
   private async dropMemberGrants(tx: Q, signal: Signal, kolab: string, person: string, by: Doer): Promise<{ agents: string[]; ended: number }> {
     const agents = (await tx.query<{ agent_id: string }>(
@@ -4516,17 +4517,17 @@ export class Kolab {
     }
   }
 
-  /**
-   * Every kolab, or with `owner` that account's. Archived kolabs, and those of an archived account,
-   * are left out (D52); with `archived`, they are listed too, and every kolab says whether it is
-   * archived.
-   */
   /** One kolab, by its name, unless it is archived (D52). Kolab's own read: the caller checks who may see it. */
   async kolabRow(id: string): Promise<KolabRow | undefined> {
     return (await this.db.query<KolabRow>(
       `select id, owner_id as owner, title, visibility, base_permission from kolab where id = $1 and not kj_kolab_archived(id)`, [id])).rows[0];
   }
 
+  /**
+   * Every kolab, or with `owner` that account's. Archived kolabs, and those of an archived account,
+   * are left out (D52); with `archived`, they are listed too, and every kolab says whether it is
+   * archived.
+   */
   async listKolabs(opts: { owner?: string; archived?: boolean; ids?: string[] } = {}): Promise<KolabRow[]> {
     return this.kolabRows(opts);
   }
@@ -4876,7 +4877,8 @@ export class Kolab {
   /**
    * Draft a new version. Give either full `elements` (Kolab diffs them into
    * a delta against the parent) or explicit `deltas` (a variant's exceptions).
-   * `parent` defaults to this node's latest committed version.
+   * `parent` defaults to this node's latest committed version, or, for a variant, to the other
+   * node's version that its latest is built on (writeDraft).
    */
   async draft(sessionId: string, nodeId: string,
     input: { elements?: ElementInput[]; deltas?: DeltaInput[]; parent?: string; unlink?: LinkRef[]; links?: LinkInput[] }): Promise<string> {
@@ -5086,10 +5088,11 @@ export class Kolab {
    * drafted -> committed | rejected.
    *
    * A version of a person's or an agent's gets Kolab's structural checks (REV1, REV5): Kolab runs
-   * no model. If it passes, it moves to in_review, with a review
-   * request for each other actor holding Write on its layer (reviewersFor), and commits once one of
-   * them approves (recordReview). With no such reviewer, the checks alone commit it, and its review
-   * note says so (VER11). A rebase Kolab makes itself commits after structural checks only (VER12).
+   * no model. If it passes, it moves to in_review, with a review request for each other actor
+   * holding Write on its layer whom the kolab's policy lets approve (reviewPlanIn), and commits once
+   * one of them approves (recordReview). With no such reviewer, the checks alone commit it, and its
+   * review note says so (VER11), unless the policy keeps it for a person, when it waits in review.
+   * A rebase Kolab makes itself commits after structural checks only (VER12).
    *
    * Optimistic concurrency (CAS7): a draft commits only while its node's live
    * version is still its base, the version it was built on. Otherwise it was
@@ -7564,7 +7567,10 @@ export class Kolab {
     return !!base && elementFingerprint(base.text, d.work) === d.base_fingerprint;
   }
 
-  /** Resolve a stale or orphaned override. Records precedent for the triple. */
+  /**
+   * Resolve a stale or orphaned override: a new version, submitted for review, whose commit records
+   * the ruling and the precedent for the triple (commitStep, recordRuling).
+   */
   async resolveOverride(sessionId: string, markId: string, resolution: OverrideResolution, amendedText?: string) {
     checkText('the amended text', amendedText, MAX_ELEMENT_TEXT);
     // Who may resolve comes first, so whether a mark is an open override mark is told only to the
@@ -7968,7 +7974,7 @@ export class Kolab {
    * can't move and is still open is settled as withdrawn, its answer saying why, and the element
    * that waited on it is told as an answer would tell it (markAsker). One already answered whose
    * element is gone stays where it was, as the record of what was asked. Nothing is left open on a
-   * version no one can ask about. Questions marks raised are left alone: no mark is on a version
+   * version no one can ask about. Questions raised by marks are left alone: no mark is on a version
    * that never committed. Each asker, and the layer's inbox, is told.
    */
   private async settleQuestionsIn(tx: Q, signal: Signal, versionId: string, into?: string) {
@@ -8357,7 +8363,7 @@ export class Kolab {
    * Run on `q`: a session's reads run as kj_agent, so row-level security bounds them too.
    */
   async listCases(filter: { kolab: string; layer?: Layer; state?: CaseFileState; actor?: string; node?: string; id?: string; limit?: number;
-    /** A page's start (W2.21): the case after this one, by its id, newest opened first (a stable key, W2.21). */
+    /** A page's start (W2.21): the case after this one, by its id, newest opened first (a stable key). */
     after?: string;
     /** Most recently changed first instead (opened, argued, ruled or superseded): the answers resource's few, which take no cursor. */
     touched?: boolean },
@@ -9788,9 +9794,10 @@ export class Kolab {
    * after, and takes effect at once: under the policy lock, which every verdict, answer and review
    * request takes shared, and in the same transaction, each version and work package in review in
    * the kolab gets its review requests again under the new policy (REV6): those it no longer allows
-   * are withdrawn, and those it newly allows are asked. Nothing commits by it: a version that waits
-   * and now needs no review commits when its author submits it again. Setting what is already set
-   * changes nothing and records nothing.
+   * are withdrawn, and those it newly allows are asked. A version that now holds every approval it
+   * needs commits once the change has (commitSatisfied); one that waits and now needs no review
+   * commits when its author submits it again. Setting what is already set changes nothing and
+   * records nothing.
    */
   async setPolicy(sessionId: string, input: Record<string, unknown>): Promise<PolicySet> {
     const s = await this.session(sessionId);
@@ -11390,7 +11397,7 @@ export class Kolab {
         const lease = await this.workTx(tx, s, 'submits no work');
         const r = (await tx.query<WorkRow>(`${WORK_ROWS} where w.binding_node_id = $1 and w.element_id = $2 for update of w`, [binding.id, id])).rows[0];
         const c = await this.concernedIn(tx, binding.id, id);
-        // Who may review it under the kolab's policy, read under the policy lock (taken first, below).
+        // Who may review it under the kolab's policy, read under the policy lock (taken first, above).
         const writers = await this.workReviewersIn(tx, s.kolab, s.actor_id);
         // With nobody the policy lets review it, it waits for a person unless its assignee's own act meets the policy (AUT1, AUT3).
         const review = writers.length > 0 || !(await this.workUnreviewedIn(tx, s.kolab, s.actor_id));
@@ -11441,7 +11448,8 @@ export class Kolab {
             await tx.query(`insert into review_request(id, binding_node_id, element_id, reviewer_id) values ($1, $2, $3, $4)`, [ulid(), binding.id, id, w]);
           }
         } else {
-          // No one else holds Write on the technical layer: Done on submission, unreviewed (PLN16, D66).
+          // No one the kolab's policy lets review it, and its assignee's own act meets the policy: Done on
+          // submission, unreviewed (PLN16, D66).
           state = 'done';
           await tx.query(`update work_package set state = 'done', lease_until = null, returned = false, unreviewed = true, found_built = $3, updated_at = clock_timestamp()
                            where binding_node_id = $1 and element_id = $2`, [binding.id, id, found]);
@@ -11497,7 +11505,7 @@ export class Kolab {
         if (r.state !== 'in_review') throw new GateError(`${at} is ${r.lapsed ? 'To do' : STATE_WORDS[r.state]}: only a work package In review takes a verdict`);
         if (r.approved) throw new GateError(`${at} is approved already, and waits for its release (PLN16): it takes no other verdict: ${RELEASE_NEXT(at, 'konjir')}`);
         if (r.assignee_id === s.actor_id) throw new GateError(`${s.actor_id} is ${at}'s assignee; another actor with Write on the technical layer must review it (PLN16)`);
-        // Only a reviewer the kolab's policy allows (AUT3, POL3), as the policy stands now (its lock taken first, below).
+        // Only a reviewer the kolab's policy allows (AUT3, POL3), as the policy stands now (its lock taken first, above).
         await this.refuseByPolicyIn(tx, s, { work: at, assignee: r.assignee_id! });
         const decided = input.verdict === 'approve' ? 'approved' : 'changes_requested';
         const mine = await tx.query(`update review_request set state = $4, note = $5, decided_at = now()
@@ -11942,8 +11950,6 @@ export class Kolab {
     };
     return independentOf(CONFIRMATION_INDEPENDENCE, await party(reviewer), [await party(registrar), await party(assignee)]);
   }
-
-  // ---- inspection ----------------------------------------------------------
 
   // ---- jobs: agents as jobs, Kolab the queue and the ledger (W5.4a; D103, D104, JOB1–JOB3) ----
 
@@ -12919,7 +12925,8 @@ export class Kolab {
    * The ledger (konjir_list_jobs; JOB1): the session's kolab's jobs, newest first, each with who
    * started it, on which machine, the agent doing it, its item, its lease and how it ended; with
    * `live`, only those running (false: only those ended). Beside them, what jobs may take now
-   * (reviews and ready work packages, neither held back) and JOB3's caps for the session's person
+   * (jobQueue: reviews, ready work packages, technical questions and notes, technical marks and
+   * unserved spec elements, none held back) and JOB3's caps for the session's person
    * (an agent's owner) and the kolab. Any session of the kolab reads it.
    */
   async listJobs(sessionId: string, filter: { live?: boolean } = {}, page: PageOpts = {}): Promise<{
@@ -13363,6 +13370,8 @@ export class Kolab {
     };
   }
 
+  // ---- inspection ----------------------------------------------------------
+
   async sessionInfo(sessionId: string) {
     const s = await this.session(sessionId);
     return {
@@ -13402,8 +13411,9 @@ export class Kolab {
   }
 
   /**
-   * Edges into (upstream) or out of (downstream) a version, with human-readable addresses: the
-   * short form in the version's own kolab. As Kolab sees them, whoever may read what they link.
+   * A version's links, with human-readable addresses: upstream, its own links out to what it relies
+   * on; downstream, the live links into any version of its node from what relies on it. In the
+   * short form of the version's own kolab. As Kolab sees them, whoever may read what they link.
    */
   async lineage(versionId: string, direction: 'upstream' | 'downstream', page?: PageOpts) {
     return (await this.lineagePage({ system: (await this.version(versionId)).kolab_id! }, versionId, direction, page ?? { limit: Number.MAX_SAFE_INTEGER })).items;
@@ -13947,14 +13957,6 @@ export const structuralChecks: Checks = ({ elements }) => {
 };
 
 /**
- * Whether the actor `actor` can review a version of layer `layer` in kolab `kolab` in the role it
- * works in there (D65), as SQL over three expressions: unless it is an agent whose open session in
- * that kolab is in the other role. An open session is one not ended whose grant, if it has one,
- * is neither revoked nor lapsed (liveSessions): an OAuth grant's session keeps the role chosen at
- * consent, whether or not its access token has expired. One open session per actor (ENF4), so
- * there is at most one. It says nothing of access: who holds Write is reviewersFor's to say.
- */
-/**
  * Whether an author's submissions list a withdrawn request (W5.7): only one to a person, whom every
  * request is shown to (D65). One withdrawn from an agent may never have been shown (it worked in the
  * other role), and whether it was isn't recorded, so none is: what the author sees of a version's
@@ -13962,6 +13964,14 @@ export const structuralChecks: Checks = ({ elements }) => {
  */
 const WITHDRAWN_SHOWN = (actor: string) => `exists (select 1 from actor wa where wa.id = ${actor} and wa.kind = 'person')`;
 
+/**
+ * Whether the actor `actor` can review a version of layer `layer` in kolab `kolab` in the role it
+ * works in there (D65), as SQL over three expressions: unless it is an agent whose open session in
+ * that kolab is in the other role. An open session is one not ended whose grant, if it has one,
+ * is neither revoked nor lapsed (liveSessions): an OAuth grant's session keeps the role chosen at
+ * consent, whether or not its access token has expired. One open session per actor (ENF4), so
+ * there is at most one. It says nothing of access: who holds Write is reviewersFor's to say.
+ */
 const CAN_REVIEW = (actor: string, kolab: string, layer: string) => `not exists (
   select 1 from actor ra join session s on s.actor_id = ra.id left join oauth_grant g on g.id = s.grant_id
    where ra.id = ${actor} and ra.kind = 'agent' and s.kolab_id = ${kolab} and ${OPEN_SESSION}
@@ -14071,11 +14081,6 @@ export const NEXT_STEP: Record<string, string> = {
 };
 
 /**
- * A version is live if no later committed version of its node exists. A
- * pending draft does not supersede it: the cascade must keep reaching the
- * committed version until the draft actually commits (then catch-up runs).
- */
-/**
  * A variant (the node `node`, in SQL) is behind: its live version sits on a version of another node
  * that has committed a newer version since (D43, P6).
  */
@@ -14085,6 +14090,11 @@ function BEHIND(node: string) {
                      and exists (select 1 from version nv where nv.node_id = pv.node_id and nv.state = 'committed' and nv.seq > pv.seq))`;
 }
 
+/**
+ * A version is live if no later committed version of its node exists. A
+ * pending draft does not supersede it: the cascade must keep reaching the
+ * committed version until the draft actually commits (then catch-up runs).
+ */
 function LIVE(alias: string) {
   return `not exists (select 1 from version later where later.node_id = ${alias}.node_id
             and later.seq > ${alias}.seq and later.state = 'committed')`;
@@ -14381,7 +14391,6 @@ interface MarkInput {
   query_id?: string;
 }
 
-/** An open session: its actor, role and kolab, and the actor's access there now. */
 /** A new bearer token for a session: random, not a sortable ULID. An OAuth access token is one too (D55). */
 const newSessionToken = () => `kjs_${randomBytes(24).toString('base64url')}`;
 
@@ -14410,6 +14419,7 @@ async function insertSession(tx: Q, token: string, s: { actor: string; role: Rol
 /** What a rate budget counts (rate_event's kinds, migrations 0025 and 0050). */
 type RateKind = 'ask' | 'draft' | 'message';
 
+/** An open session: its actor, role and kolab, and the actor's access there now. */
 interface Session {
   /** The session's id: its key, which whoami and events name it by. */
   id: string;
@@ -14624,10 +14634,10 @@ interface HeldBack {
   waiting: number;
 }
 
-/** Nothing held back: what insertJob reads an item again with. */
 /** A job's note that hands its item to a person (JOB6): as the runner keeps it, it begins so (jobNote). */
 const HANDED_OFF = /^\s*Handed to a person:/;
 
+/** Nothing held back: what insertJob reads an item again with. */
 const NO_HOLD: HeldBack = { packages: new Set(), versions: new Set(), count: 0, queries: new Set(), marks: new Set(), specElements: new Set(), handed: 0, waiting: 0 };
 
 /** How many of each of JOB6's queues a take reads, oldest first: enough to find one an agent of the person's can take. */
@@ -14901,12 +14911,6 @@ async function archiveHoldersOf(q: Q, kind: Archivable, name: string, kolabs: st
 }
 
 /**
- * Everyone who may hold access to `kolab`, with what they hold now (kj_access): its owner, the
- * owning organization's members (its owners, and everyone under a base permission or an internal
- * kolab), people and agents with a direct grant, and the members of every team granted access and
- * of the teams under it. Those with a direct grant are kept even when it gives nothing now.
- */
-/**
  * The questions a reader in kolab `$from` sees (D49, D65): every one in its own kolab; elsewhere,
  * only those people raised (never one a mark raised) and asked of a version that committed. A null
  * `$from` sees every one. `q` is the query table's alias.
@@ -14916,7 +14920,10 @@ const SHOWN_FROM = (from: string, q = 'q') => `(${from}::text is null or ${q}.ko
       or exists (select 1 from version sa where sa.id = ${q}.asked_version_id and sa.state = 'committed'))))`;
 
 /**
- * Who holds access to `kolab`, or holds a grant there that gives nothing now. With `page`, highest
+ * Who holds access to `kolab`, with what they hold now (kj_access), or holds a grant there that
+ * gives nothing now. The candidates are its owner, the owning organization's members (its owners,
+ * and everyone under a base permission or an internal kolab), people and agents with a direct
+ * grant, and the members of every team granted access and of the teams under it. With `page`, highest
  * access first, then people before agents, then by id, `limit` + 1 of them after `after` (W2.21).
  * With `only`, that actor's row alone, if they are one: a member's check costs one row's access.
  */
@@ -15078,12 +15085,12 @@ function archivedKolabSql(col: string): string {
                    and (ak.archived_at is not null or (ao.kind = 'organization' and ao.archived_at is not null)))`;
 }
 
-/** "Write on the functional layer", "Read", "no access". */
 /** A word with its indefinite article, by its first letter: "a product", "an engineer". */
 function withArticle(word: string): string {
   return `${/^[aeiou]/i.test(word) ? 'an' : 'a'} ${word}`;
 }
 
+/** "Write on the functional layer", "Read", "no access". */
 function describeAccess(a: Access): string {
   if (!a.level) return 'no access';
   const level = a.level[0].toUpperCase() + a.level.slice(1);
@@ -15115,7 +15122,6 @@ async function partiesIn(tx: Q, caseId: string) {
       where p.case_file_id = $1 order by p.created_at nulls first, p.id`, [caseId])).rows
     .map((p) => ({ ...p, principal: principalOf(p.actor, p) }));
 }
-/** The most pieces of evidence one position cites. */
 /** A link an import wants (importKolab): the link, the node it targets, and whether it is to the binding's own decision (relies_on). */
 type WantedLink = { link: LinkInput; node: string; relies: boolean };
 /** The links a file gives a binding now: those it can make, those waiting on the spec, and the keys (linkKey) of all it gives. */
@@ -15238,7 +15244,10 @@ function memberName(given: string): string {
 /** An agent's label: its name without its owner's, as `<owner>-<label>` makes it; null for an agent named otherwise. */
 const agentLabel = (h: { id: string; owner_id: string | null }) =>
   h.owner_id !== null && h.id.startsWith(`${h.owner_id}-`) && h.id.length > h.owner_id.length + 1 ? h.id.slice(h.owner_id.length + 1) : null;
-/** A channel with a member's follow state, read position, and counts of unread and unread mentions, each up to UNREAD_COUNT_CEILING + 1. */
+/**
+ * A channel with a member's follow state, read position, and counts: unread among the UNREAD_SCAN
+ * messages read (`scanned`), and unread mentions up to UNREAD_COUNT_CEILING + 1.
+ */
 interface ChannelCountRow { id: string; name: string; following: boolean; pos: string | null; made_by: string | null; made_at: Date | string; unread: number; scanned: number; mentions: number }
 /** A channel's counts as a member reads them: each at most UNREAD_COUNT_CEILING, with whether there are more (or, past UNREAD_SCAN rows read, may be). */
 const counted = (r: { unread: number; scanned: number; mentions: number }) => ({
