@@ -13,10 +13,10 @@
 // libs/login/src, libs/brand/src and apps/channel-bridge/src (the subscription that wakes an
 // agent: bridge.ts, messages.ts and version.ts, never its NestJS server), each declaring
 // Apache-2.0: the rest of the repository is FSL-1.1-ALv2 (D64), and above all no server, engine,
-// db or address code may ship in konnect. The
-// build fails on anything else, and on a bundled package that is FSL-licensed. LICENSE and
-// THIRD-PARTY-NOTICES.md, which lists every package the bundle inlines with its licence text, ship
-// in the package. scripts/check-licence.sh checks the packed tarball.
+// db or address code may ship in konnect. The build fails on anything else, and on a bundled
+// package that is FSL-licensed. LICENSE and THIRD-PARTY-NOTICES.md, which lists every package the
+// bundle inlines with its licence text, ship in the package. scripts/check-licence.sh checks the
+// packed tarball.
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';

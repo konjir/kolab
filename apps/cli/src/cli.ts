@@ -343,8 +343,8 @@ function flag(argv: string[], name: string): string | undefined {
  * The review settings W1.7 retired (REV5). Kolab has no model reviewer, so a setting that asks for
  * one is refused, rather than leave the operator believing a gate runs that doesn't. The deployed
  * Kolab's boot script (deploy/terraform/modules/kolab) still writes KONJIR_REVIEW=structural with
- * KONJIR_REVIEW_MODEL beside it,
- * which asks for nothing and passes silently; a model named on its own is ignored, and said so.
+ * KONJIR_REVIEW_MODEL beside it, which asks for nothing and passes silently; a model named on its
+ * own is ignored, and said so.
  */
 export function retiredReviewSettings(env: Record<string, string | undefined>, reviewFlag?: string): { refuse?: string; warn?: string } {
   const mode = reviewFlag ?? env.KONJIR_REVIEW;
