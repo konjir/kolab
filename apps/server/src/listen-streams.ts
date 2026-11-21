@@ -12,6 +12,9 @@ import { KOLAB } from './tokens.js';
 type AgentStream = McpListenStream & { authInfo: NonNullable<McpListenStream['authInfo']> };
 const isAgent = (s: McpListenStream): s is AgentStream => !!s.authInfo && s.authInfo.scopes.includes('agent');
 
+/** How often the open listen streams are checked against their tokens, besides before each signal. */
+export const SWEEP_MS = 30_000;
+
 /**
  * Ending an agent session closes its subscriptions/listen streams, and nothing more is
  * signalled to its revoked token (API4, D41), through @onivoro/server-mcp's McpHttpService,
@@ -22,10 +25,10 @@ const isAgent = (s: McpListenStream): s is AgentStream => !!s.authInfo && s.auth
  *   stream closes, and nothing more is signalled to it. A client with a refreshed token listens
  *   again. Besides the check before each signal, every SWEEP_MS the open streams are checked, so
  *   a quiet stream doesn't outlive its token either.
- * - When a session ends (a SessionEndedEvent, from this process or another, by its
- *   id, its key), its streams close gracefully: the listen request's result, which the client
- *   reads as the server closing the subscription, then the end of the response. One still
- *   opening is refused instead.
+ * - When a session ends (a SessionEndedEvent, from this process or another, by its id, its
+ *   key), its streams close gracefully: the listen request's result, which the client reads as
+ *   the server closing the subscription, then the end of the response. One still opening is
+ *   refused instead.
  * - Before each change is signalled, Inboxes calls closeEnded: one query over every listening
  *   session, closing the streams of any that has ended without an event (directly in the
  *   database, say). So the gate is before anything is written.
@@ -34,9 +37,6 @@ const isAgent = (s: McpListenStream): s is AgentStream => !!s.authInfo && s.auth
  *
  * A stream's authInfo holds its bearer token: never log a stream, or the list of them.
  */
-/** How often the open listen streams are checked against their tokens, besides before each signal. */
-export const SWEEP_MS = 30_000;
-
 @Injectable()
 export class ListenStreams implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ListenStreams.name);
@@ -74,8 +74,9 @@ export class ListenStreams implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Before a change is signalled: close every stream whose token no longer reaches an open
-   * session (ended, expired or rotated), in one query however many streams there are. False if the check failed, so the caller holds
-   * the signal back rather than signal a session it couldn't check.
+   * session (ended, expired or rotated), in one query however many streams there are. False if
+   * the check failed, so the caller holds the signal back rather than signal a session it
+   * couldn't check.
    */
   async closeEnded(): Promise<boolean> {
     const checked = new Set(this.mcp.getListenStreams().filter(isAgent).map((s) => s.authInfo.token));

@@ -10,9 +10,9 @@ export interface ServerOptions {
    */
   adminToken: string | null;
   /**
-   * Whether hand-issued session tokens (konjir_admin_open_session's, which expire after 30 days by default, W2.22) still
-   * work, beside OAuth's access tokens (D55). True during the transition; false turns them off,
-   * on /mcp and in the web interface. The admin token works either way.
+   * Whether hand-issued session tokens (konjir_admin_open_session's, which expire after 30 days
+   * by default, W2.22) still work, beside OAuth's access tokens (D55). True during the transition;
+   * false turns them off, on /mcp and in the web interface. The admin token works either way.
    */
   handIssuedTokens?: boolean;
   /** The clock agents' states are judged by (AgentStates), in ms since the epoch: Date.now unless a test sets it. */
@@ -34,7 +34,7 @@ export const OAUTH_OPTIONS = Symbol('OAUTH_OPTIONS');
 
 /** Kolab's authorization server's settings (D55). */
 export interface OAuthOptions {
-  /** Who signs people in: GitHub on the test server. Without one, Kolab has no OAuth, and only hand-issued tokens work. */
+  /** Who signs people in: GitHub in production. Without one, Kolab has no OAuth, and only hand-issued tokens work. */
   identity?: import('./oauth/identity.js').IdentityProvider;
   /** The public hostname behind the TLS proxy: the issuer's and the resource's origin. */
   publicHost?: string;
@@ -56,6 +56,6 @@ export interface WebOptions {
   identityLabel?: string;
   /** As ServerOptions.handIssuedTokens. */
   handIssuedTokens: boolean;
-  /** The published konjir CLI's npm spec, pinned (`konjir@1.2.3`), when there is one (W3.7); otherwise the page never shows `npx`. */
+  /** The published kolab CLI's npm spec, pinned (`konjir@1.2.3`), when there is one (W3.7); otherwise the page never shows `npx`. */
   cliNpmSpec?: string;
 }

@@ -13,7 +13,8 @@ import { fail as toolError, ok } from './results.js';
 /**
  * A tool error for the admin token. A name an archived kolab, account or actor holds is refused
  * everywhere in the words a live one is, so no one else learns it exists; the admin token, which
- * can list archived ones anyway, is also told which archived one holds it and how to restore it (D52).
+ * can list archived ones anyway, is also told which archived one holds it and how to restore it
+ * (D52).
  */
 function fail(e: unknown) {
   if (e instanceof NameTakenError && e.archived) {

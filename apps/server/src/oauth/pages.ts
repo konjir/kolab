@@ -41,9 +41,8 @@ const csp = (formTargets: string[]) =>
  * so this is its origin, port and all. The one exception is any IPv6 literal host, which a CSP
  * source can't name: loopback http, `http://[::1]:<port>`, or https, `https://[2001:db8::1]/…`
  * (registration takes either). Then the scheme alone, `http:` or `https:` (CSP3 lets `http:` match
- * https too).
- * That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only to the
- * sign-in's own registered redirect URI. Anything else, none.
+ * https too). That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only
+ * to the sign-in's own registered redirect URI. Anything else, none.
  */
 export function formActionSource(redirectUri: string): string | undefined {
   let u: URL;
@@ -106,9 +105,9 @@ export interface ConsentView {
   /** The invite the person opened, while it is still good (W3.4): the web interface's sign-in only. */
   invite?: InvitePreview;
   /**
-   * The agent, kolab and role the client's scope names together (D97): the
-   * page offers those alone, or, when the agent isn't a live agent of the person's or the kolab
-   * isn't one they reach, nothing to allow. `step` is which of several sign-ins this is, display only.
+   * The agent, kolab and role the client's scope names together (D97): the page offers those
+   * alone, or, when the agent isn't a live agent of the person's or the kolab isn't one they reach,
+   * nothing to allow. `step` is which of several sign-ins this is, display only.
    */
   lock?: { agent: string; kolab: string; role: Role; step: { n: number; of: number } | null };
   /**
@@ -139,12 +138,12 @@ export function lockedTitle(lock: NonNullable<ConsentView['lock']>, allowed: boo
 export const lockAllowed = (v: ConsentView) => !!v.lock && v.agents.includes(v.lock.agent) && v.kolabs.some((k) => k.id === v.lock!.kolab);
 
 /**
- * The consent page locked to the agent, kolab and role the client's scope names (D97): no
- * list of agents, no new agent and no Yourself, nor any other kolab or role, so
- * nothing on it can sign in anyone else; the server refuses any other choice too. Its title and
- * heading name the agent, and "agent N of M" when `kolab connect` signs several in. An agent that
- * isn't the person's, or a kolab they can't reach, is never named (D59): the page says it can't
- * be allowed, and offers only Deny.
+ * The consent page locked to the agent, kolab and role the client's scope names (D97): no list of
+ * agents, no new agent and no Yourself, nor any other kolab or role, so nothing on it can sign in
+ * anyone else; the server refuses any other choice too. Its title and heading name the agent, and
+ * "agent N of M" when `kolab connect` signs several in. An agent that isn't the person's, or a
+ * kolab they can't reach, is never named (D59): the page says it can't be allowed, and offers only
+ * Deny.
  */
 function lockedConsentPage(v: ConsentView & { lock: NonNullable<ConsentView['lock']> }): string {
   const { lock } = v;

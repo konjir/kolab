@@ -1,7 +1,7 @@
 // Who connects to /mcp is logged (mcpClients): each client's own name and version, at initialize (a
 // 2025-era client) and at server/discover (a 2026-07-28 one), once Kolab has answered it, and
 // nothing else of the request; a request that isn't answered, or isn't one of those, logs nothing.
-// Only a server given a clientLog logs them: `konjir serve` gives Kolab's logger.
+// Only a server given a clientLog logs them: `kolab serve` gives Kolab's logger.
 import { EventEmitter } from 'node:events';
 import { expect, test } from '@jest/globals';
 import { createLogger, type LogLevel, type Logger } from '@konjir/log';
