@@ -1164,7 +1164,7 @@ The outbox is Kolab's internals: no agent reads it (`kj_agent` has no grant on i
 
 | Addressing | Dirty versions |
 | --- | --- |
-| Version scope everywhere | 101 of 101 (lockstep) |
+| Version scope on every link between versions (a work package's link to its binding's decision stays element to element) | 101 of 101 (lockstep) |
 | Element *targets*, whole-version sources | 101 of 101 |
 | Element targets **and** element sources | **2**, at every N |
 | Same, but each component's binding relies on the whole binding | 101 of 101 |
