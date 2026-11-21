@@ -280,7 +280,25 @@ async function probe(backend: Backend, s: Shape) {
     const t0 = performance.now();
     const writers = [loop(unrelated, during.unrelated), loop(variantEdit, during.variant)];
     let stormError: string | undefined;
-    await kolab.commit(product, P, { elements: next }).then(() => kolab.drainOutbox()).catch((e) => { stormError = String(e); });
+    // The storm is over once P's new version has reached every variant: each one's live version
+    // descends from it. Draining until the outbox is empty would never end while the variant
+    // writer runs, since each of its edits queues rebases of that variant's children (P6, D43).
+    const fromNew = async (p2: string) => {
+      for (const id of depth.keys()) {
+        let v = (await kolab.latestCommitted(id))!;
+        while (v.node_id !== P) v = await kolab.version(v.parent_version_id!);
+        if (v.id !== p2) return false;
+      }
+      return true;
+    };
+    try {
+      const p2 = await kolab.commit(product, P, { elements: next });
+      for (;;) {
+        const ran = await kolab.drainOutbox({ max: 25 });
+        if (await fromNew(p2)) break;
+        if (!ran) { stormError = 'the outbox emptied before P\'s new version reached every variant'; break; }
+      }
+    } catch (e) { stormError = String(e); }
     const ms = performance.now() - t0;
     running = false;
     await Promise.all(writers);
