@@ -1,7 +1,7 @@
 #!/bin/bash
 # Starts Kolab from this release. The instance's konjir-start runs it as the konjir user, with
-# /etc/konjir/env, the admin token and the database URL in the environment, and passes --port and --data.
-# It ships with the code, so changing how Kolab starts is a plain terraform apply.
+# /etc/konjir/env, the admin token and the database URL in the environment, and passes --port and
+# --data. It ships with the code, so changing how Kolab starts is a plain terraform apply.
 set -euo pipefail
 # The physical path: the release is reached through the /opt/konjir/current symlink.
 cd -P "$(dirname "$0")/../.."
@@ -25,9 +25,9 @@ if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJI
     unset GITHUB_SECRET
   fi
 fi
-# The published konjir CLI's npm spec (W3.7), which Terraform keeps beside the admin token
+# The published kolab CLI's npm spec (W3.7), which Terraform keeps beside the admin token
 # (/konjir/<name>/cli-npm-spec), so the web page shows npx commands for it. Without the
-# parameter, Kolab runs as before. Like the GitHub app's, it is read here, not in the boot script.
+# parameter, the page shows none. Like the GitHub app's, it is read here, not in the boot script.
 if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJIR_CLI_NPM_SPEC:-}" ]; then
   if CLI_NPM_SPEC=$(aws ssm get-parameter --region "$AWS_REGION" --name "${KONJIR_TOKEN_PARAM%/admin-token}/cli-npm-spec" \
       --query Parameter.Value --output text 2>/dev/null) && [ -n "$CLI_NPM_SPEC" ]; then

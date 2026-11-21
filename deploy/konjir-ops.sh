@@ -46,7 +46,7 @@ case "${1:-}" in
   --env=*) ENV="${1#--env=}"; shift ;;
 esac
 [ "$ENV" = production ] || die "--env is production, the only environment (D83), not '$ENV'"
-# Its own Terraform working data, initialised on first use, apart from any older deploy/terraform/.terraform.
+# Its own Terraform working data, initialised on first use, apart from deploy/terraform/.terraform.
 export TF_DATA_DIR="$TF/.terraform-$ENV"
 
 tf() {
@@ -108,7 +108,7 @@ cmd_rotate_admin_token() {
 
 # Refuses unless Kolab has a live Konjir admin who can sign in, asked with the break-glass token in
 # SSM now. If that is already `off`, the break-glass is disabled already and there is nothing to
-# lose. Needs the konjir CLI locally (npm install), as connect does.
+# lose. Needs the kolab CLI locally (npm install), as connect does.
 require_an_admin_who_signs_in() {
   local current admins
   current="$(admin_token)"
@@ -212,7 +212,7 @@ EOF
 
 INJECT_USAGE="usage: konjir-ops.sh inject <crash|down [1-15 min]|dead-job|errors|log-flood|disk-high [12-30 min]|no-logs [45-60 min]|rds-cpu|rds-storage> [--yes-production]"
 
-# Sets off one alarm on purpose (README: Alarms). crash, down, log-flood, disk-high and no-logs go
+# Sets off one alarm on purpose (README: Logs and alarms). crash, down, log-flood, disk-high and no-logs go
 # through the real instance, so they say what they will do and need --yes-production; dead-job and
 # errors put lines into the log group's `inject` stream, which the same filters count; the RDS
 # alarms are set by hand, and go back to their real state at their next evaluation.
@@ -248,7 +248,8 @@ cmd_inject() {
     dead-job)
       line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject dead-job: not a real job","event":"outbox_job_dead","kolab":"injected","_SYSTEMD_UNIT":"konjir.service"}' ;;
     errors)
-      # The alarm takes 2 of 3 five-minute periods, so 12 lines go in this period and 12 in the one before.
+      # The alarm takes 2 of 3 five-minute periods, so 12 lines go in this period and 12 in the
+      # one before.
       line='{"level":"error","message":"injected by deploy/konjir-ops.sh inject errors: not a real error","_SYSTEMD_UNIT":"konjir.service"}'; count=12; periods=2 ;;
     rds-cpu|rds-storage)
       alarm="$(tf output -json alarms | python3 -c 'import json,sys;print([a for a in json.load(sys.stdin) if "-" + sys.argv[1] + "-" in a][0])' "$what")"

@@ -275,13 +275,15 @@ EOF
   trap 'exit 130' INT TERM
   trap 'exit 129' HUP
 
-  # The recovery point is read again just before the restore, so the lag is what an incident now would lose.
+  # The recovery point is read again just before the restore, so the lag is what an incident now
+  # would lose.
   latest="$(field "$DB" LatestRestorableTime)"
   t_start="$(date +%s)"
   lag=$((t_start - $(epoch_of "$latest")))
   log "drill: $ENV, database $DB, scratch $scratch, by ${USER:-?} from $(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo '?')"
   log "recovery point: $latest, $lag s behind now (D81: up to about 5 to 6 minutes)"
-  # Set before the call: if RDS takes the request and the call is interrupted, the exit still offers cleanup.
+  # Set before the call: if RDS takes the request and the call is interrupted, the exit still
+  # offers cleanup.
   DRILL_CREATED=1
   aws rds restore-db-instance-to-point-in-time \
     --source-db-instance-identifier "$DB" \

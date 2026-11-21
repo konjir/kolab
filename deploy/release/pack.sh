@@ -7,7 +7,7 @@
 # - Only what git tracks ships, from `git archive` of HEAD: no untracked or ignored file can be in
 #   it, such as .env, a .claude/ worktree, a nested .konjir data directory or a *.tfvars file.
 # - A tracked change not yet committed is refused, so every deploy is exactly a commit; only
-#   Terraform's provider lock may differ, which `terraform init` rewrites and which never ships changed.
+#   Terraform's provider lock may differ: `terraform init` rewrites it, and it never ships changed.
 # - A tracked file that must never ship (.env, .claude/, .playwright-mcp/, .konjir/, *.tfvars,
 #   Terraform state) is refused, should one ever be committed.
 # - The release id is the commit's tree id, so it changes only when tracked content does: two

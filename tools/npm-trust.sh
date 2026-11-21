@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
-# Makes @konjir/kolab on npm trust .github/workflows/release-cli.yml in konjir/kolab, run in the npm-release
-# environment, so GitHub Actions can publish it with provenance and no npm token (W7.16). The environment's
-# deployment branches are main only, so only a run from main can publish. With the argument konnect, it does
-# the same for @konjir/konnect and .github/workflows/release-konnect.yml. A package must be on npm already
-# (one version, published by hand) before it can trust a workflow. The CLI was published as konjir until 0.8.0;
-# that package is left as it is, and this script no longer touches it.
-# Then sets the package to require two-factor authentication and disallow tokens (mfa=publish), so a leaked npm
-# token can't publish it; trusted publishing still works.
-# Lee runs it once after `npm login` (npm run release:trust); if the package already trusts the workflow, that is
-# skipped. Then it lists who can publish it, and your npm tokens, for you to review.
+# Makes @konjir/kolab on npm trust .github/workflows/release-cli.yml in konjir/kolab, run in the
+# npm-release environment, so GitHub Actions can publish it with provenance and no npm token
+# (W7.16). The environment's deployment branches are main only, so only a run from main can
+# publish. With the argument konnect, it does the same for @konjir/konnect and
+# .github/workflows/release-konnect.yml. A package must be on npm already (one version, published
+# by hand) before it can trust a workflow. The CLI was published as konjir until 0.8.0; this
+# script leaves that package as it is.
+# Then sets the package to require two-factor authentication and disallow tokens (mfa=publish), so
+# a leaked npm token can't publish it; trusted publishing still works.
+# Lee runs it once after `npm login` (npm run release:trust); if the package already trusts the
+# workflow, that is skipped. Then it lists who can publish it, and your npm tokens, for you to
+# review.
 #
-# A new trust expires unless a publish uses it within about 48 hours, and `npm trust list` doesn't show that
-# it expired (the package's settings page on npmjs.com does). The release's publish job then fails with "OIDC token
-# exchange error - package not found". --renew replaces its trust of the workflow with a new one; release
-# right after.
+# A new trust expires unless a publish uses it within about 48 hours, and `npm trust list` doesn't
+# show that it expired (the package's settings page on npmjs.com does). The release's publish job
+# then fails with "OIDC token exchange error - package not found". --renew replaces its trust of
+# the workflow with a new one; release right after.
 #
 #   npm run release:trust                    # trust the workflow, set mfa=publish, list for review
 #   npm run release:trust -- --dry-run       # say what it would do, change nothing
 #   npm run release:trust -- --renew         # replace expired trust
 #   npm run release:trust -- konnect         # the same for @konjir/konnect (release-konnect.yml)
 #
-# Every npm call needs a one-time password. The script asks for one from your authenticator app and reuses it
-# until npm rejects it, then asks for the next, so a run takes a code about every 30 seconds rather than one
-# per call. Other arguments starting with - go to npm.
+# Every npm call needs a one-time password. The script asks for one from your authenticator app
+# and reuses it until npm rejects it, then asks for the next, so a run takes a code about every 30
+# seconds rather than one per call. Other arguments starting with - go to npm.
 set -euo pipefail
 
 PACKAGE=@konjir/kolab
@@ -80,7 +82,8 @@ for arg in "$@"; do
 done
 
 ask_otp
-# Reading trust needs two-factor authentication too, so a failure here must stop rather than count as untrusted
+# Reading trust needs two-factor authentication too, so a failure here must stop rather than count
+# as untrusted.
 npm_otp trust list "$PACKAGE" > "$log" || { echo "ERROR: couldn't read the trust settings of $PACKAGE" >&2; exit 1; }
 if $renew; then
   for id in $(trust_ids "$log"); do
