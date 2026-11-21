@@ -41,7 +41,7 @@ type Fixture = ReturnType<typeof fixture>;
 
 const REPO = 'repository https://github.com/acme/shop';
 
-/** A Kolab where lee, a person, holds Admin in the test kolab; `as` signs him in afresh in a role, as konjir login does. */
+/** A Kolab where lee, a person, holds Admin in the test kolab; `as` signs him in afresh in a role, as kolab login does. */
 async function lee() {
   const kolab = await openKolab();
   await people(kolab, 'lee', { level: 'admin' });
