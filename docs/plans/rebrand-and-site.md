@@ -33,7 +33,7 @@ Left:
 | Names machines read keep `konjir`: the `konjir_*` tool names, `kj:` addresses, `KONJIR_URL`, `KONJIR_TOKEN`, and the MCP entry keys `konjir connect` writes. Only what people install and type changes | Proposed by Claude, unless Lee says otherwise |
 | No `konnect.konjir.com` for now (it doesn't resolve today, and nothing needs it) | Proposed by Claude, unless Lee says otherwise |
 | Each landing page's source is its `<main>`, a plain page in `site/src/<section>/main.html` (D92), which `deploy/site/build.mjs` builds into the shared header and its section's footer; Kolab's pages end with Kolab's own footer, `site/src/kolab/footer.html` | Proposed by Claude, unless Lee says otherwise |
-| The repository is self-contained: no claude.ai artifacts are referenced, published or read | Lee, 2026-11-21 |
+| The repository is self-contained: no claude.ai artifacts are referenced, published or read | Lee, 2026-11-20 |
 
 Still needed from Lee: the text of a privacy policy and terms (the site asks people to sign in with GitHub and links to neither), and what to say about pricing and limits during early testing.
 
