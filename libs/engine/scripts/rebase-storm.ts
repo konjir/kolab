@@ -2,7 +2,9 @@
  * How expensive is one parent commit with many variants under it? (W2.7, CAS8)
  *
  * A parent spec P has E elements. Under it hang W variant trees, each D levels deep with
- * B children per variant per level, so V = W * (1 + B + ... + B^(D-1)) variants. Every
+ * B children per variant per level, so V = W * (1 + B + ... + B^(D-1)) variants. A kolab
+ * holds exactly one spec (KON1), so each variant is a fork (KON9): the one spec of a kolab
+ * of its own, written by a person who reads its parent's kolab. Every
  * variant overrides a fraction F of the elements, a different window each. P then commits
  * a version that changes K elements, and Kolab rebases every variant onto it (OVR3),
  * level by level, each rebase through the structural gate (OVR10, VER12) and the
@@ -28,7 +30,32 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { ADMIN_DOER, type Checks } from '@konjir/types';
 import { GateError, Kolab, structuralChecks } from '../src/index.js';
-import { people } from '../src/testing.js';
+import { TEST_KOLAB, people } from '../src/testing.js';
+
+/** The kolab variant `id` is the spec of: V0.1 -> v0-1, since a kolab name has no dots or capitals. */
+const kolabOf = (id: string) => id.toLowerCase().replace(/\./g, '-');
+
+/**
+ * A kolab of its own for variant `id`, since a kolab holds exactly one spec (KON1): a variant of
+ * a spec is a fork (KON9), the spec of another kolab. Its writers are people of their own,
+ * `<kolab>-<name>` for each of `names`, since a person holds one hand-issued session at a time
+ * (D103). Each gets Write on its functional layer and a session there, returned in order. The
+ * first, who forks it, holds the fork, and so reads `parentKolab`, where its parent is. The
+ * organization people() made owns it.
+ */
+async function forkKolab(kolab: Kolab, id: string, parentKolab: string, names = ['author']) {
+  const k = kolabOf(id);
+  await kolab.createKolab(k, { owner: 'test-org', by: ADMIN_DOER });
+  const sessions = [];
+  for (const [i, name] of names.entries()) {
+    const person = `${k}-${name}`;
+    await kolab.addActor(person, { by: ADMIN_DOER });
+    await kolab.grant(k, person, 'write', { layers: ['functional'], by: ADMIN_DOER });
+    if (i === 0) await kolab.grant(parentKolab, person, 'read', { by: ADMIN_DOER });
+    sessions.push(await kolab.openSession(person, 'product', { kolab: k, by: ADMIN_DOER }));
+  }
+  return sessions;
+}
 
 type Shape = { E: number; W: number; D: number; B: number; K: number; F: number };
 type Backend = { name: string; url?: () => Promise<string>; stop?: () => Promise<void> };
@@ -79,16 +106,18 @@ async function peakRss<T>(fn: () => Promise<T>): Promise<[T, number]> {
 const text = (i: number, gen = 1) => `Element ${i} holds, as of revision ${gen}.`;
 
 async function family(kolab: Kolab, s: Shape) {
-  await people(kolab, 'alice');
-  const product = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
+  await people(kolab, 'alice', { layers: ['functional'] });
+  const product = await kolab.openSession('alice', 'product', { kolab: TEST_KOLAB, by: ADMIN_DOER });
   const range = [...Array(s.E).keys()];
   const P = await kolab.createNode(product, 'spec', 'Parent', 'P');
   const p1 = await kolab.commit(product, P, { elements: range.map((i) => ({ id: `E${i}`, text: text(i) })) });
 
   const depth = new Map<string, number>();
+  /** The session of each variant's author, in its kolab. */
+  const sessions = new Map<string, string>();
   const overrides = Math.max(1, Math.round(s.F * s.E));
   let n = 0;
-  const grow = async (parentVersion: string, path: string, level: number) => {
+  const grow = async (parentVersion: string, parentKolab: string, path: string, level: number) => {
     const id = `V${path}`;
     const k = n++;
     // A window of `overrides` elements, starting at a different place for each variant.
@@ -97,15 +126,17 @@ async function family(kolab: Kolab, s: Shape) {
       const i = (start + j) % s.E;
       return { kind: 'override' as const, element: `E${i}`, text: `Variant ${id} says element ${i} differently.` };
     });
-    await kolab.createNode(product, 'spec', `Variant ${id}`, id);
-    const v = await kolab.commit(product, id, { parent: parentVersion, deltas });
+    const [mine] = await forkKolab(kolab, id, parentKolab);
+    await kolab.createNode(mine, 'spec', `Variant ${id}`, id);
+    const v = await kolab.commit(mine, id, { parent: parentVersion, deltas });
     depth.set(id, level);
-    if (level < s.D) for (let b = 0; b < s.B; b++) await grow(v, `${path}.${b}`, level + 1);
+    sessions.set(id, mine);
+    if (level < s.D) for (let b = 0; b < s.B; b++) await grow(v, kolabOf(id), `${path}.${b}`, level + 1);
   };
-  for (let w = 0; w < s.W; w++) await grow(p1, `${w}`, 1);
+  for (let w = 0; w < s.W; w++) await grow(p1, TEST_KOLAB, `${w}`, 1);
 
   const next = range.map((i) => ({ id: `E${i}`, text: i < s.K ? text(i, 2) : text(i) }));
-  return { product, P, next, depth };
+  return { product, P, next, depth, sessions };
 }
 
 // ---------------------------------------------------------------------------
@@ -214,11 +245,11 @@ async function probe(backend: Backend, s: Shape) {
   Object.assign(kolab.rates, { asks: Infinity, drafts: Infinity }); // a benchmark's writes, not a runaway agent's
   instrument(kolab);
   try {
-    const { product, P, next, depth } = await family(kolab, s);
-    // An engineer, so the product owner stays the only one on her layer and her edits commit
-    // without waiting for review (W1.6).
+    const { product, P, next, depth, sessions } = await family(kolab, s);
+    // An engineer in P's kolab, so the product owner stays the only one on her layer and her
+    // edits commit without waiting for review (W1.6). His binding is of P, the kolab's spec (D78).
     await people(kolab, 'dave', { layers: ['technical'] });
-    const other = await kolab.openSession('dave', 'engineer', { by: ADMIN_DOER });
+    const other = await kolab.openSession('dave', 'engineer', { kolab: TEST_KOLAB, by: ADMIN_DOER });
     const U = await kolab.createNode(other, 'binding', 'Unrelated', 'U');
     let u = 0;
     const unrelated = () => kolab.commit(other, U, { elements: [{ id: 'X', text: `Unrelated revision ${++u}.` }] });
@@ -226,7 +257,7 @@ async function probe(backend: Backend, s: Shape) {
     let l = 0;
     const variantEdit = () => {
       const id = variants[l++ % variants.length];
-      return kolab.commit(product, id, { deltas: [{ kind: 'add', element: `H${l}`, text: `Human edit ${l} to ${id}.` }] });
+      return kolab.commit(sessions.get(id)!, id, { deltas: [{ kind: 'add', element: `H${l}`, text: `Human edit ${l} to ${id}.` }] });
     };
 
     const time = async (fn: () => Promise<unknown>) => {
@@ -302,7 +333,7 @@ async function rebaseFailed(kolab: Kolab) {
 //
 // Each race injects one concurrent write at an exact point, through a checks hook or a
 // wrapper on db.query, into a small family: P with three elements, and variants that each
-// override E2. Each prints what happened and a verdict against what W1.17 (one serialized
+// override E2, each a fork in a kolab of its own (KON1, KON9). Each prints what happened and a verdict against what W1.17 (one serialized
 // commit step per node) guarantees: no committed edit is lost, and no caller gets a raw
 // database error. Reproductions after the PR #16 review; libs/engine/test/concurrency.test.ts
 // runs the same races as tests, on PGlite and Postgres.
@@ -318,24 +349,37 @@ async function raceKolab(backend: Backend) {
   return { kolab, setHook: (h: Hook | undefined) => { hook = h; } };
 }
 
-/** P@1 and `roots` variants V0, V1, …, each with `children` variants under it (V0.0, …). */
-async function raceFamily(kolab: Kolab, roots: number, children = 0) {
-  await people(kolab, 'alice');
-  const s = await kolab.openSession('alice', 'product', { by: ADMIN_DOER });
+/**
+ * P@1 and `roots` variants V0, V1, …, each with `children` variants under it (V0.0, …), each a
+ * fork in a kolab of its own (forkKolab), written by its people `writers`. alice writes P, alone
+ * on her layer, so her commits need no review. `as(id, who)` is the session of variant `id`'s
+ * writer `who`, its author by default.
+ */
+async function raceFamily(kolab: Kolab, roots: number, children = 0, writers = ['author']) {
+  await people(kolab, 'alice', { layers: ['functional'] });
+  const s = await kolab.openSession('alice', 'product', { kolab: TEST_KOLAB, by: ADMIN_DOER });
   await kolab.createNode(s, 'spec', 'P', 'P');
   const p1 = await kolab.commit(s, 'P', { elements: [0, 1, 2].map((i) => ({ id: `E${i}`, text: `Parent element ${i}, rev 1.` })) });
   const ids: string[] = [];
-  const add = async (id: string, parent: string) => {
+  const sessions = new Map<string, string[]>();
+  const as = (id: string, who = writers[0]) => sessions.get(id)![writers.indexOf(who)];
+  const add = async (id: string, parent: string, parentKolab: string) => {
     ids.push(id);
-    await kolab.createNode(s, 'spec', id, id);
-    return kolab.commit(s, id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says E2 its own way.` }] });
+    sessions.set(id, await forkKolab(kolab, id, parentKolab, writers));
+    await kolab.createNode(as(id), 'spec', id, id);
+    const draft = await kolab.draft(as(id), id, { parent, deltas: [{ kind: 'override', element: 'E2', text: `${id} says E2 its own way.` }] });
+    // With a second writer, the author's version waits for that person's review (W1.6, AUT2).
+    const r = await kolab.submit(as(id), draft);
+    const done = r.in_review ? await kolab.recordReview(as(id, writers[1]), r.version, { verdict: 'approve' }) : r;
+    if (!done.ok) throw new GateError(`${id}'s first version didn't commit: ${done.note ?? ''}`);
+    return done.version;
   };
   for (let r = 0; r < roots; r++) {
-    const v = await add(`V${r}`, p1);
-    for (let c = 0; c < children; c++) await add(`V${r}.${c}`, v);
+    const v = await add(`V${r}`, p1, TEST_KOLAB);
+    for (let c = 0; c < children; c++) await add(`V${r}.${c}`, v, kolabOf(`V${r}`));
   }
   const next = [0, 1, 2].map((i) => ({ id: `E${i}`, text: i === 0 ? 'Parent element 0, rev 2.' : `Parent element ${i}, rev 1.` }));
-  return { s, ids, next };
+  return { s, ids, next, as };
 }
 
 async function raceHistory(kolab: Kolab, node: string) {
@@ -377,12 +421,12 @@ const verdict = (ok: boolean, what: string) => console.log(`  ${ok ? 'SAFE' : 'R
 async function race1a(backend: Backend) {
   const { kolab, setHook } = await raceKolab(backend);
   try {
-    const { s, next } = await raceFamily(kolab, 2, 1);
+    const { s, next, as } = await raceFamily(kolab, 2, 1);
     let edited: string | undefined;
     setHook(async (ctx) => {
       if (edited || ctx.version.active_role !== 'system' || !/^V\d$/.test(ctx.version.node_id)) return;
       edited = ctx.version.node_id === 'V0' ? 'V1' : 'V0';
-      await kolab.commit(s, edited, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${edited}.` }] });
+      await kolab.commit(as(edited), edited, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${edited}.` }] });
     });
     let error: unknown;
     await kolab.commit(s, 'P', { elements: next }).then(() => kolab.drainOutbox()).catch((e) => { error = e; });
@@ -398,14 +442,15 @@ async function race1a(backend: Backend) {
 }
 
 /**
- * 1b. Review's check-then-act. A human draft of V0 is in its checks (the hook makes them slow)
- * when P commits and the storm rebases V0. The staleness check ran before.
+ * 1b. Review's check-then-act. A human draft of V0 is in its submission checks (the hook runs
+ * there, as a slow gate would) when P commits and the storm rebases V0. The staleness check
+ * ran before.
  */
 async function race1b(backend: Backend) {
   const { kolab, setHook } = await raceKolab(backend);
   try {
-    const { s, ids, next } = await raceFamily(kolab, 1);
-    const draft = await kolab.draft(s, 'V0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.' }] });
+    const { s, ids, next, as } = await raceFamily(kolab, 1);
+    const draft = await kolab.draft(as('V0'), 'V0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.' }] });
     let fired = false;
     setHook(async (ctx) => {
       if (fired || ctx.version.id !== draft) return;
@@ -413,10 +458,10 @@ async function race1b(backend: Backend) {
       await kolab.commit(s, 'P', { elements: next });
       await kolab.drainOutbox();
     });
-    const r = await kolab.submit(s, draft);
+    const r = await kolab.submit(as('V0'), draft);
     setHook(undefined);
-    console.log('\n1b. Review check-then-act: P commits while a human draft of V0 is in review');
-    console.log(`  human review: ok=${r.ok}${r.version === draft ? ', committed the draft' : `, folded into ${r.version}`}`);
+    console.log('\n1b. Review check-then-act: P commits while a human draft of V0 is in its submission checks');
+    console.log(`  human submission: ok=${r.ok}${r.version === draft ? ', committed the draft' : `, folded into ${r.version}`}`);
     console.log(await raceHistory(kolab, 'V0'));
     const kept = await liveHas(kolab, 'V0', 'H');
     console.log(`  other marks: ${await otherMarks(kolab)}; stranded: ${JSON.stringify(await stranded(kolab, ids))}`);
@@ -435,14 +480,14 @@ async function race2a(backend: Backend) {
   const proto = Object.getPrototypeOf(kolab.db);
   const query = proto.query;
   try {
-    const { s, ids, next } = await raceFamily(kolab, 4);
+    const { s, ids, next, as } = await raceFamily(kolab, 4);
     let armed = true, edited: string | undefined, human: Promise<unknown> | undefined;
     proto.query = async function (sql: string, params?: unknown[]) {
       const res = await query.call(this, sql, params);
       const node = params?.[0];
       if (armed && sql.includes('coalesce(max(seq)') && typeof node === 'string' && node.startsWith('V')) {
         armed = false; edited = node;
-        human = kolab.commit(s, node, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${node}.` }] })
+        human = kolab.commit(as(node), node, { deltas: [{ kind: 'add', element: 'H', text: `Human edit to ${node}.` }] })
           .then(() => 'ok', (e) => String(e));
       }
       return res;
@@ -465,7 +510,7 @@ async function race2a(backend: Backend) {
     if (left.length) {
       // A stranded variant catches up on its own next commit (cascade step 5), or on P's next commit.
       const last = left.at(-1)!;
-      await kolab.commit(s, last, { deltas: [{ kind: 'add', element: 'Z', text: `Later edit to ${last}.` }] });
+      await kolab.commit(as(last), last, { deltas: [{ kind: 'add', element: 'Z', text: `Later edit to ${last}.` }] });
       console.log(`  after a later commit to ${last}, it is ${(await stranded(kolab, [last])).length ? 'still stranded' : 'on the new parent'}`);
     }
   } finally { proto.query = query; await kolab.close(); }
@@ -477,10 +522,10 @@ async function race2b(backend: Backend, n = 10) {
   for (let i = 0; i < n; i++) {
     const { kolab } = await raceKolab(backend);
     try {
-      const { s } = await raceFamily(kolab, 1);
-      await people(kolab, 'bob');
-      const s2 = await kolab.openSession('bob', 'product', { by: ADMIN_DOER });
-      // Each one's version waits in review, and the other approves it (W1.6).
+      // Two people write V0, in its kolab: each one's version waits in review, and the other
+      // approves it (W1.6), a person, as the default policy asks of a functional version (AUT2).
+      const { as } = await raceFamily(kolab, 1, 0, ['alice', 'bob']);
+      const s = as('V0', 'alice'), s2 = as('V0', 'bob');
       const reviewed = async (author: string, reviewer: string, element: string, text: string) => {
         const r = await kolab.submit(author, await kolab.draft(author, 'V0', { deltas: [{ kind: 'add', element, text }] }));
         const done = r.in_review ? await kolab.recordReview(reviewer, r.version, { verdict: 'approve' }) : r;
@@ -519,10 +564,10 @@ async function race2b(backend: Backend, n = 10) {
 async function race3(backend: Backend) {
   const { kolab } = await raceKolab(backend);
   try {
-    const { s, ids, next } = await raceFamily(kolab, 3, 1);
+    const { s, ids, next, as } = await raceFamily(kolab, 3, 1);
     const r = await kolab.submit(s, await kolab.draft(s, 'P', { elements: next }));
-    await kolab.commit(s, 'V1', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V1.' }] });
-    await kolab.commit(s, 'V0.0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.0.' }] });
+    await kolab.commit(as('V1'), 'V1', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V1.' }] });
+    await kolab.commit(as('V0.0'), 'V0.0', { deltas: [{ kind: 'add', element: 'H', text: 'Human edit to V0.0.' }] });
     const queued = (await kolab.outboxJobs()).filter((j) => j.kind === 'rebase').length;
     await kolab.drainOutbox();
     const left = await stranded(kolab, ids);
