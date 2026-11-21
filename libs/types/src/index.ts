@@ -45,7 +45,7 @@ export interface InviteView {
 /**
  * One of a person's own open sessions (D103: one on each machine they sign in through), as they
  * see it: its id (whoami's `session`), whether it is the one asking (`current`), how it signed in
- * (`web`: Kolab's web page; `app`: an app or harness, such as the konjir CLI, through its OAuth
+ * (`web`: Kolab's web page; `app`: an app or harness, such as the kolab CLI, through its OAuth
  * client; `token`: a token an admin opened), where (Kolab's own words; for an app, `app "<name>"`,
  * quoting the name the app gave itself), the app's name as it registered it (`app`, null but for
  * an app: its own claim, never checked), its kolab and role, when it opened, when it was last used
@@ -146,9 +146,10 @@ export const ADMIN_DOER = 'admin';
  * The changes Kolab records in its audit log because they leave no row of their own (W2.20): a
  * grant made, replaced or removed, a person added to or removed from an organization or a team,
  * and an outbox job retried; and, since admins are people (W2.22, D69), a person made or no longer
- * a Konjir admin, and each admin verb the break-glass token runs; a kolab's lease length for work set (PLN15, W5.1b); a
- * repository registered or archived by a person (KON7, D98, W5.2a); and a kolab's autonomy policy
- * changed by one of its Admins (POL2, W6.2).
+ * a Konjir admin, and each admin verb the break-glass token runs; a kolab's lease length for work
+ * set (PLN15, W5.1b); a repository registered or archived by a person (KON7, D98, W5.2a); a
+ * kolab's autonomy policy changed by one of its Admins (POL2, W6.2); and a ruling recorded with a
+ * date before the day it was recorded (W6.3).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
@@ -308,9 +309,8 @@ export const WORK_FIELDS = ['done_when', 'depends_on', 'size', 'milestone', 'tar
  * are what it depends on), a milestone's target date (YYYY-MM-DD; only a milestone carries one,
  * PLN2), the repository it is done in, when not its binding's own (KON7), and whether it must be
  * released (`release: true`; PLN16, W7.7): an approval then leaves it In review, approved, until
- * evidence of its release is recorded, which makes it Done. An element with a work
- * field is a work package, `{}` for one whose fields are still to be given; one without is a decision.
- * What it serves and relies on are not fields: they are dependency links, into the spec or its own
+ * evidence of its release is recorded, which makes it Done. An element with a work field is a work
+ * package, `{}` for one whose fields are still to be given; one without is a decision. What it serves and relies on are not fields: they are dependency links, into the spec or its own
  * binding (PLN1).
  */
 export interface WorkFields {
@@ -458,8 +458,9 @@ export const JOB_ENDS = ['done', 'stopped', 'failed'] as const;
 export type JobEnd = typeof JOB_ENDS[number];
 /**
  * How many jobs may be live at once (JOB3; AUT7's defaults): the server's own limits, per person,
- * across every kolab, and per kolab. A kolab's policy may lower its caps, never raise them (POL1). A job lasts at most `maxHours`, however
- * often its lease is renewed (JOB1), and a runner's machine label is 1 to `machine` characters.
+ * across every kolab, and per kolab. A kolab's policy may lower its caps, never raise them (POL1).
+ * A job lasts at most `maxHours`, however often its lease is renewed (JOB1), and a runner's machine
+ * label is 1 to `machine` characters.
  */
 export const JOB_LIMITS = { perPerson: 4, perKolab: 8, maxHours: 4, machine: 64 } as const;
 /**
@@ -547,8 +548,9 @@ export interface JobView {
 }
 /**
  * Why a work package is blocked (PLN19, as D98 and D104 amend it): a work package it depends on
- * isn't Done, or an open question or case file sits on it or on an element it serves or relies on. A session that
- * holds only Read is told neither an open case file nor a question a mark raised (0013, 0022; D58).
+ * isn't Done, or an open question or case file sits on it or on an element it serves or relies on.
+ * A session that holds only Read is told neither an open case file nor a question a mark raised
+ * (0013, 0022; D58).
  */
 export type WorkBlock =
   | { reason: 'depends_on'; work: string; state: WorkState }
@@ -629,10 +631,10 @@ export interface WorkEventView {
   concerned: { address: string; version_id: string | null; fingerprint: string | null }[];
   note: string | null;
 }
-/** An element as a draft gives it: `work` only on a binding's elements, its work packages (D98, D104). */
 /**
- * An element as a draft gives it. `parent` left out keeps where the element sits; `null`, which only
- * Kolab's own callers send (an import), puts it at the top level.
+ * An element as a draft gives it: `work` only on a binding's elements, its work packages (D98,
+ * D104). `parent` left out keeps where the element sits; `null`, which only Kolab's own callers send
+ * (an import), puts it at the top level.
  */
 export interface ElementInput { id?: string; text: string; parent?: string | null; work?: WorkFields | null }
 /**
