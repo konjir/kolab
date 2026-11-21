@@ -18,7 +18,8 @@
 //    on 127.0.0.1:7499, over a read-only session (default_transaction_read_only), answers /healthz,
 //    refuses a token that is no session's with 401 once it has looked it up in the copy, and
 //    refuses admin_list_actors with the break-glass token, since that verb's audit row can't be
-//    written (W2.22; a live release from before W2.22 runs it instead); then it stops. It applies no migration, runs no outbox job and can't write.
+//    written (W2.22; a live release from before W2.22 runs it instead); then it stops. It applies
+//    no migration, runs no outbox job and can't write.
 //    Then the release's engine, opened read-only on the copy without migrating, lists its actors.
 // With `compare`, a separate, optional step then compares the copy with production: migrations
 // and row counts. Production unreachable is a note, not a failure.

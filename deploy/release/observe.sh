@@ -3,8 +3,8 @@
 # every release, so setting it up or changing it is a plain terraform apply, never a new boot
 # script or a new instance. Idempotent: a release that changes nothing here changes nothing.
 #
-# - Installs the CloudWatch agent (amazon-cloudwatch-agent, from Amazon Linux's own repository)
-#   logrotate and python3 (Amazon Linux has it), if they aren't installed.
+# - Installs the CloudWatch agent (amazon-cloudwatch-agent, from Amazon Linux's own repository),
+#   logrotate and python3, if they aren't installed.
 # - The agent reads files, not the journal, so konjir-journal@<unit> (journal-copy.py, beside this
 #   script) copies the journal of each of konjir.service and caddy.service, systemd's own lines
 #   about the unit included ("Main process exited", "Stopped"), to /var/log/konjir/<unit>.log. It

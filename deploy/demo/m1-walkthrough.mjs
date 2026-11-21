@@ -7,17 +7,18 @@
 //
 // It creates everything it uses under fresh names (organizations acme-<run> and globex-<run>, kolabs
 // acme-demo-<run> and globex-demo-<run>, and their people and agents), so it never touches another
-// kolab, the mirror kolab `kolab` included. It prints no token: the agents' tokens go to a state file
+// kolab, the `kolab` kolab included. It prints no token: the agents' tokens go to a state file
 // readable only by you, which `cleanup` reads to end the sessions and archive what the run created.
 //
 // Settings (environment):
 //   KONJIR_URL            the Kolab's MCP endpoint (default http://127.0.0.1:7420/mcp)
 //   KONJIR_TOKEN          the admin token (or KONJIR_ADMIN_TOKEN)
 //   KONJIR_BIN            the kolab command (default: this checkout's bin/kolab, else kolab on PATH);
-//                         may hold arguments, e.g. "npx -y @konjir/kolab@<version>" once published (always pinned)
-//   KONJIR_DEMO_RUN       the suffix that keeps this run's names fresh (default: MMDD plus 4 random characters)
+//                         may hold arguments, e.g. "npx -y @konjir/kolab@<version>" (always pinned)
+//   KONJIR_DEMO_RUN       the suffix that keeps this run's names fresh (default: MMDD plus 4 random
+//                         characters)
 //   KONJIR_DEMO_STATE     where to write the state file (default ~/.konjir-demo/<run>.json)
-//   KONJIR_DEMO_RULING    the Decisions Log id the ruling step applies (default D1)
+//   KONJIR_DEMO_RULING    the ruling id the ruling step applies (default D1)
 //   KONJIR_DEMO_RESTART   optional: a shell command that restarts the Kolab, run while a version waits
 //                         in review, to show the wait survives a restart (run-local.sh sets it)
 //   KONJIR_DEMO_CLEANUP=1 clean up at the end of the run

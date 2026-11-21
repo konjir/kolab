@@ -1,8 +1,8 @@
-// What the published one-file packages share: kolab (@konjir/kolab, apps/cli) and konnect (apps/konnect). Each
-// bundles its client into one .mjs with Bun, checks it carries only the Apache-2.0 code of this
-// repository it may, and lists every package it inlines, with its licence, beside it. The two
-// packages' scripts (apps/cli/scripts/bundle.mjs and package.mjs, apps/konnect/scripts/bundle.mjs
-// and package.mjs) say what each bundles; this file is how.
+// What the published one-file packages share: kolab (@konjir/kolab, apps/cli) and konnect
+// (apps/konnect). Each bundles its client into one .mjs with Bun, checks it carries only the
+// Apache-2.0 code of this repository it may, and lists every package it inlines, with its licence,
+// beside it. The two packages' scripts (apps/cli/scripts/bundle.mjs and package.mjs,
+// apps/konnect/scripts/bundle.mjs and package.mjs) say what each bundles; this file is how.
 //
 // Pure functions over files and text, with no Bun API, so both Node (package.mjs) and Bun
 // (bundle.mjs) load it, and tests call it.
