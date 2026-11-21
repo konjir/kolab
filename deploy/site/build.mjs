@@ -1,28 +1,27 @@
 #!/usr/bin/env node
 // Builds site/ (https://www.konjir.com, D81) from its source in site/src/ (D92).
 //
-//   node deploy/site/build.mjs [<Main.dc.html> <images-dir>]
+//   node deploy/site/build.mjs
 //
 // The site is split by product (docs/plans/rebrand-and-site.md): each section's source is in
 // site/src/<section>/, and its pages are under /<section>/ (PAGES below):
 //
-//   /                 site/src/www/main.html, the org page (its <main>, until it has an artboard)
-//   /kolab/           site/src/kolab/project/Main.dc.html, the artboard (the "Konjir Marketing Page"
-//                     artifact is published from site/src/kolab/), with the images it names as
-//                     /_blob/<id> in site/src/kolab/images/<id>.<ext>
+//   /                 site/src/www/main.html, the org page (its <main>)
+//   /kolab/           site/src/kolab/main.html, Kolab's page (its <main>)
 //   /kolab/how-it-works/  site/src/kolab/how-it-works.md, how Kolab works, for someone new to it
 //   /kolab/hands-on/  site/src/kolab/hands-on.md, the hands-on tutorial
-//   /konnect/         site/src/konnect/main.html, konnect's page (its <main>, until it has an artboard)
+//   /konnect/         site/src/konnect/main.html, konnect's page (its <main>)
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
 //
-// With arguments, the Kolab artboard and its images are read from there instead.
-// It reads nothing from the network: the fonts are vendored in deploy/site/fonts/ (vendor-fonts.mjs).
-// It writes only site/'s built files and never touches site/src/ or site/README.md. See site/README.md.
+// site/src/site.css is the stylesheet every page shares, and site/src/kolab/footer.html the footer
+// every Kolab page ends with (a section's footer.html, when it has one). It reads nothing from the
+// network: the fonts are vendored in deploy/site/fonts/ (vendor-fonts.mjs). It writes only site/'s
+// built files and never touches site/src/ or site/README.md. See site/README.md.
 //
-// The artboard runs on the artifact's Design Component runtime. The site can't, so this:
-//  - drops the runtime (support.js) and its <x-dc>/<helmet> wrappers, and the artboard's own header:
-//    every page gets the one header chrome.mjs writes (the Konjir mark, the product switcher, the
-//    section's links, the theme switch, which deploy/site/site.js runs);
+// The site is static, under a CSP that allows nothing inline and nothing from elsewhere, so this:
+//  - puts each page in the one root and header chrome.mjs writes (the Konjir mark, the product
+//    switcher, the section's links, the theme switch, which deploy/site/site.js runs), and ends it
+//    with its section's footer;
 //  - serves the vendored fonts, checked against source.json, with each family's OFL licence;
 //  - moves every inline style="" into a generated class, so the CSP needs no 'unsafe-inline';
 //  - hashes asset names (site/assets/), so they can be cached for a year, and keeps the previous
@@ -32,14 +31,14 @@
 //  - renders each article page with markdown.mjs into its section's header and footer, as
 //    <path>/index.html, styled by article.css.
 // Every page's <head> has its canonical URL on https://www.konjir.com and its Open Graph and Twitter tags.
-// It refuses an artboard that uses anything else from the runtime, or anything the CSP would
-// block (scripts, handlers, frames, javascript: URLs, other origins' resources), rather than guess.
+// It refuses, rather than guess, a source holding an element it doesn't know, a template hole, or
+// anything the CSP would block (scripts, handlers, frames, javascript: URLs, other origins' resources).
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { footer, header } from './chrome.mjs';
+import { ROOT, footer, header } from './chrome.mjs';
 import { render } from './markdown.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,9 +46,8 @@ const repo = resolve(here, '../..');
 const out = join(repo, 'site');
 const fontsDir = join(here, 'fonts');
 const sourceDir = join(out, 'src');
-const args = process.argv.slice(2);
-if (args.length !== 0 && args.length !== 2) {
-  console.error('usage: node deploy/site/build.mjs [<Main.dc.html> <images-dir>]');
+if (process.argv.length > 2) {
+  console.error('usage: node deploy/site/build.mjs');
   process.exit(2);
 }
 
@@ -85,7 +83,7 @@ const SECTIONS = {
   },
 };
 
-// The footer of a section without an artboard of its own (and of the 404 page).
+// The footer of a section without a footer.html of its own (and of the 404 page).
 const FOOTER_LINKS = [
   { href: '/kolab/', text: 'Kolab' },
   { href: '/kolab/how-it-works/', text: 'How Kolab works' },
@@ -95,17 +93,16 @@ const FOOTER_LINKS = [
 ];
 
 // The pages, each at its path under ORIGIN, built from site/src/<source>:
-//  - artboard: a claude.ai artboard, its images in site/src/<images>/
-//  - main: the <main> of a page, written as an artboard's is, in the shared header and footer
+//  - main: the <main> of a page, its styles inline (moved into classes below), in the shared
+//    header and its section's footer; a section's main page is its landing page
 //  - article: Markdown, rendered under its kicker, with a contents list of its "## " headings
-// The first artboard is the design every page shares: its fonts, its stylesheet and its root.
 const PAGES = [
   { path: '/', section: 'www', main: 'www/main.html', title: 'Konjir: tools for teams of people and their AI agents' },
   {
     path: '/kolab/',
     section: 'kolab',
-    artboard: 'kolab/project/Main.dc.html',
-    images: 'kolab/images',
+    main: 'kolab/main.html',
+    title: 'Kolab: keep the spec and the code built from it in step',
     links: [
       { href: '/kolab/how-it-works/', text: 'How it works' },
       { href: '#circle', text: 'Roles' },
@@ -123,13 +120,14 @@ for (const p of PAGES) {
   if (!/^\/(?:[a-z0-9-]+\/)*$/.test(p.path)) fail(`a page path must be /, or /<folder>/…/: ${p.path}`);
   p.file = `${p.path.slice(1)}index.html`;
   p.url = ORIGIN + p.path;
-  if (p.artboard && args.length) [p.artboardPath, p.imagesDir] = args.map((a) => resolve(a));
-  else if (p.artboard) [p.artboardPath, p.imagesDir] = [join(sourceDir, p.artboard), join(sourceDir, p.images)];
-  const source = p.artboardPath ?? join(sourceDir, p.main ?? p.article);
+  const source = join(sourceDir, p.main ?? p.article);
   if (!existsSync(source)) fail(`no ${p.what ?? 'page source'} at ${source}`);
 }
-const landing = (section) => PAGES.find((p) => p.section === section && p.artboard);
-if (!PAGES.some((p) => p.artboard)) fail('no artboard to take the design from');
+const landing = (section) => PAGES.find((p) => p.section === section && p.main);
+
+// The design every page shares: its language, its root (chrome.mjs) and its stylesheet.
+const design = { lang: 'en', root: ROOT, baseCss: readFileSync(join(sourceDir, 'site.css'), 'utf8').trim() };
+if (/url\(|@import/i.test(design.baseCss)) fail('site/src/site.css loads something (url() or @import); the fonts are vendored in deploy/site/fonts/');
 
 // The build writes only these in site/; site/src/ (the source) and site/README.md are never its.
 const outputs = new Set(['404.html', 'robots.txt', 'sitemap.xml', 'favicon.svg', 'assets', 'og', ...PAGES.map((p) => p.file.split('/')[0])]);
@@ -206,10 +204,24 @@ const refuse = [
   [/<(?!a\b)[a-z][\w-]*\b[^>]*\shref\s*=\s*"(?!#)/i, 'an href on anything but <a> that leaves the page'],
   [/\sstyle\s*=\s*"[^"]*(url\(|@import|expression\(|[{}<])/i, 'a style with url(), @import, expression() or a brace'],
 ];
+// The elements a page may hold: HTML's own, and the SVG the mark and the icons draw with. Anything
+// else, a custom element or another tool's markup, is refused: a static page would show it as it
+// is. No images yet: the build has nothing to hash them with.
+const ELEMENTS = new Set(
+  [
+    'a abbr article aside b blockquote br button caption cite code col colgroup dd del details dfn div dl dt em figcaption figure footer',
+    'h1 h2 h3 h4 h5 h6 header hr i ins kbd li main mark nav ol p pre q s samp section small span strong sub summary sup',
+    'table tbody td tfoot th thead time tr u ul var wbr',
+    'svg g path circle ellipse line polyline polygon rect text tspan defs lineargradient radialgradient stop clippath mask',
+  ].join(' ').split(' '),
+);
 const check = (html, where, verb = 'has') => {
   for (const [re, what] of refuse) {
     const m = re.exec(html);
     if (m) fail(`${where} ${verb} ${what}: ${html.slice(m.index, m.index + 80)}`);
+  }
+  for (const m of html.matchAll(/<([a-zA-Z][\w:.-]*)/g)) {
+    if (!ELEMENTS.has(m[1].toLowerCase())) fail(`${where} ${verb} an element the build doesn't know, <${m[1]}>: ${html.slice(m.index, m.index + 80)}`);
   }
 };
 const descriptionOf = (main, where) =>
@@ -218,101 +230,26 @@ const descriptionOf = (main, where) =>
     .replace(/<[^>]+>/g, '')
     .trim() ?? fail(`${where}: no lead paragraph after the <h1> for the description`);
 
-// --- Artboards ---
+// --- Fonts ---
 
-// One artboard: its helmet (the font links and one <style>), and its body split into the root, the
-// header (dropped for chrome.mjs's), the main and the footer.
-let design = null;
-let fontCss = '';
-for (const p of PAGES.filter((q) => q.artboard)) {
-  const where = relative(repo, p.artboardPath);
-  const src = readFileSync(p.artboardPath, 'utf8');
-  for (const tag of ['<sc-for', '<sc-if', '<dc-import', '<x-import']) {
-    if (src.includes(tag)) fail(`${where} uses ${tag}>, which this converter doesn't render; extend it`);
-  }
-  const lang = /<html\s+lang="([^"]+)"/.exec(src)?.[1] ?? 'en';
-  p.title = /<title>([\s\S]*?)<\/title>/.exec(src)?.[1].trim() ?? fail(`${where}: no <title>`);
-  const helmet = /<helmet>([\s\S]*?)<\/helmet>/.exec(src)?.[1] ?? fail(`${where}: no <helmet>`);
-  const xdc = /<\/helmet>([\s\S]*?)<\/x-dc>/.exec(src)?.[1].trim() ?? fail(`${where}: no <x-dc> body`);
-
-  // The helmet: font links, preconnects and one <style>. Anything else is unexpected.
-  const fontHrefs = [...helmet.matchAll(/<link rel="stylesheet" href="(https:\/\/fonts\.googleapis\.com\/css2\?[^"]+)">/g)].map((m) =>
-    m[1].replaceAll('&amp;', '&'),
-  );
-  const baseCss = [...helmet.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1].trim()).join('\n');
-  const rest = helmet
-    .replace(/<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/css2\?[^"]+">/g, '')
-    .replace(/<link rel="preconnect"[^>]*>/g, '')
-    .replace(/<style>[\s\S]*?<\/style>/g, '')
-    .trim();
-  if (rest) fail(`${where}: unexpected <helmet> content: ${rest.slice(0, 120)}`);
-  if (/url\(|@import/i.test(baseCss)) fail(`${where}: the helmet <style> loads something (url() or @import); extend the converter`);
-
-  // The root's theme hole defaults to dark, as renderVals() does; site.js takes it from there.
-  const body = /^(<div class="kj"[^>]*>)\s*<header\b[\s\S]*?<\/header>\s*(<main>[\s\S]*<\/main>)\s*(<footer\b[\s\S]*<\/footer>)\s*<\/div>$/.exec(
-    xdc.replace(/data-theme="\{\{\s*theme\s*\}\}"/g, 'data-theme="dark"'),
-  ) ?? fail(`${where}: the body isn't one .kj root holding a <header>, a <main> and a <footer>`);
-  const [, root, main, foot] = body;
-
-  if (!design) {
-    design = { lang, fontHrefs, baseCss, root };
-  } else if (lang !== design.lang || baseCss !== design.baseCss || fontHrefs.join() !== design.fontHrefs.join() || root !== design.root) {
-    fail(`${where}: its helmet or root differs from ${relative(repo, PAGES.find((q) => q.artboard).artboardPath)}'s; the site has one design`);
-  }
-
-  // Images the page names as /_blob/<id>, and links to this site made relative, so they work
-  // wherever it is served (the artifact on claude.ai needs them absolute).
-  const assetFiles = existsSync(p.imagesDir) ? readdirSync(p.imagesDir) : [];
-  const blobs = new Map();
-  const site = (html) =>
-    html
-      .replace(/\/_blob\/([0-9a-f]{32})/g, (_, id) => {
-        if (!blobs.has(id)) {
-          const file = assetFiles.find((f) => f.startsWith(`${id}.`)) ?? fail(`no file for /_blob/${id} in ${p.imagesDir}`);
-          blobs.set(id, emit('img', extname(file).toLowerCase(), readFileSync(join(p.imagesDir, file))));
-        }
-        return blobs.get(id);
-      })
-      .replaceAll(`href="${ORIGIN}/`, 'href="/');
-  p.mainHtml = site(main);
-  p.footer = site(foot);
-  p.imageCount = blobs.size;
-  p.description = descriptionOf(p.mainHtml, where);
+// The copy vendored in deploy/site/fonts/ (vendor-fonts.mjs), each file checked against source.json.
+const manifest = JSON.parse(readFileSync(join(fontsDir, 'source.json'), 'utf8'));
+const vendored = {};
+for (const [name, digest] of Object.entries(manifest.files)) {
+  const buf = readFileSync(join(fontsDir, name));
+  if (sha256(buf) !== digest) fail(`deploy/site/fonts/${name} doesn't match source.json`);
+  vendored[name] = buf;
 }
-
-// Fonts: the vendored copy, which must be the one the artboard links, byte for byte.
-if (design.fontHrefs.length) {
-  const manifest = JSON.parse(readFileSync(join(fontsDir, 'source.json'), 'utf8'));
-  for (const href of design.fontHrefs) {
-    if (href !== manifest.href) fail(`the artboard links fonts the vendored copy isn't: run node deploy/site/vendor-fonts.mjs '${href}'`);
-  }
-  const vendored = {};
-  for (const [name, digest] of Object.entries(manifest.files)) {
-    const buf = readFileSync(join(fontsDir, name));
-    if (sha256(buf) !== digest) fail(`deploy/site/fonts/${name} doesn't match source.json`);
-    vendored[name] = buf;
-  }
-  fontCss = vendored['fonts.css'].toString('utf8').replace(/url\(([\w.-]+\.woff2)\)/g, (_, name) => {
-    const buf = vendored[name] ?? fail(`fonts.css names ${name}, which isn't vendored`);
-    return `url(${emit(`fonts/${name.replace(/\.woff2$/, '')}`, '.woff2', buf)})`;
-  });
-  for (const name of Object.keys(vendored).filter((n) => n.endsWith('-OFL.txt'))) {
-    writeFileSync(outPath(`assets/fonts/${name}`), vendored[name]);
-  }
+if (!vendored['fonts.css']) fail('deploy/site/fonts/source.json names no fonts.css');
+const fontCss = vendored['fonts.css'].toString('utf8').replace(/url\(([\w.-]+\.woff2)\)/g, (_, name) => {
+  const buf = vendored[name] ?? fail(`fonts.css names ${name}, which isn't vendored`);
+  return `url(${emit(`fonts/${name.replace(/\.woff2$/, '')}`, '.woff2', buf)})`;
+});
+for (const name of Object.keys(vendored).filter((n) => n.endsWith('-OFL.txt'))) {
+  writeFileSync(outPath(`assets/fonts/${name}`), vendored[name]);
 }
 
 // --- Every page: the shared header, its main, its section's footer ---
-
-// A section with an artboard ends its pages with that artboard's footer, whose in-page links point
-// at the artboard's page from anywhere else; any other section, and the 404 page, with chrome.mjs's.
-const footerFor = (p) => {
-  const home = landing(p.section);
-  if (!home) return footer(FOOTER_LINKS);
-  if (home === p) return p.footer;
-  return home.footer.replace(/href="#top"/g, `href="${home.path}"`).replace(/href="#/g, `href="${home.path}#`);
-};
-const assemble = (p, main) =>
-  `${design.root}\n${header({ section: p.section, path: p.path, links: p.links ?? SECTIONS[p.section].links, signIn: SECTIONS[p.section].signIn })}\n\n${main}\n\n${footerFor(p)}\n</div>`;
 
 for (const p of PAGES) {
   if (p.main) {
@@ -333,7 +270,36 @@ ${firstH2 < 0 ? rendered.html : `${rendered.html.slice(0, firstH2)}${toc}\n${ren
     p.title ??= `${p.kicker}: ${rendered.title.text}: Konjir`;
     p.description = rendered.lead;
   }
-  check(p.mainHtml, p.artboard ? relative(repo, p.artboardPath) : `site/src/${p.main ?? p.article}`);
+  check(p.mainHtml, `site/src/${p.main ?? p.article}`);
+}
+
+// A section's own footer, site/src/<section>/footer.html (Kolab's), ends every page of the section.
+// Its in-page links (#id) are to the section's landing page, its main page, and must name an id
+// there; from the section's other pages they point at it. Any other section, and the 404 page, end
+// with chrome.mjs's.
+const footers = new Map();
+for (const section of Object.keys(SECTIONS)) {
+  const rel = `${section}/footer.html`;
+  if (!existsSync(join(sourceDir, rel))) continue;
+  const foot = readFileSync(join(sourceDir, rel), 'utf8').trim();
+  if (!/^<footer\b[^>]*>[\s\S]*<\/footer>$/.test(foot) || foot.indexOf('<footer') !== foot.lastIndexOf('<footer')) fail(`site/src/${rel} must be one <footer>…</footer>`);
+  check(foot, `site/src/${rel}`);
+  const home = landing(section) ?? fail(`site/src/${rel}: its section has no main page for its in-page links`);
+  for (const [, id] of foot.matchAll(/href="#([^"]*)"/g)) {
+    if (!home.mainHtml.includes(` id="${id}"`)) fail(`site/src/${rel} links to #${id}, which site/src/${home.main} has no id for`);
+  }
+  footers.set(section, { home, html: foot });
+}
+const footerFor = (p) => {
+  const own = footers.get(p.section);
+  if (!own) return footer(FOOTER_LINKS);
+  if (own.home === p) return own.html;
+  return own.html.replace(/href="#top"/g, `href="${own.home.path}"`).replace(/href="#/g, `href="${own.home.path}#`);
+};
+const assemble = (p, main) =>
+  `${design.root}\n${header({ section: p.section, path: p.path, links: p.links ?? SECTIONS[p.section].links, signIn: SECTIONS[p.section].signIn })}\n\n${main}\n\n${footerFor(p)}\n</div>`;
+
+for (const p of PAGES) {
   p.html = assemble(p, p.mainHtml);
   check(p.html, `site/${p.file}`);
 }
@@ -350,7 +316,7 @@ const notFound = {
 };
 check(notFound.html, 'site/404.html');
 
-// Inline styles become classes. ".kj .sN" outranks the helmet's element rules (a:hover) as the
+// Inline styles become classes. ".kj .sN" outranks site.css's element rules (a:hover) as the
 // inline style did, and ".kj.sN" covers the root itself.
 const classes = new Map();
 const unstyle = (html) =>
@@ -443,7 +409,7 @@ ${withScript}
 
 // Every finished page is checked whole before it is written: its head must be exactly the one
 // page() writes, its title, description and Open Graph texts holding no markup and its URLs this
-// site's, and its body, but for the one site.js tag, must pass the same refusals as the artboard.
+// site's, and its body, but for the one site.js tag, must pass the same refusals as its source.
 // So nothing a source holds (a title, a description, a heading) can add a tag anywhere in the page.
 const re = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const TEXT = '[^<>"]*';
@@ -508,5 +474,5 @@ const kept = [...previous].filter((p) => !current.has(p) && existsSync(join(out,
 
 console.log(
   `site/: ${[...PAGES.map((p) => p.file), '404.html'].join(', ')}, robots.txt, sitemap.xml, favicon.svg, ${ogImages.size} Open Graph image(s), ` +
-    `${classes.size} style classes, ${PAGES.reduce((n, p) => n + (p.imageCount ?? 0), 0)} image(s); kept ${kept.length} previous asset(s), pruned ${pruned.length}`,
+    `${classes.size} style classes; kept ${kept.length} previous asset(s), pruned ${pruned.length}`,
 );

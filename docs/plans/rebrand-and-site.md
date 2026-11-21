@@ -18,7 +18,6 @@ Shipped and deployed:
 
 Left:
 - Lee: the text of a privacy policy and terms, and a contact, for the footer.
-- Claude, with Lee's leave: republish the Kolab artboard to its artifact from `site/src/kolab` (`site/README.md`), so it has #198's media queries; the publish was refused by a permission check on 2026-11-21, and the artifact still has the range syntax.
 - Follow-ups: two konnect tests that fail now and then on CI's Postgres job (#195 fixed the others): `channels.test.ts`, where an agent's background read starts its place in a new channel while it is still empty, so a message that doesn't mention it is unread too (what an agent's place in an empty channel should be is a question for the server), and `agent-messages.test.ts`'s unread count.
 - Later, Lee's call: reconciling the kolab (D11, D63, D81, D94 and the binding elements above).
 
@@ -33,7 +32,8 @@ Left:
 | `www.konjir.com` is canonical, by the pages' canonical links, sitemap and Open Graph URLs. konjir.com redirects to www.konjir.com (since 2026-11-20, Lee). Until then the apex served the same pages, because until step 2 the site answered www with an uncached 301 to the apex, which browsers may keep for good; for a browser that still holds it, a www URL it visited then loops (see *Status*) | www canonical: proposed by Claude. The apex's redirect: Lee, 2026-11-20 |
 | Names machines read keep `konjir`: the `konjir_*` tool names, `kj:` addresses, `KONJIR_URL`, `KONJIR_TOKEN`, and the MCP entry keys `konjir connect` writes. Only what people install and type changes | Proposed by Claude, unless Lee says otherwise |
 | No `konnect.konjir.com` for now (it doesn't resolve today, and nothing needs it) | Proposed by Claude, unless Lee says otherwise |
-| Each landing page stays a claude.ai artboard published from `site/src/` (D92's mechanics). The existing [Konjir Marketing Page](https://claude.ai/artifact/7CLh2TuhVwCxrFSvyzGw1W) artifact becomes the Kolab page; the www and konnect pages get new artifacts | Proposed by Claude, unless Lee says otherwise |
+| Each landing page's source is its `<main>`, a plain page in `site/src/<section>/main.html` (D92), which `deploy/site/build.mjs` builds into the shared header and its section's footer; Kolab's pages end with Kolab's own footer, `site/src/kolab/footer.html` | Proposed by Claude, unless Lee says otherwise |
+| The repository is self-contained: no claude.ai artifacts are referenced, published or read | Lee, 2026-11-21 |
 
 Still needed from Lee: the text of a privacy policy and terms (the site asks people to sign in with GitHub and links to neither), and what to say about pricing and limits during early testing.
 
@@ -64,12 +64,12 @@ What to fix, most important first:
 
 | Path | Page | Source |
 | --- | --- | --- |
-| `/` | The org page: one line on Konjir (tools for teams of people and their agents), a card each for Kolab and konnect with its install line, and "which one do I need?" | new artboard, `site/src/www/` |
-| `/kolab/` | Kolab's product page: today's home page, reworked (step 4) | today's `site/src/project/Main.dc.html`, moved to `site/src/kolab/` |
+| `/` | The org page: one line on Konjir (tools for teams of people and their agents), a card each for Kolab and konnect with its install line, and "which one do I need?" | `site/src/www/main.html` |
+| `/kolab/` | Kolab's product page: today's home page, reworked (step 4) | `site/src/kolab/main.html`, today's home page moved, with `site/src/kolab/footer.html` |
 | `/kolab/how-it-works/` | A short page for someone who has never used Kolab: under 700 words and one diagram (the substance of the binding's W9.8) | Markdown |
 | `/kolab/hands-on/` | The tutorial, moved from `/hands-on/`, then rewritten on the shorter commands (the substance of W9.7) | `site/src/kolab/hands-on.md` |
 | `/kolab/troubleshooting/` | The tutorial's troubleshooting, split out by that rewrite | Markdown |
-| `/konnect/` | konnect's product page: install, three commands, an agent woken by a message, the harnesses it supports | new artboard, `site/src/konnect/` |
+| `/konnect/` | konnect's product page: install, three commands, an agent woken by a message, the harnesses it supports | `site/src/konnect/main.html` |
 | `/konnect/guide/` | Today's `/messages/` | `site/src/konnect/guide.md` |
 
 Redirects, all 301 and cacheable for a day, in the site's CloudFront Function, from either host: `/hands-on/…` to `https://www.konjir.com/kolab/hands-on/…`; `/messages/…` to `https://www.konjir.com/konnect/guide/…`. `konjir.com` redirects every request to the same path on `www.konjir.com`, a moved page's straight to its new path (see *Decisions*).
@@ -132,11 +132,11 @@ In order. Step 2 ships before any content changes, so every later step only chan
 
 ### 2. Split the site, with no change to content
 
-- `deploy/site/build.mjs` builds several landing pages, each an artboard in `site/src/<section>/`, and the articles under them. `site/src/project/Main.dc.html` and its images move to `site/src/kolab/`; `hands-on.md` moves to `site/src/kolab/`, `messages.md` to `site/src/konnect/guide.md`. Until step 3 lands, `/` is a minimal org page linking to `/kolab/` and `/konnect/`.
+- `deploy/site/build.mjs` builds several landing pages, each in `site/src/<section>/`, and the articles under them. Kolab's page, then in `site/src/project/`, and its images move to `site/src/kolab/`; `hands-on.md` moves to `site/src/kolab/`, `messages.md` to `site/src/konnect/guide.md`. Until step 3 lands, `/` is a minimal org page linking to `/kolab/` and `/konnect/`.
 - One shared header for every page: the Konjir mark, a product switcher (Kolab, konnect), and the section's own links. An article's links stay within its section instead of jumping to the home page's anchors.
 - `deploy/terraform/modules/site`: `www.konjir.com` canonical by canonical links, `konjir.com` redirecting to it (at first it served the same pages, until Lee's call of 2026-11-20), and the old paths' 301s to www's new paths above. The certificate already covers both names.
 - The build writes `sitemap.xml`, a canonical link, Open Graph and Twitter tags on every page, and an Open Graph image per landing page (static PNGs in `site/src/<section>/`).
-- `site/README.md` describes the new layout and how each artboard is published to its artifact.
+- `site/README.md` describes the new layout.
 - Check: every old URL redirects to its new one, every page renders in both themes at 390px and 1440px, and the console shows no errors.
 
 ### 3. The org page, `/`

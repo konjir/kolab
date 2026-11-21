@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Vendors the fonts the marketing page links into deploy/site/fonts/, so building site/ never
-// fetches anything (build.mjs reads only these files).
+// Vendors the marketing site's fonts into deploy/site/fonts/, so building site/ never fetches
+// anything (build.mjs reads only these files).
 //
-//   node deploy/site/vendor-fonts.mjs '<the artboard's fonts.googleapis.com/css2 href>'
+//   node deploy/site/vendor-fonts.mjs '<a fonts.googleapis.com/css2 href>'
 //
-// Run it only when the artboard's font link (site/src/kolab/project/Main.dc.html) changes; build.mjs refuses an artboard whose
-// link doesn't match source.json. It writes:
+// Run it only to change the fonts the pages name (Fraunces, Instrument Sans and JetBrains Mono
+// today): the href is kept in source.json, and build.mjs serves exactly the files it lists, after
+// checking each against it. It writes:
 //  - <family>-<subset>.woff2: the latin and latin-ext files Google serves a current Chrome
 //  - fonts.css: their @font-face rules, pointing at those files
 //  - <family>-OFL.txt: each family's SIL Open Font License, from github.com/google/fonts, which
