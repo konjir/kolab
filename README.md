@@ -33,8 +33,6 @@ npm run measure -- 10 40  # fan-out of one spec edit under four addressing modes
 npm run rebase-storm      # one parent commit rebasing many variants (W2.7); the recorded results are in docs/rebase-storms.md
 ```
 
-The two benchmark scripts, `libs/engine/scripts/measure.ts` and `rebase-storm.ts`, predate one spec per kolab (KON1) and the retired plan kind (D104): today's engine refuses the families they build, so both stop with a `GateError` until they are brought up to date.
-
 CI (`.github/workflows/ci.yml`) runs three checks on every pull request into main and every push to main. Test on PGlite and Test on Postgres run the equivalents of `npm test` (with typecheck and build) and `npm run test:postgres`. Each runs only the Nx projects affected since the base: main for a pull request, the last passing commit for main. Both run as production does: on arm64, with the Node version that `deploy/terraform/modules/kolab/main.tf` installs (`node_version`). Test on PGlite also checks that `site/` is built from `site/src/` and runs `npm run e2e:connect`. Check Terraform runs `terraform fmt -check -recursive`, then `terraform init -backend=false`, `terraform validate` and `terraform test` (offline, on mocked providers), on `deploy/terraform` and again on `deploy/terraform/github-oidc`, with no AWS credentials, and parses the deploy scripts with `bash -n`. It runs on every change, so main can require it.
 
 A second workflow, `.github/workflows/cli.yml`, runs "Build kolab CLI" on the same events when a change touches the CLI, the channel bridge, `libs/types`, `libs/login`, `libs/brand`, `tools/npm-bundle.mjs`, `bin/kolab`, the manifests, `nx.json` or the workflow itself. It builds the published CLI, the npm package and the binaries: on a pull request only the linux-arm64 binary, which the runner can run, and on main all five. It starts a Kolab from the checkout, checks that both reach the Kolab, runs `apps/cli/scripts/e2e-connect.mjs --konjir <it>` with the binary and with the package installed outside the workspace (their `kolab connect claude` entries run `kolab bridge`, and a session on one lists Kolab's tools and is pushed a channel message; W9.5), and uploads them as the run's artifacts. It publishes nothing and main doesn't require it. `.github/workflows/release-cli.yml` publishes; see [Releasing the CLI](#releasing-the-cli).
@@ -1162,16 +1160,16 @@ The outbox is Kolab's internals: no agent reads it (`kj_agent` has no grant on i
 
 ## What the prototype found
 
-**Element addressing has to be on both ends of an edge.** The measurement, at N = 100 requirements with one edited:
+**Element addressing has to be on both ends of an edge.** `npm run measure` builds, for each of N requirements, a binding decision that serves it, the binding's work package that relies on that decision (D104), a component's own binding that relies on the work package, and that binding's own work package; then it edits one requirement. At N = 100, measured on 20 November 2026:
 
 | Addressing | Dirty versions |
 | --- | --- |
-| Version scope everywhere | 202 of 202 (lockstep) |
-| Element *targets*, whole-version sources | 202 of 202 |
-| Element targets **and** element sources | **4**, at every N |
-| Same, but the plan derives from the whole binding | 202 of 202 |
+| Version scope everywhere | 101 of 101 (lockstep) |
+| Element *targets*, whole-version sources | 101 of 101 |
+| Element targets **and** element sources | **2**, at every N |
+| Same, but each component's binding relies on the whole binding | 101 of 101 |
 
-Pointing at the changed requirement isn't enough. The edge must also say *which part of the dependent* relies on it, or the dirt spreads to the whole dependent version and everything downstream. One whole-version hop anywhere in a lineage collapses back to lockstep. `npm run measure` reproduced this table; it needs bringing up to date (see the commands at the top), since its lineage runs through a `plan`.
+Pointing at the changed requirement isn't enough. The edge must also say *which part of the dependent* relies on it, or the dirt spreads to the whole dependent version and everything downstream. One whole-version hop anywhere in a lineage collapses back to lockstep. The prototype's lineage ran through plan nodes, before D104 retired the kind, and found the same: 4 dirty versions of 202.
 
 **Concurrency needs an explicit rule.** Each version records its base: the node's live version when it was drafted, which it was built on. It commits only while that is still the node's live version. Each node's commit step checks this and sets the version committed in one transaction that holds a lock on the node's row, and every write of a new version takes its number under the same lock. So two commits to one node can't both build on one version, and version numbers never collide. A draft can be overtaken while it's open, while Kolab's checks run, or while it waits in review:
 
