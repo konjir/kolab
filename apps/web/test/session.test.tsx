@@ -282,6 +282,25 @@ test('when Kolab can\'t be reached as the page loads, it says so and keeps tryin
   expect(screen.queryByRole('heading', { name: 'Can’t reach Kolab right now' })).toBeNull();
 });
 
+test('a try that Try again now replaces asks nothing more when its wait ends', async () => {
+  // Each wait ends only when the test says so.
+  const waits: (() => void)[] = [];
+  clock.wait = () => new Promise<void>((r) => { waits.push(r); });
+  reply('/api/session/present', 'network');
+  reply('/api/session/methods', 'network');
+  render(<App />);
+  await screen.findByRole('heading', { level: 1, name: 'Can’t reach Kolab right now' });
+  await waitFor(() => expect(waits.length).toBeGreaterThan(0));
+  const replaced = waits.splice(0);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Try again now' }));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/keeps trying/));
+  const asked = calls.length;
+  // The page's first tries wake, given up on while they waited: none of them asks Kolab again.
+  await act(async () => { replaced.forEach((r) => r()); await new Promise((r) => { setTimeout(r, 0); }); });
+  expect(calls.slice(asked)).toStrictEqual([]);
+});
+
 test('when Kolab comes back by itself after a failed first try, a signed-in page carries on with no retry pressed', async () => {
   reply('/api/session/methods', ok(GITHUB));
   reply('/api/session/present', 'network', ok({ present: true }));

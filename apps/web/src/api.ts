@@ -69,12 +69,20 @@ export const clock = { wait: (ms: number) => new Promise<void>((r) => { setTimeo
 /** While a call waits for Kolab to come back: `onWait` hears each retry, and `alive` going false stops it. */
 export interface Patience { onWait?(): void; alive?(): boolean }
 
-/** Runs a call, trying again with backoff while Kolab is away (transient); any other failure is thrown at once. */
+/**
+ * Runs a call, trying again with backoff while Kolab is away (transient); any other failure is
+ * thrown at once. Given up on (`alive` false) before a try or while it waits, it asks nothing more
+ * and throws the last failure.
+ */
 export async function patiently<T>(fn: () => Promise<T>, p: Patience = {}): Promise<T> {
   for (let i = 0; ; i++) {
-    try { return await fn(); } catch (e) { if (!transient(e) || p.alive?.() === false) throw e; }
+    let failed: unknown;
+    try { return await fn(); } catch (e) { failed = e; }
+    if (!transient(failed) || p.alive?.() === false) throw failed;
     p.onWait?.();
     await clock.wait(backoff(i));
+    // As after Try again now, which starts its own tries: this one's are no use to anyone.
+    if (p.alive?.() === false) throw failed;
   }
 }
 
@@ -91,7 +99,13 @@ export const RECHECK_401_MS = 1000;
 export async function whoAmI(p: Patience & { push?: boolean; first?: boolean } = {}): Promise<WebMe | null> {
   // On a page's first load, a browser that carries no session at all is signed out, said without a 401.
   // Only a clear "no" counts: a probe that fails otherwise, as against an older Kolab without it, asks /api/me.
-  if (p.first && (await patiently(() => api<{ present?: boolean }>('session/present'), p).catch(() => undefined))?.present === false) return null;
+  if (p.first) {
+    let failed: unknown;
+    const probe = await patiently(() => api<{ present?: boolean }>('session/present'), p).catch((e: unknown) => { failed = e; return undefined; });
+    if (probe?.present === false) return null;
+    // Given up on while the probe waited for Kolab: /api/me isn't asked either.
+    if (p.alive?.() === false) throw failed ?? new Error('given up');
+  }
   for (let i = 0; i < 2; i++) {
     try { return await patiently(() => api<WebMe>('me', undefined, undefined, { push: p.push }), p); } catch (e) { if (!(e instanceof ApiError && e.status === 401)) throw e; }
     if (i === 0) await clock.wait(RECHECK_401_MS);
