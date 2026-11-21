@@ -300,10 +300,14 @@ test("on a narrow screen every header is one row, the mark, the product switcher
   // summary shows and the menu opens beneath it below 1200px; at 1200px and up the summary is hidden
   // and the menu's content shows even while it is closed (as it is with no script).
   const css = readFileSync(join(r, 'site', /href="(\/assets\/site\.[0-9a-f]{10}\.css)"/.exec(read(r, 'index.html'))![1]), 'utf8');
-  expect(css).toContain('@media (width >= 1200px){.menu{--menu:wide;');
+  expect(css).toContain('@media (min-width: 1200px){.menu{--menu:wide;');
   expect(css).toContain('.menu>summary{display:none}');
-  expect(css).toContain('@media (width >= 1200px){.menu::details-content{content-visibility:visible}}');
-  expect(css).toMatch(/@media \(width < 1200px\)\{\.menu\{--menu:narrow;[^\n]*\.menu-panel\{position:absolute;/);
+  expect(css).toContain('@media (min-width: 1200px){.menu::details-content{content-visibility:visible}}');
+  expect(css).toMatch(/@media \(max-width: 1199\.98px\)\{\.menu\{--menu:narrow;[^\n]*\.menu-panel\{position:absolute;/);
+  // In min-width/max-width, not range syntax (width < 1200px), which Safari reads only from 16.4:
+  // before it, an older iPhone's Safari would apply neither, and show the menu both closed and open.
+  // Each max-width stops just short of the next min-width, so no width gets both.
+  for (const q of css.match(/@media[^{]*/g) ?? []) expect(q).not.toMatch(/\b(width|height)\s*[<>]|[<>]=?\s*(width|height)\b/);
   const js = readFileSync(join(r, 'site', /src="(\/assets\/site\.[0-9a-f]{10}\.js)"/.exec(read(r, 'index.html'))![1]), 'utf8');
   expect(js).toContain("getPropertyValue('--menu')");
   expect(js).toContain("e.key !== 'Escape'");
