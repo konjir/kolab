@@ -398,8 +398,8 @@ async function race1a(backend: Backend) {
 }
 
 /**
- * 1b. Review's check-then-act. A human draft of V0 is in review (the reviewer is slow, as an
- * LLM gate is) when P commits and the storm rebases V0. The staleness check ran before.
+ * 1b. Review's check-then-act. A human draft of V0 is in its checks (the hook makes them slow)
+ * when P commits and the storm rebases V0. The staleness check ran before.
  */
 async function race1b(backend: Backend) {
   const { kolab, setHook } = await raceKolab(backend);

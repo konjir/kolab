@@ -103,7 +103,8 @@ async function onServer(sql: string) {
  * A commit queues its variants' rebases, and Kolab's outbox worker runs them later (D43, P6).
  * So that a scenario can read the outcome of a commit and its rebases straight after the call,
  * each write that can commit (commit, review, submit, recordReview, resolveOverride,
- * applyRuling), and each change of access, here waits for the rebases it queued: it drains the outbox before it returns. A
+ * applyRuling, importKolab), and each change of access, here waits for the rebases it queued
+ * (COMMITTING): it drains the outbox before it returns. A
  * write that fails still drains, but throws its own error, never the drain's.
  * With `queued: true` it doesn't, for tests of the asynchrony itself, which drain the outbox
  * (drainOutbox) or start the worker as they need.
@@ -176,9 +177,9 @@ export function markOpened(): OpenedMark {
 /**
  * Tears down what a test file opened (with `since`, only what it opened after that mark), in order: what it registered with `closeAtEnd` (its servers
  * and clients), then the Kolabs `openKolab` opened, then their databases (PGlite data directories,
- * and Postgres databases made without a run name). jest.setup.js runs it after each file, as the
- * file's only teardown, so no server is left holding a Kolab or a connection to a database that
- * is going away. Each step runs even if an earlier one fails, and then the failures are thrown,
+ * and Postgres databases made without a run name). jest.setup.js runs it after each test, from the
+ * mark it took before it, and after each file, as the file's only teardown, so no server is left
+ * holding a Kolab or a connection to a database that is going away. Each step runs even if an earlier one fails, and then the failures are thrown,
  * so a teardown error fails the file instead of hiding.
  *
  * The run's Postgres databases stay until jest.global-teardown.js drops them.

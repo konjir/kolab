@@ -411,7 +411,7 @@ export interface WorkReviewDetailRow {
   /** The open marks on it, which put it at risk (PLN10). */
   open_marks: number;
   evidence: ReviewEvidenceRow[]; evidence_more: number; earlier: ReviewEvidenceRow[]; earlier_count: number;
-  /** The failed acceptance checks among its evidence since it was last To do (REV9), as konjir_list_reviews gives them. */
+  /** The failed acceptance checks among its evidence, in any round (REV9), as konjir_list_reviews gives them. */
   findings: AcceptanceFinding[];
 }
 
@@ -686,10 +686,11 @@ export type ActivityRow =
  * What happened in the session's kolab, newest first, from what Kolab records: nodes as they were
  * made, by whom, once one of their versions has been submitted (W2.20; nodes made before Kolab
  * recorded it are left out, and so is a node whose only versions are drafts never submitted, still
- * drafted or abandoned), versions as they were
- * written (submitted, committed or rejected; Kolab doesn't record commit times yet, nor when a
- * question was answered), verdicts as they were given, questions and notes as they were raised,
- * and marks as they were raised. Drafts not submitted are left out.
+ * drafted or abandoned), versions as they were written (submitted, committed or rejected; Kolab
+ * doesn't record commit times yet, nor when a question was answered), verdicts as they were given,
+ * questions and notes as they were raised, marks as they were raised, case files as they were
+ * opened, the other side's positions as they were taken, and rulings as they were recorded. Drafts
+ * not submitted are left out.
  */
 export async function activity(kolab: Kolab, session: string, page: PageOpts = {}): Promise<RowsPage<ActivityRow>> {
   const here = await kolab.sessionKolab(session);
