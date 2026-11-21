@@ -108,7 +108,7 @@ variable "github_oauth_client_id" {
 variable "cli_npm_spec" {
   description = "The published CLI's npm spec, pinned to an exact version (@konjir/kolab@X.Y.Z; konjir@X.Y.Z up to 0.8.0), that Kolab's web page shows in its npx commands (W3.7). Kept as the SSM parameter /konjir/<name>/cli-npm-spec, which start.sh reads when Kolab starts. Bump it after each CLI release (README). The page shows npx <spec> connect claude with it, which needs a CLI that carries the channel: konjir 0.7.0 or later, or any @konjir/kolab (W9.5). Empty: no parameter, and the page shows no npx commands."
   type        = string
-  default     = "@konjir/kolab@0.9.0"
+  default     = "@konjir/kolab@0.9.1"
 
   # The server's rule, isPinnedNpmSpec in apps/server/src/kolab-server.module.ts: Kolab refuses to start on anything else.
   validation {
