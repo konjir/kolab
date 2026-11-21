@@ -1,13 +1,13 @@
-# Kolab's database: managed Postgres on RDS (binding DAT1, Decisions Log D39), in private
-# subnets, encrypted, with 7 days of automated backups. Kolab connects with TLS, verified
-# against the RDS certificate bundle. Its URL, password included, is an SSM SecureString;
-# it is also in Terraform state, like the admin token.
+# Kolab's database: managed Postgres on RDS (binding DAT1, D39), in private subnets, encrypted,
+# with 7 days of automated backups. Kolab connects with TLS, verified against the RDS certificate
+# bundle. Its URL, password included, is an SSM SecureString; unlike the admin token (W2.22), it
+# is also in Terraform state.
 #
 # Recovery (P12, D75, D81; W2.24): the automated backups give point-in-time recovery to any second
 # from the last 7 days up to the latest restorable time. RDS uploads the log every 5 minutes, so a
-# restore can lose up to about 5 to 6 minutes of writes. Deletion protection is on, and deleting the instance keeps those backups (and a final
-# snapshot) unless the teardown asks to leave nothing. docs/recovery.md is the runbook, and
-# deploy/recovery-drill.sh the drill.
+# restore can lose up to about 5 to 6 minutes of writes. Deletion protection is on, and deleting
+# the instance keeps those backups (and a final snapshot) unless the teardown asks to leave
+# nothing. docs/recovery.md is the runbook, and deploy/recovery-drill.sh the drill.
 
 variable "name" { type = string }
 variable "subnet_ids" { type = list(string) }
@@ -35,7 +35,8 @@ resource "random_password" "db" {
   special = false
 }
 
-# Each database's final snapshot gets a name of its own, so a second teardown doesn't collide with the first.
+# Each database's final snapshot gets a name of its own, so a second teardown doesn't collide with
+# the first.
 resource "random_id" "final_snapshot" {
   byte_length = 4
 }

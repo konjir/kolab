@@ -1,6 +1,7 @@
 # Where Kolab's code and data live.
 #  - artifact bucket: releases shipped by the release module (emptied and removed on destroy)
-#  - data volume: Kolab's database, separate from the instance so the instance can be replaced
+#  - data volume: separate from the instance, so the instance can be replaced. The database is on
+#    RDS (modules/database); the volume still holds the PGlite database Kolab used before it
 #  - daily snapshots of the data volume, kept 7 days
 
 variable "name" { type = string }

@@ -1,7 +1,8 @@
 # The Kolab instance, its data volume attachment, a stable public address and its DNS name.
 #
-# The instance holds no state of its own: the database is on the storage module's volume.
-# That makes replacement safe, so a change to the boot script replaces the instance.
+# The instance holds no state of its own: the database is on RDS (modules/database), and the
+# storage module's data volume outlives it. That makes replacement safe, so a change to the boot
+# script replaces the instance.
 # The AMI is pinned at creation; refresh the OS with
 #   terraform apply -replace=module.kolab.aws_instance.kolab
 
@@ -91,7 +92,7 @@ resource "aws_volume_attachment" "data" {
   device_name                    = "/dev/sdf"
   volume_id                      = var.data_volume_id
   instance_id                    = aws_instance.kolab.id
-  stop_instance_before_detaching = true # clean unmount of the database volume on replacement
+  stop_instance_before_detaching = true # clean unmount of the data volume on replacement
 }
 
 resource "aws_eip" "kolab" {
@@ -115,7 +116,7 @@ resource "aws_route53_record" "kolab" {
 output "instance_id" { value = aws_instance.kolab.id }
 output "public_ip" { value = aws_eip.kolab.public_ip }
 
-# Renamed from "hub" on 2026-10-11 (Decisions Log D11). Keeps the Elastic IP and the rest in place.
+# Renamed from "hub" on 2026-10-11 (D11). Keeps the Elastic IP and the rest in place.
 moved {
   from = aws_instance.hub
   to   = aws_instance.kolab

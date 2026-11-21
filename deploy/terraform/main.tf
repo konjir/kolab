@@ -135,7 +135,7 @@ module "kolab" {
   letsencrypt_email       = var.letsencrypt_email
 }
 
-# The server was named "hub" until 2026-10-11 (Decisions Log D11).
+# The server was named "hub" until 2026-10-11 (D11).
 moved {
   from = module.hub
   to   = module.kolab
@@ -158,8 +158,8 @@ module "release" {
 }
 
 # The marketing site (D81), at www.konjir.com, to which konjir.com redirects: the files in site/,
-# on S3 behind CloudFront.
-# This stack, konjir-test, is production (staging was dropped, D83), so site_enabled defaults to true.
+# on S3 behind CloudFront. This stack, konjir-test, is production (staging was dropped, D83), so
+# site_enabled defaults to true.
 module "site" {
   source = "./modules/site"
   count  = var.site_enabled ? 1 : 0
