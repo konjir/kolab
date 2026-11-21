@@ -10,8 +10,10 @@
  * rebase through the structural gate (OVR10, VER12) and the three-way rule (CAS5).
  *
  * For that one commit it counts the versions rebased (in all and per depth), the wall time
- * of the parent's commit call, the marks raised by reason, the queries raised, the SQL
- * statements and transactions run, the longest transaction, and the peak resident memory.
+ * of the parent's commit call (commitMs) and of the storm (ms: that call and the outbox work
+ * it queues, drained at once as a worker would, P6), the marks raised by reason, the queries
+ * raised, the SQL statements and transactions run, the longest transaction, and the peak
+ * resident memory.
  *
  *   npm run rebase-storm                          # the grid, on PGlite
  *   npm run rebase-storm -- --postgres            # the grid, on Postgres 18 in a container (needs Docker)
@@ -283,23 +285,37 @@ async function probe(backend: Backend, s: Shape) {
     // The storm is over once P's new version has reached every variant: each one's live version
     // descends from it. Draining until the outbox is empty would never end while the variant
     // writer runs, since each of its edits queues rebases of that variant's children (P6, D43).
-    const fromNew = async (p2: string) => {
-      for (const id of depth.keys()) {
-        let v = (await kolab.latestCommitted(id))!;
-        while (v.node_id !== P) v = await kolab.version(v.parent_version_id!);
-        if (v.id !== p2) return false;
-      }
-      return true;
-    };
+    // How many variants don't yet descend from `p2`, in one statement, checked after every 25
+    // jobs; its time is taken off the storm's.
+    const notYet = async (p2: string) => (await kolab.db.query<{ n: number }>(
+      `with recursive up(v, node, parent) as (
+         select lv.id, lv.node_id, lv.parent_version_id from unnest($1::text[]) as ids(id)
+           join lateral (select id, node_id, parent_version_id from version
+                          where node_id = ids.id and state = 'committed' order by seq desc limit 1) lv on true
+         union all
+         select pv.id, pv.node_id, pv.parent_version_id from up join version pv on pv.id = up.parent where up.node <> $3)
+       select count(*)::int as n from up where node = $3 and v <> $2`, [[...depth.keys()], p2, P])).rows[0].n;
+    let checkMs = 0;
     try {
       const p2 = await kolab.commit(product, P, { elements: next });
+      // Given up if no further variant reaches the new version for --budget ms.
+      let left = Infinity, progressAt = performance.now();
       for (;;) {
         const ran = await kolab.drainOutbox({ max: 25 });
-        if (await fromNew(p2)) break;
-        if (!ran) { stormError = 'the outbox emptied before P\'s new version reached every variant'; break; }
+        const c0 = performance.now();
+        const now = await notYet(p2);
+        checkMs += performance.now() - c0;
+        if (!now) break;
+        if (now < left) { left = now; progressAt = performance.now(); }
+        if (performance.now() - progressAt > BUDGET) { stormError = `no further variant reached P's new version in ${BUDGET} ms; ${now} still sit on an older one`; break; }
+        if (!ran) {
+          // No due job left: if none waits out a backoff either, nothing will carry P's version on.
+          if (!(await kolab.outboxJobs({ state: 'pending' })).length) { stormError = `no job is left in the outbox, and ${now} variants still sit on an older version of P`; break; }
+          await new Promise((r) => setTimeout(r, 100));
+        }
       }
     } catch (e) { stormError = String(e); }
-    const ms = performance.now() - t0;
+    const ms = performance.now() - t0 - checkMs;
     running = false;
     await Promise.all(writers);
     // The writers' last edits queue rebases of their own (P6, D43): run them as a worker would,
