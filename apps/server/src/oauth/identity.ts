@@ -36,7 +36,7 @@ type Fetch = typeof fetch;
  * GitHub, through a GitHub OAuth app (D55). It requests no scope, so the token reads public data
  * only, as long as the app only ever requests no scope; Kolab reads the user's id, login and name.
  * The client id and secret come from configuration (`KONJIR_GITHUB_CLIENT_ID`,
- * `KONJIR_GITHUB_CLIENT_SECRET`), on the test server from SSM. The GitHub token a sign-in yields is
+ * `KONJIR_GITHUB_CLIENT_SECRET`), in production from SSM. The GitHub token a sign-in yields is
  * used once, to read who signed in, then dropped. It is not revoked, so GitHub remembers the
  * authorization and doesn't ask again at the next sign-in.
  *

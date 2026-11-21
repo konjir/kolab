@@ -29,7 +29,7 @@ export async function startServer(opts: {
   adminToken: string | null;
   /** Postgres to store in. Without it, PGlite in `dataDir`, or in memory. */
   databaseUrl?: string;
-  /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). Accepted alongside localhost. */
+  /** The public hostname a TLS proxy serves this Kolab on (e.g. kolab.konjir.com). Accepted alongside localhost. */
   publicHost?: string;
   /** The built web interface to serve at the root: apps/web's dist/ by default; null for none. */
   webRoot?: string | null;
@@ -39,13 +39,13 @@ export async function startServer(opts: {
   kolabsPerPerson?: number;
   /** How many days a hand-issued session token lasts (W2.22; 30 by default, KONJIR_HAND_ISSUED_TOKEN_DAYS). */
   handIssuedTokenDays?: number;
-  /** Who signs people in (D55): GitHubIdentity on the test server, StubIdentity in tests. Without one, no OAuth. */
+  /** Who signs people in (D55): GitHubIdentity in production, StubIdentity in tests. Without one, no OAuth. */
   identity?: IdentityProvider;
   /** Whether the web interface still takes a pasted session token: by default, only without an identity provider. */
   webTokenSignIn?: boolean;
   /** Whether hand-issued session tokens still work beside OAuth's (true by default, during the transition). */
   handIssuedTokens?: boolean;
-  /** The published konjir CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
+  /** The published kolab CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
   cliNpmSpec?: string;
   /** False: apply no migration to its own Kolab's database, and refuse one that needs any (W2.24). True by default. */
   migrate?: boolean;

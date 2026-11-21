@@ -34,10 +34,10 @@ export function adminTokenMatcher(adminToken: string | null | undefined): (token
  * A session's token is either an OAuth access token (D55), which expires 15 minutes after it is
  * issued or refreshed, or, during the transition, a hand-issued token (konjir_admin_open_session),
  * which expires 30 days after it opens by default (W2.22), and which `handIssuedTokens: false`
- * turns off. The session is checked against
- * the database on every request, so each verification is given a short expiry of its own, never
- * past the access token's. The verified client is named by the session's id, its key, which
- * stays the same as its access token rotates, and never by the token.
+ * turns off. The session is checked against the database on every request, so each verification
+ * is given a short expiry of its own, never past the access token's. The verified client is named
+ * by the session's id, its key, which stays the same as its access token rotates, and never by the
+ * token.
  */
 @Injectable()
 export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
@@ -69,8 +69,8 @@ export class KonjirAuth implements McpAuthStrategy, OAuthTokenVerifier {
 
   /**
    * The gate on each subscriptions/listen stream, as it opens (API4, D41): the break-glass
-   * token's streams pass; a session's only while it is open, an admin's too. A session ended since its request
-   * was verified is refused in-band (JSON-RPC -32003, `data.reason` 'session_ended'), which
+   * token's streams pass; a session's only while it is open, an admin's too. A session ended
+   * since its request was verified is refused in-band (JSON-RPC -32003, `data.reason` 'session_ended'), which
    * Kolab's own clients, the channel bridge and `kolab watch`, treat as the token revoked, as
    * they do a 401. If the check itself fails, the package refuses the stream as 'gate_failed'
    * (or 'gate_timeout' after 10 s), which they treat as worth retrying. The stream is already

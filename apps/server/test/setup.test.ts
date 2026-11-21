@@ -1,4 +1,4 @@
-// A setup (konjir connect, Lee's instruction of 2026-11-01): one page, locked to the kolab and
+// A setup (kolab connect, Lee's instruction of 2026-11-01): one page, locked to the kolab and
 // agents its scope names, which makes and grants them on Allow; its code buys a setup token that is
 // no session, and that token, used once, has Kolab issue each agent the person allowed its own
 // sign-in, to the setup's client alone. Over HTTP, with the stub identity provider in GitHub's place.
@@ -343,7 +343,7 @@ test('konjir login --kolab with a kolab the person can\'t reach (production\'s m
   expect(named.page.html).toContain('value="kolab:m5-check" checked');
   expect(named.page.html).not.toContain('you can&#39;t reach');
 
-  // Locked to an agent, kolab and role (konjir login --agent): it can't be allowed, and says why, naming hers.
+  // Locked to an agent, kolab and role (kolab login --agent): it can't be allowed, and says why, naming hers.
   const locked = await setupPage(base, idp, client, 'konjir kolab:m5-check-ann agent:ann-pm role:product');
   expect(locked.page.html).not.toContain('value="allow"');
   expect(said(locked.page.html)).toBe('This sign-in can\'t be allowed: it asks to work in the kolab m5-check-ann, and you can\'t reach a kolab of that name. Did you mean m5-check? Its title is m5-check-ann; its name is what --kolab takes. '

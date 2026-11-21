@@ -365,7 +365,7 @@ export class OAuthController {
       clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
       // Which of several sign-ins this is (`kolab connect`'s "agent N of M"): display only, kept
       // only when both are whole numbers, never part of the scope, so it grants nothing. Only from
-      // an app on the person's own machine (every redirect URI loopback, as konjir's are): from a
+      // an app on the person's own machine (every redirect URI loopback, as kolab's are): from a
       // hosted one it would dress a lure up as a setup the person started, so it is ignored (D97).
       step: client.web || !client.redirectUris.every(onLoopback) ? null : signInStep(q.step, q.steps),
     });
@@ -788,7 +788,7 @@ export class OAuthController {
   }
 }
 
-/** Whether a redirect URI is on this machine: http on 127.0.0.1 or [::1], any port, as konjir's own are. */
+/** Whether a redirect URI is on this machine: http on 127.0.0.1 or [::1], any port, as kolab's own are. */
 export function onLoopback(uri: string): boolean {
   try {
     const u = new URL(uri);

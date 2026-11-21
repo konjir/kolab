@@ -194,7 +194,7 @@ test('the scope preselects the agent, kolab and role on the consent page, only a
   expect(done.left?.searchParams.get('code')).toMatch(/^kjc_/);
 
   // `as:self` preselects nothing, from any client (D60): not from an app on the person's own machine
-  // (every redirect URI loopback, as the konjir CLI's), nor a hosted one. A new agent is the default
+  // (every redirect URI loopback, as the kolab CLI's), nor a hosted one. A new agent is the default
   // for a client new to the person; the person chooses Yourself by hand.
   for (const uris of [[CB], ['https://app.example.com/cb'], [CB, 'https://app.example.com/cb']]) {
     const other = (await register(base, uris)).body.client_id;
@@ -341,7 +341,7 @@ test('a scope naming the agent, kolab and role locks the consent page to them: n
     expect(denied.left?.searchParams.get('error')).toBe('access_denied');
   }
 
-  // A label names the person's agent <person>-<label>, as konjir login --agent takes it (API26):
+  // A label names the person's agent <person>-<label>, as kolab login --agent takes it (API26):
   // the page is locked to zed-writer, and Kolab holds the sign-in to it.
   const labelled = await shown('konjir kolab:test role:engineer agent:writer');
   expect(title(labelled.html)).toBe('Sign in as zed-writer · Kolab');
@@ -412,7 +412,7 @@ test('an agent signed in now is marked on the consent page, since choosing it en
   const t = await token(base, { grant_type: 'authorization_code', client_id: opencode, code: done.left!.searchParams.get('code')!, redirect_uri: CB, code_verifier: verifier, resource: `${base}/mcp` });
   expect(t.status).toBe(200);
 
-  // The konjir CLI, registering for the first time: a new agent is chosen, and zed-agent says choosing it ends its session.
+  // A CLI, registering for the first time: a new agent is chosen, and zed-agent says choosing it ends its session.
   const cli = (await register(base)).body.client_id;
   const c = await toConsent(base, idp, cli, { subject: '611', login: 'zed' }, { scope: 'konjir kolab:test' });
   expect(checked(c.html)).toStrictEqual(['new-agent', 'kolab:test', 'product']);

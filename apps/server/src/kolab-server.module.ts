@@ -29,20 +29,20 @@ export const isPinnedNpmSpec = (spec: string) => /^(@[a-z0-9][a-z0-9._~-]*\/)?[a
 
 export interface KolabServerModuleOptions extends ServerOptions {
   kolab: Kolab;
-  /** The public hostname a TLS proxy serves this kolab on (e.g. kolab.konjir.com). */
+  /** The public hostname a TLS proxy serves this Kolab on (e.g. kolab.konjir.com). */
   publicHost?: string;
   /** How often a web event stream checks its kolab's versions, in ms (3 s by default). */
   webVersionsPollMs?: number;
-  /** Who signs people in (D55): GitHub on the test server. Without one, there is no OAuth, and only hand-issued tokens work. */
+  /** Who signs people in (D55): GitHub in production. Without one, there is no OAuth, and only hand-issued tokens work. */
   identity?: IdentityProvider;
   /** Whether the web interface still takes a pasted session token: by default, only when there is no identity provider. */
   webTokenSignIn?: boolean;
-  /** The published konjir CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
+  /** The published kolab CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
   cliNpmSpec?: string;
 }
 
 /**
- * Konjir over MCP: one kolab, served by @onivoro/server-mcp as a stateless Streamable
+ * Kolab over MCP, served by @onivoro/server-mcp as a stateless Streamable
  * HTTP endpoint at /mcp (MCP 2026-07-28, with the SDK's fallback for 2025-era clients),
  * plus GET /healthz, the web interface's API and server-sent events under /api (API8), and Kolab's
  * OAuth 2.1 authorization server (D55): its metadata under /.well-known, its endpoints under /oauth.
@@ -53,7 +53,8 @@ export class KolabServerModule implements NestModule {
   /**
    * A listen stream may subscribe only to its own session's kolab's resources (D50). ListenScope
    * sees subscriptions/listen alone, which suffices only while the transport is stateless (no
-   * `session` below): a 2025-era resources/subscribe would bypass it. listen.test.ts pins that.
+   * `session` below): a 2025-era resources/subscribe would bypass it. apps/cli/test/listen.test.ts
+   * pins that.
    */
   configure(consumer: MiddlewareConsumer) {
     // How its errors name the CLI's commands, by the client it comes from (McpWording): first, so all that answers it runs within it.

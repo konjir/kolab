@@ -3,8 +3,9 @@ import { args } from './args.js';
 import { MAX_DEPENDS_ON, MAX_DONE_WHEN, WORK_SIZES } from '@konjir/types';
 
 /**
- * A work package's fields (PLN1, PLN3, D98, D104), on a binding's elements only. Kolab checks them again
- * (checkWork), with the same refusals for every client. A field it doesn't know is refused, not dropped.
+ * A work package's fields (PLN1, PLN3, D98, D104), on a binding's elements only. Kolab checks them
+ * again (checkWork), with the same refusals for every client. A field it doesn't know is refused,
+ * not dropped.
  */
 export const workInput = args({
   done_when: z.string().optional().describe(`When it is done: its definition of done, which its reviewer checks the evidence against. At most ${MAX_DONE_WHEN} characters.`),
