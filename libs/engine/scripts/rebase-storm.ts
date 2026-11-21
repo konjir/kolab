@@ -4,11 +4,10 @@
  * A parent spec P has E elements. Under it hang W variant trees, each D levels deep with
  * B children per variant per level, so V = W * (1 + B + ... + B^(D-1)) variants. A kolab
  * holds exactly one spec (KON1), so each variant is a fork (KON9): the one spec of a kolab
- * of its own, written by a person who reads its parent's kolab. Every
- * variant overrides a fraction F of the elements, a different window each. P then commits
- * a version that changes K elements, and Kolab rebases every variant onto it (OVR3),
- * level by level, each rebase through the structural gate (OVR10, VER12) and the
- * three-way rule (CAS5).
+ * of its own, written by a person who reads its parent's kolab. Every variant overrides a
+ * fraction F of the elements, a different window each. P then commits a version that
+ * changes K elements, and Kolab rebases every variant onto it (OVR3), level by level, each
+ * rebase through the structural gate (OVR10, VER12) and the three-way rule (CAS5).
  *
  * For that one commit it counts the versions rebased (in all and per depth), the wall time
  * of the parent's commit call, the marks raised by reason, the queries raised, the SQL
@@ -285,6 +284,9 @@ async function probe(backend: Backend, s: Shape) {
     const ms = performance.now() - t0;
     running = false;
     await Promise.all(writers);
+    // The writers' last edits queue rebases of their own (P6, D43): run them as a worker would,
+    // so a variant left behind its parent below is one no queued work will catch up.
+    await kolab.drainOutbox();
 
     const summary = (xs: number[]) => {
       const sorted = [...xs].sort((a, b) => a - b);
@@ -333,10 +335,11 @@ async function rebaseFailed(kolab: Kolab) {
 //
 // Each race injects one concurrent write at an exact point, through a checks hook or a
 // wrapper on db.query, into a small family: P with three elements, and variants that each
-// override E2, each a fork in a kolab of its own (KON1, KON9). Each prints what happened and a verdict against what W1.17 (one serialized
-// commit step per node) guarantees: no committed edit is lost, and no caller gets a raw
-// database error. Reproductions after the PR #16 review; libs/engine/test/concurrency.test.ts
-// runs the same races as tests, on PGlite and Postgres.
+// override E2, each a fork in a kolab of its own (KON1, KON9). Each prints what happened and a
+// verdict against what W1.17 (one serialized commit step per node) guarantees: no committed
+// edit is lost, and no caller gets a raw database error. Reproductions after the PR #16
+// review; libs/engine/test/concurrency.test.ts runs the same races as tests, on PGlite and
+// Postgres.
 
 type Hook = (ctx: Parameters<Checks>[0]) => Promise<void>;
 

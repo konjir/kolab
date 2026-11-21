@@ -7,8 +7,9 @@
 //
 // It creates everything it uses under fresh names (organizations acme-<run> and globex-<run>, kolabs
 // acme-demo-<run> and globex-demo-<run>, and their people and agents), so it never touches another
-// kolab, the `kolab` kolab included. It prints no token: the agents' tokens go to a state file
-// readable only by you, which `cleanup` reads to end the sessions and archive what the run created.
+// kolab, the `kolab` kolab included. It prints no token: the session tokens, the agents' and the one
+// handed to Priya, go to a state file readable only by you, which `cleanup` reads to end the
+// sessions and archive what the run created.
 //
 // Settings (environment):
 //   KONJIR_URL            the Kolab's MCP endpoint (default http://127.0.0.1:7420/mcp)
@@ -78,11 +79,15 @@ function k(who, verb, args = {}, { quiet = false } = {}) {
   return r.value;
 }
 
-/** Run a verb that must be refused, and show the refusal. */
-function refused(who, verb, args, why) {
+/**
+ * Run a verb that must be refused, and show the refusal. With `cause`, a pattern the refusal must
+ * match, so that a transport or CLI error can't pass for the refusal being demonstrated.
+ */
+function refused(who, verb, args, why, cause) {
   console.log(`  ${cyan(who.name.padEnd(22))} ${dim('$')} kolab ${verb} ${dim(show(args))}`);
   const r = run(who, verb, args);
   if (r.ok) fail(`expected Kolab to refuse ${verb} (${why}), but it did: ${JSON.stringify(r.value)}`);
+  if (cause && !cause.test(r.error)) fail(`expected Kolab to refuse ${verb} (${why}), matching ${cause}, but the error was:\n${r.error}`);
   say(`refused, as it should be (${why}):`);
   say(dim(`"${r.error.split('\n')[0]}"`), 2);
   return r.error;
@@ -184,7 +189,8 @@ function main() {
     pm: { name: `${priya}-drafter` }, pmReview: { name: `${priya}-reviewer` },
     eng: { name: `${marco}-builder` }, engReview: { name: `${marco}-reviewer` },
     globex: { name: `globex-${runId}-agent` },
-    // Priya herself, the product owner: under the default policy, the person who approves the spec (AUT2).
+    // Priya herself, the product owner: under the default policy, the person who approves the
+    // spec (AUT2).
     priya: { name: priya },
   };
   const SPEC = 'invitations', BINDING = 'invitations-binding';
@@ -262,7 +268,7 @@ function main() {
     R6: 'A workspace on the Free plan has at most 5 members, counting pending invitations.',
   };
   const spec = (over = {}) => Object.entries({ ...R, ...over }).map(([id, text]) => ({ id, text, ...(/^R[1-4]$/.test(id) ? { parent: 'S1' } : /^R[5-6]$/.test(id) ? { parent: 'S2' } : {}) }));
-  step('Product drafts the functional spec and submits it for review', 'KON1, VER1, VER2, VER5, ADR1', [
+  step('Product drafts the functional spec and submits it for review', 'KON1, VER1, VER2, VER5, ADR1, AUT2', [
     `Priya's drafting agent writes "Team invitations" for Acme Workspace: two sections, six requirements, each with`,
     'a stable ID. Its first draft slips: R3 says how expiry is built, not what the person sees.',
   ]);
@@ -278,7 +284,8 @@ function main() {
     `${A.pmReview.name} could review it on another kolab's policy, but this one keeps the verdict for a person:`,
     'Kolab refuses it, whatever its harness says. Priya reads the draft and gives the verdict herself.',
   ]);
-  refused(A.pmReview, 'review', { node: SPEC, version: v1.version, verdict: 'approve' }, 'under the default policy an agent gives no verdict on a functional version (AUT2)');
+  refused(A.pmReview, 'review', { node: SPEC, version: v1.version, verdict: 'approve' },
+    'under the default policy an agent gives no verdict on a functional version (AUT2)', /policy keeps reviewing functional versions for a person \(AUT2/);
   const inbox = k(A.priya, 'list_reviews');
   say(`waiting for ${priya}: ${inbox.for_you.map((x) => x.subject).join(', ')}`);
   k(A.priya, 'read_node', { node: SPEC, version: v1.version });
@@ -345,8 +352,8 @@ function main() {
   step('Engineering asks product a question, and leaves a note', 'Q1, Q2, Q3, Q4, Q5, Q6, AUT4', [
     'A question blocks the element that waits on it until product answers. A note records an assumption the',
     'engineer goes ahead with; it blocks nothing, but waits in product\'s queue so product can object.',
-    'Under the default policy an agent answers on the functional layer only by citing what is committed; neither',
-    'answer is in the spec yet, so Priya gives both.',
+    'An agent\'s answer to a functional question must cite what is committed: nothing committed answers this one,',
+    'so Priya answers it. A reply to a note needs no cite, and her drafting agent gives it.',
   ]);
   const q = k(A.eng, 'ask', { address: `kj:${SPEC}#R5`, question: 'When an admin revokes an invitation, should the invited person get an email saying so?', from: `kj:${BINDING}@${bindingV}#b4` });
   const n = k(A.eng, 'annotate', { address: span('R3', '7 days', 'An invitation expires ', ' after it is sent.').replace(`@${specV}`, ''), note: 'Reading "7 days" as 168 hours from the moment the email is sent, not 7 calendar days in the workspace\'s time zone.', from: `kj:${BINDING}@${bindingV}#b2` });
@@ -354,9 +361,10 @@ function main() {
   for (const x of pq.queries) say(`${x.kind} on ${x.address}, from ${x.from}: "${x.question}"`, 2);
   check(pq.queries.some((x) => x.id === q.query) && pq.queries.some((x) => x.id === n.note), "both reach the functional layer's queue: the spec owns the answer");
   const noEmail = 'No email. The link simply stops working and shows that the invitation is no longer valid.';
-  refused(A.pm, 'answer_query', { query: q.query, answer: noEmail }, 'an agent answers a functional question only citing committed elements or rulings (AUT4), and the spec says nothing of this yet');
+  refused(A.pm, 'answer_query', { query: q.query, answer: noEmail },
+    'an agent answers a functional question only citing committed elements or rulings (AUT4), and the spec says nothing of this yet', /citing committed elements or precedent \(AUT4\)/);
   k(A.priya, 'answer_query', { query: q.query, answer: noEmail });
-  k(A.priya, 'answer_query', { query: n.note, answer: 'Agreed: 168 hours from sending.' });
+  k(A.pm, 'answer_query', { query: n.note, answer: 'Agreed: 168 hours from sending.' });
   const em = k(A.eng, 'list_stale');
   for (const m of em.marks) say(`${m.reason} on ${m.dirty}: ${m.because}`, 2);
   const qa = em.marks.find((m) => m.reason === 'query_answered');
@@ -369,7 +377,7 @@ function main() {
   check(r5.questions[0].state === 'answered', 'questions stay beside the element they concern, with their answers');
 
   // ---- 5. a spec change cascades
-  step('Product changes the spec: invitations now last 14 days', 'LNK3, LNK4, LNK5, ADR8, VER2', [
+  step('Product changes the spec: invitations now last 14 days', 'LNK3, LNK4, LNK5, ADR8, VER2, AUT2', [
     'R3 changes and nothing else does. Kolab re-checks every link into the spec against the new version.',
   ]);
   const c1 = k(A.pm, 'draft', { node: SPEC, deltas: [{ kind: 'override', element: 'R3', text: R.R3.replace('7 days', '14 days') }] });
@@ -395,7 +403,7 @@ function main() {
   check(st2.marks.length === 0, 'the technical layer has no open marks');
 
   // ---- 6. a ruling
-  step(`A ruling: Acme raises the Free plan to 10 members (${ruling})`, 'CASE3, D47', [
+  step(`A ruling: Acme raises the Free plan to 10 members (${ruling})`, 'CASE3, D47, ROL4', [
     `Acme's leadership decided it; there is nothing to review. The admin applies the ruling as Priya, who holds Write`,
     `on the functional layer. It commits after structural checks alone, its review note naming ${ruling}.`,
     'Only the admin token reaches this verb; an agent session is refused, so no agent can skip review with it.',
@@ -472,7 +480,7 @@ function main() {
   // ---- summary
   const fin = k(A.eng, 'read_node', { node: BINDING });
   const finSpec = k(A.eng, 'read_node', { node: SPEC }, { quiet: true });
-  step('Where things stand', 'PLN7 (not built yet), ADR9', []);
+  step('Where things stand', 'ADR9', []);
   say(`${full(SPEC, `@${finSpec.version}`)}: ${finSpec.elements.length} elements, last written by ${finSpec.author?.actor}`);
   say(`${full(BINDING, `@${fin.version}`)}: ${fin.elements.length} elements, last written by ${fin.author?.actor}, no open marks`);
   for (const e of finSpec.elements.filter((x) => /^R/.test(x.id))) say(dim(`${e.address}  ${e.text}`), 2);
