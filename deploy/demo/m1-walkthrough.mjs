@@ -184,6 +184,8 @@ function main() {
     pm: { name: `${priya}-drafter` }, pmReview: { name: `${priya}-reviewer` },
     eng: { name: `${marco}-builder` }, engReview: { name: `${marco}-reviewer` },
     globex: { name: `globex-${runId}-agent` },
+    // Priya herself, the product owner: under the default policy, the person who approves the spec (AUT2).
+    priya: { name: priya },
   };
   const SPEC = 'invitations', BINDING = 'invitations-binding';
   const full = (node, rest = '') => `kj:${KOLAB}/${node}${rest}`;
@@ -217,10 +219,12 @@ function main() {
   k(admin, 'admin_grant', { kolab: KOLAB, to: marco, level: 'write', layers: ['technical'] }); state.grants.push({ kolab: KOLAB, to: marco });
   save();
 
-  step('Each person brings two agents, each an actor of its own', 'TEN11, VER16, D30', [
+  step('Each person brings two agents, each an actor of its own', 'TEN11, VER16, D30, AUT2', [
     'One agent of each person writes; the other reviews. Separation of duty is per agent, so a second agent',
-    'of the same person is a valid reviewer. An agent never holds more than its owner: try to give Priya\'s agent',
-    'the technical layer and Kolab refuses.',
+    'of the same person is a valid reviewer, where the kolab\'s autonomy policy lets agents approve. Acme keeps',
+    'the default policy: agents may approve technical versions, but only a person approves a functional one, so',
+    'Priya reviews the spec herself. An agent never holds more than its owner: try to give Priya\'s agent the',
+    'technical layer and Kolab refuses.',
   ]);
   for (const [a, owner, layer] of [[A.pm, priya, 'functional'], [A.pmReview, priya, 'functional'], [A.eng, marco, 'technical'], [A.engReview, marco, 'technical']]) {
     k(admin, 'admin_add_actor', { id: a.name, owner }); state.actors.push(a.name);
@@ -234,9 +238,10 @@ function main() {
 
   step('Each agent gets a session: one kolab, one role, one token', 'ROL1, DEL1, DEL2, DEL4', [
     'The token is the whole setup a harness needs (Claude Code, Codex, a shell). It says who the agent is,',
-    'which kolab it works in and which layer it may write; tool arguments never carry identity.',
+    'which kolab it works in and which layer it may write; tool arguments never carry identity. Priya gets one',
+    'too, as a person, since she reviews the spec; people sign in with GitHub, and the demo hands her a token.',
   ]);
-  for (const [a, role] of [[A.pm, 'product'], [A.pmReview, 'product'], [A.eng, 'engineer'], [A.engReview, 'engineer']]) {
+  for (const [a, role] of [[A.pm, 'product'], [A.pmReview, 'product'], [A.eng, 'engineer'], [A.engReview, 'engineer'], [A.priya, 'product']]) {
     a.token = k(admin, 'admin_open_session', { actor: a.name, role, kolab: KOLAB }).token;
     state.sessions.push({ actor: a.name, token: a.token });
   }
@@ -266,15 +271,18 @@ function main() {
   const s1 = k(A.pm, 'submit_for_review', { node: SPEC, version: v1.version });
   say(`${s1.in_review} is in review; review requests went to ${(s1.reviewers ?? []).join(', ')}`);
   check(s1.in_review && !s1.committed, 'nothing commits without review: the version waits, it is not truth yet');
-  check((s1.reviewers ?? []).includes(A.pmReview.name) && (s1.reviewers ?? []).includes(priya), "Priya's other agent, and Priya herself, are its reviewers; Marco's agents are not (wrong layer)");
+  const asked = s1.reviewers ?? [];
+  check(asked.length === 1 && asked[0] === priya, "Priya herself is its one reviewer: not her reviewer agent (only a person approves a functional version, AUT2), nor Marco's agents (wrong layer)");
 
-  step('A reviewer requests changes: implementation leaked into the spec', 'VER6, VER8, VER10, ROL3', [
-    `${A.pmReview.name} works in its own harness, on its own model account: Kolab runs no model.`,
+  step('The product owner requests changes: implementation leaked into the spec', 'VER6, VER8, VER10, ROL3, AUT2', [
+    `${A.pmReview.name} could review it on another kolab's policy, but this one keeps the verdict for a person:`,
+    'Kolab refuses it, whatever its harness says. Priya reads the draft and gives the verdict herself.',
   ]);
-  const inbox = k(A.pmReview, 'list_reviews');
-  say(`waiting for ${A.pmReview.name}: ${inbox.for_you.map((x) => x.subject).join(', ')}`);
-  k(A.pmReview, 'read_node', { node: SPEC, version: v1.version });
-  const rc = k(A.pmReview, 'review', {
+  refused(A.pmReview, 'review', { node: SPEC, version: v1.version, verdict: 'approve' }, 'under the default policy an agent gives no verdict on a functional version (AUT2)');
+  const inbox = k(A.priya, 'list_reviews');
+  say(`waiting for ${priya}: ${inbox.for_you.map((x) => x.subject).join(', ')}`);
+  k(A.priya, 'read_node', { node: SPEC, version: v1.version });
+  const rc = k(A.priya, 'review', {
     node: SPEC, version: v1.version, verdict: 'request_changes',
     note: 'R3 says how expiry is implemented (a cron job, a table). Keep the spec to what the invited person experiences.',
     findings: [{ kind: 'layer_leak', elements: ['R3'], explanation: 'A nightly cron job and an invitations table are implementation; they belong in the binding.' }],
@@ -285,14 +293,14 @@ function main() {
   say(`the author's answers show: ${mine.state}, "${mine.verdicts.find((v) => v.state !== 'withdrawn')?.note ?? ''}"`);
   check(mine.state === 'drafted', 'a request for changes returns the version to its author as a draft');
 
-  step('Product redrafts, abandons the first draft, and the reviewer approves', 'VER2, VER16', []);
+  step('Product redrafts, abandons the first draft, and Priya approves', 'VER2, VER16, AUT2', []);
   const v2 = k(A.pm, 'draft', { node: SPEC, elements: spec() });
   k(A.pm, 'abandon', { node: SPEC, version: v1.version });
   k(A.pm, 'submit_for_review', { node: SPEC, version: v2.version });
-  const ap = k(A.pmReview, 'review', { node: SPEC, version: v2.version, verdict: 'approve', note: 'Six testable requirements, behavior only.' });
+  const ap = k(A.priya, 'review', { node: SPEC, version: v2.version, verdict: 'approve', note: 'Six testable requirements, behavior only.' });
   const specV = Number(ap.committed.split('@')[1]);
   say(`committed: ${full(SPEC, `@${specV}`)} (short form inside the kolab: ${ap.committed})`);
-  check(ap.ok && ap.committed, 'one approval from another agent of the same person commits the spec');
+  check(ap.ok && ap.committed, "one approval from Priya, a person, commits her agent's spec");
 
   step("Roles are enforced by Kolab, not by the agent's harness", 'ROL2, ROL5', []);
   refused(A.pm, 'create_node', { kind: 'binding', id: 'pm-binding', title: 'A binding by product' }, 'a product session cannot write the technical layer');
@@ -334,17 +342,21 @@ function main() {
   check(down.edges.length === 6, 'the spec sees all six links that rely on it');
 
   // ---- 4. questions and notes across layers
-  step('Engineering asks product a question, and leaves a note', 'Q1, Q2, Q3, Q4, Q5, Q6', [
+  step('Engineering asks product a question, and leaves a note', 'Q1, Q2, Q3, Q4, Q5, Q6, AUT4', [
     'A question blocks the element that waits on it until product answers. A note records an assumption the',
     'engineer goes ahead with; it blocks nothing, but waits in product\'s queue so product can object.',
+    'Under the default policy an agent answers on the functional layer only by citing what is committed; neither',
+    'answer is in the spec yet, so Priya gives both.',
   ]);
   const q = k(A.eng, 'ask', { address: `kj:${SPEC}#R5`, question: 'When an admin revokes an invitation, should the invited person get an email saying so?', from: `kj:${BINDING}@${bindingV}#b4` });
   const n = k(A.eng, 'annotate', { address: span('R3', '7 days', 'An invitation expires ', ' after it is sent.').replace(`@${specV}`, ''), note: 'Reading "7 days" as 168 hours from the moment the email is sent, not 7 calendar days in the workspace\'s time zone.', from: `kj:${BINDING}@${bindingV}#b2` });
   const pq = k(A.pm, 'list_queries');
   for (const x of pq.queries) say(`${x.kind} on ${x.address}, from ${x.from}: "${x.question}"`, 2);
   check(pq.queries.some((x) => x.id === q.query) && pq.queries.some((x) => x.id === n.note), "both reach the functional layer's queue: the spec owns the answer");
-  k(A.pm, 'answer_query', { query: q.query, answer: 'No email. The link simply stops working and shows that the invitation is no longer valid.' });
-  k(A.pm, 'answer_query', { query: n.note, answer: 'Agreed: 168 hours from sending.' });
+  const noEmail = 'No email. The link simply stops working and shows that the invitation is no longer valid.';
+  refused(A.pm, 'answer_query', { query: q.query, answer: noEmail }, 'an agent answers a functional question only citing committed elements or rulings (AUT4), and the spec says nothing of this yet');
+  k(A.priya, 'answer_query', { query: q.query, answer: noEmail });
+  k(A.priya, 'answer_query', { query: n.note, answer: 'Agreed: 168 hours from sending.' });
   const em = k(A.eng, 'list_stale');
   for (const m of em.marks) say(`${m.reason} on ${m.dirty}: ${m.because}`, 2);
   const qa = em.marks.find((m) => m.reason === 'query_answered');
@@ -362,7 +374,7 @@ function main() {
   ]);
   const c1 = k(A.pm, 'draft', { node: SPEC, deltas: [{ kind: 'override', element: 'R3', text: R.R3.replace('7 days', '14 days') }] });
   k(A.pm, 'submit_for_review', { node: SPEC, version: c1.version });
-  const c1a = k(A.pmReview, 'review', { node: SPEC, version: c1.version, verdict: 'approve' });
+  const c1a = k(A.priya, 'review', { node: SPEC, version: c1.version, verdict: 'approve' });
   say(`committed ${c1a.committed}`);
   const st = k(A.eng, 'list_stale');
   for (const m of st.marks) say(`${m.reason} on ${m.dirty}: ${m.because}`, 2);
@@ -412,9 +424,9 @@ function main() {
   k(A.pm, 'submit_for_review', { node: SPEC, version: w.version });
   if (restartIfAsked()) say('Kolab restarted while the version waited in review; every session token still works');
   else say(dim('(no KONJIR_DEMO_RESTART set: skipping the restart itself; deploy/demo/run-local.sh sets it)'));
-  const after = k(A.pmReview, 'list_reviews');
-  check(after.for_you.some((x) => x.subject === `kj:${SPEC}@${w.version}`), `the review request for ${SPEC}@${w.version} is still in ${A.pmReview.name}'s inbox`);
-  k(A.pmReview, 'review', { node: SPEC, version: w.version, verdict: 'approve' });
+  const after = k(A.priya, 'list_reviews');
+  check(after.for_you.some((x) => x.subject === `kj:${SPEC}@${w.version}`), `the review request for ${SPEC}@${w.version} is still in ${priya}'s inbox`);
+  k(A.priya, 'review', { node: SPEC, version: w.version, verdict: 'approve' });
   const st4 = k(A.eng, 'list_stale');
   for (const m of st4.marks) say(`${m.reason} on ${m.dirty}: ${m.because}`, 2);
   check(st4.marks.length === 1 && st4.marks[0].dirty.endsWith('#b1'), 'b1, which links to R2, is marked');
@@ -425,10 +437,11 @@ function main() {
   check(!ob.jobs.some((j) => j.state === 'dead'), 'no outbox job is dead: every commit and verdict did the work it owed');
 
   // ---- 8. isolation
-  step('A second company, Globex, gets a kolab of its own', 'TEN3, TEN4, TEN11, TEN12, ADR3, VER11', [
+  step('A second company, Globex, gets a kolab of its own', 'TEN3, TEN4, TEN11, TEN12, ADR3, AUT2', [
     'Globex runs one agent that the organization itself owns, and it happens to write a spec with the same name.',
     'Names are unique per kolab, so neither learns of the other, and nothing in Acme\'s kolab can be seen from',
-    'Globex\'s, not even whether it exists.',
+    'Globex\'s, not even whether it exists. Globex keeps the default policy too, and has no person on the layer',
+    'yet, so its agent\'s spec waits in review for one: an agent\'s functional version never commits on its own.',
   ]);
   k(admin, 'admin_add_organization', { id: GLOBEX, name: 'Globex Corporation' }); state.orgs.push(GLOBEX);
   k(admin, 'admin_add_kolab', { name: GKOLAB, owner: GLOBEX }); state.kolabs.push(GKOLAB);
@@ -441,9 +454,10 @@ function main() {
   k(A.globex, 'create_node', { kind: 'spec', id: SPEC, title: 'Globex invitations' });
   const gd = k(A.globex, 'draft', { node: SPEC, elements: [{ id: 'G1', text: 'A Globex manager can invite a contractor for a fixed number of days.' }] });
   const gs = k(A.globex, 'submit_for_review', { node: SPEC, version: gd.version });
-  say(`committed ${gs.committed} in ${GKOLAB}${gs.unreviewed ? ', unreviewed: no one else at Globex holds Write on the layer' : ''}`);
-  check(gs.ok && gs.unreviewed, 'with no other writer on the layer, structural checks alone commit it, and the commit says so (VER11)');
-  const gl = k(A.globex, 'list_nodes');
+  say(`${gs.in_review} waits in review in ${GKOLAB}; asked: ${(gs.reviewers ?? []).length ? gs.reviewers.join(', ') : 'nobody yet'}`);
+  check(!gs.committed && gs.in_review && !(gs.reviewers ?? []).length && /AUT2/.test(gs.review ?? ''),
+    'with no person on the layer to approve it, it waits for one, and says why (AUT2): it commits once a person holds Write there, or an Admin changes the policy');
+  const gl = k(A.globex, 'list_nodes').nodes;
   say(`Globex's agent lists: ${gl.map((x) => `${x.id} (${x.title})`).join(', ')}`);
   check(gl.length === 1 && gl[0].title === 'Globex invitations', "Globex's agent sees only its own kolab's nodes");
   const e1 = refused(A.globex, 'read_node', { node: `${KOLAB}/${SPEC}` }, "Globex holds no Read on Acme's kolab");
