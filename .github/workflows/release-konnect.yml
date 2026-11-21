@@ -2,7 +2,7 @@ name: Release konnect
 
 # Publishes konnect: the npm package @konjir/konnect, and a GitHub release named konnect@<version>
 # with its tarball. Lee runs it by hand from main (Actions > Release konnect > Run workflow). It never
-# runs on its own. Modelled on release-cli.yml, which publishes konjir.
+# runs on its own. Modelled on release-cli.yml, which publishes kolab.
 #
 # Four jobs, each with only the permissions it needs:
 # 1. "Build konnect release" (read-only): validates the version and sets it in the runner (from the
@@ -10,8 +10,8 @@ name: Release konnect
 #    version npm or a tag already has, builds and packs the npm tarball, checks it carries LICENSE
 #    (Apache-2.0) and the third-party notices, runs it against a Kolab started from the checkout
 #    (apps/konnect/scripts/e2e.mjs, and compat.mjs, konnect-compat.yml's checks), runs npm publish
-#    --dry-run on it, and uploads it as an
-#    artifact. It is the only job that installs dependencies or runs Bun.
+#    --dry-run on it, and uploads it as an artifact. It is the only job that installs dependencies
+#    or runs Bun.
 # 2. "Draft GitHub release" (contents, attestations): attests the tarball's build provenance and
 #    creates the release as a draft, with the tarball and generated notes. A draft has no tag yet.
 # 3. "Publish konnect to npm" (id-token, the npm-release environment): publishes the tarball the
@@ -24,8 +24,8 @@ name: Release konnect
 #
 # Set up once (README, "Releasing konnect"): @konjir/konnect must exist on npm (a first version
 # published by hand) before it can trust this workflow; then `npm run release:trust -- konnect`
-# (tools/npm-trust.sh) makes it trust this workflow in the npm-release environment, which release-cli.yml
-# uses too, and sets it to disallow tokens.
+# (tools/npm-trust.sh) makes it trust this workflow in the npm-release environment, which
+# release-cli.yml uses too, and sets it to disallow tokens.
 #
 # Recovery: as release-cli.yml's. A run that stops before job 3 has published nothing; delete its
 # draft release, if any, and run again. If job 3 published and job 4 failed, re-run job 4, or run
@@ -105,8 +105,9 @@ jobs:
           bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
           dirname "$bun" >> "$GITHUB_PATH"
 
-      # Plain semver, as nx release versions konjir: a bump from the newest konnect@* tag, or from
-      # apps/konnect/package.json's version before the first release; or the exact version given.
+      # Plain semver, computed here rather than by nx release (release-cli.yml's): a bump from the
+      # newest konnect@* tag, or from apps/konnect/package.json's version before the first release;
+      # or the exact version given.
       - name: Set the version
         id: version
         env:
@@ -205,7 +206,7 @@ jobs:
           subject-path: |
             release/konjir-konnect-*.tgz
 
-      # Not marked latest: the repository's latest release stays konjir's.
+      # Not marked latest: the repository's latest release stays kolab's.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}

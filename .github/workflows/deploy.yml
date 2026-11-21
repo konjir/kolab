@@ -5,8 +5,8 @@ name: Deploy
 # deploy path. There is no staging for now (D83).
 #
 # 1. "Build release" packs the commit with deploy/release/pack.sh (git archive of the commit; its id
-#    is the commit's tree id without site/) and uploads the zip with its checksum. Terraform installs exactly
-#    these bytes and packs nothing itself in CI.
+#    is the commit's tree id without site/) and uploads the zip with its checksum. Terraform
+#    installs exactly these bytes and packs nothing itself in CI.
 # 2. "Plan production" runs in the production GitHub environment, so it waits for its first
 #    approval: to plan. It assumes konjir-deploy-production and plans (deploy/plan.sh). The run's
 #    summary lists each change, with the attributes an update changes, and the plan's digest. A

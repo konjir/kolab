@@ -1,13 +1,15 @@
 name: CLI
 
 # Builds the published kolab, @konjir/kolab on npm, on every pull request into main and every
-# push to main (W2.6, binding element API6), and checks it reaches a Kolab. Nothing is published: the npm package and
-# the binaries are uploaded as this run's artifacts. release-cli.yml publishes.
+# push to main that touches it (W2.6, binding element API6), and checks it reaches a Kolab.
+# Nothing is published: the npm package and the binaries are uploaded as this run's artifacts.
+# release-cli.yml publishes.
 #
 # One job, "Build kolab CLI", on arm64 with production's Node version, as ci.yml's jobs run:
 # - apps/cli/scripts/package.mjs bundles the client into one file for npm and compiles it with
 #   bun build --compile for linux-x64, linux-arm64, darwin-arm64, darwin-x64 and windows-x64.
-#   Bun cross-compiles, so one runner builds them all. Bun's version is apps/cli/.bun-version.
+#   Bun cross-compiles, so one runner builds them all. apps/cli/bun-runtimes.json pins Bun's
+#   version.
 # - It starts a Kolab from the checkout (bin/kolab serve, on PGlite, with a throwaway admin
 #   token) and runs apps/cli/scripts/smoke.sh against it twice: with the linux-arm64 binary, and
 #   with the npm tarball through npm exec, outside the workspace, as npx runs it.
@@ -78,8 +80,8 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
 
       # The Bun apps/cli/bun-runtimes.json pins, checked against its pin: GitHub's zip, or npm's
-      # tarball when the zip won't download (W7.18). Not dirname "$(…)": bash -e
-      # doesn't stop on a failure inside a command substitution whose outer command succeeds (W7.17).
+      # tarball when the zip won't download (W7.18). Not dirname "$(…)": bash -e doesn't stop on a
+      # failure inside a command substitution whose outer command succeeds (W7.17).
       - name: Install Bun
         run: |
           bun=$(node apps/cli/scripts/package.mjs bun "$RUNNER_TEMP/bun")
@@ -100,8 +102,8 @@ jobs:
           npm pack ./apps/cli/dist-npm --pack-destination "$RUNNER_TEMP/pack"
           ls -l apps/cli/dist-bin "$RUNNER_TEMP/pack"
 
-      # kolab is Apache-2.0 (D63): the tarball and the binaries carry LICENSE and the third-party notices,
-      # and bundle none of the FSL-1.1-ALv2 rest of the repository (D64).
+      # kolab is Apache-2.0 (D63): the tarball and the binaries carry LICENSE and the third-party
+      # notices, and bundle none of the FSL-1.1-ALv2 rest of the repository (D64).
       - name: Check the licence ships
         run: apps/cli/scripts/check-licence.sh "$RUNNER_TEMP"/pack/konjir-kolab-*.tgz apps/cli/dist-bin
 
