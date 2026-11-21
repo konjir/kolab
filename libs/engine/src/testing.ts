@@ -98,14 +98,15 @@ async function onServer(sql: string) {
 }
 
 /**
- * Opens a Kolab for a test. `closeOpened` closes every one, after each test file.
+ * Opens a Kolab for a test. `closeOpened` closes the ones a test opened after it, and every one
+ * after the file.
  *
  * A commit queues its variants' rebases, and Kolab's outbox worker runs them later (D43, P6).
  * So that a scenario can read the outcome of a commit and its rebases straight after the call,
  * each write that can commit (commit, review, submit, recordReview, resolveOverride,
  * applyRuling, importKolab), and each change of access, here waits for the rebases it queued
- * (COMMITTING): it drains the outbox before it returns. A
- * write that fails still drains, but throws its own error, never the drain's.
+ * (COMMITTING): it drains the outbox before it returns. A write that fails still drains, but
+ * throws its own error, never the drain's.
  * With `queued: true` it doesn't, for tests of the asynchrony itself, which drain the outbox
  * (drainOutbox) or start the worker as they need.
  */
