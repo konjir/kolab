@@ -19,6 +19,9 @@ import { fileURLToPath } from 'node:url';
 /** Lee's App Store Connect team key "EAS" (Admin), made 2026-11-22. */
 export const ASC_KEY_ID = 'V455KTM3J2';
 export const ASC_ISSUER_ID = 'b416057a-e548-4af1-892f-9713ae0b9077';
+/** Lee's Apple Developer team, an individual's: eas-cli asks for both on every run otherwise. */
+export const APPLE_TEAM_ID = '7Y8QD34KJQ';
+const APPLE_TEAM_TYPE = 'INDIVIDUAL';
 const ASC_KEY_PATH = join(homedir(), '.config', 'konnect-mobile', `AuthKey_${ASC_KEY_ID}.p8`);
 
 const APPS = ['production', 'preview'];
@@ -34,9 +37,13 @@ if (!APPS.includes(app) || !PLATFORMS.includes(platform) || rest.length) {
 // would keep that password in the login Keychain: never here, so it is asked for each time.
 const env = { ...process.env, APP_VARIANT: app, EXPO_NO_KEYCHAIN: '1' };
 if (platform === 'ios') {
-  env.EXPO_ASC_KEY_ID ??= ASC_KEY_ID;
-  env.EXPO_ASC_ISSUER_ID ??= ASC_ISSUER_ID;
-  env.EXPO_ASC_API_KEY_PATH ??= ASC_KEY_PATH;
+  // ||=, not ??=: an empty value would be kept, and an empty issuer ID makes eas-cli take the key for
+  // an individual key and skip Apple's authentication.
+  env.EXPO_ASC_KEY_ID ||= ASC_KEY_ID;
+  env.EXPO_ASC_ISSUER_ID ||= ASC_ISSUER_ID;
+  env.EXPO_ASC_API_KEY_PATH ||= ASC_KEY_PATH;
+  env.EXPO_APPLE_TEAM_ID ||= APPLE_TEAM_ID;
+  env.EXPO_APPLE_TEAM_TYPE ||= APPLE_TEAM_TYPE;
   if (!existsSync(env.EXPO_ASC_API_KEY_PATH)) {
     console.error([
       `credentials ${app} ios: the App Store Connect API key isn't at ${env.EXPO_ASC_API_KEY_PATH}. Nothing was sent to EAS or Apple.`,

@@ -61,7 +61,7 @@ if (!NEEDS_NO_PROJECT.has(args[0])) {
 
 // Submitting needs the store accounts' details, which eas.json holds as placeholders until Lee fills them.
 if ((args[0] === 'submit' || args.includes('--auto-submit')) && readFileSync(join(root, 'eas.json'), 'utf8').includes('REPLACE_WITH_')) {
-  console.error(`eas ${args.join(' ')}: eas.json's submit.production still has placeholders (REPLACE_WITH_…): the App Store Connect app's ID and the Play service account key. Nothing was sent to EAS.`);
+  console.error(`eas ${args.join(' ')}: eas.json's submit profiles still have placeholders (REPLACE_WITH_…). Nothing was sent to EAS.`);
   process.exit(1);
 }
 
