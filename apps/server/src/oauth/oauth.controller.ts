@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, nativeRedirect, onPersonsDevice, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, onPersonsDevice, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
@@ -342,7 +342,7 @@ export class OAuthController {
     // Each error is a page that says what went wrong.
     const client = clientId ? await this.client(clientId, base, true) : undefined;
     if (!client) return sendError(res, 400, 'The app asked to sign in as a client this Kolab doesn\'t know. Reconnect it to register again.');
-    if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri)) return sendError(res, 400, 'The app asked for its answer at an address it didn\'t register, so Kolab won\'t send it there.');
+    if (!redirectUri || !redirectUriMatches(client.redirectUris, redirectUri, this.kolab.appRedirects.devSchemes)) return sendError(res, 400, 'The app asked for its answer at an address it didn\'t register, so Kolab won\'t send it there.');
     // Counted only once the client checks out, per address and per client.
     if (!this.authorizations.take(clientAddress(req, this.options))) {
       return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
@@ -450,11 +450,11 @@ export class OAuthController {
    * app's, its client's every one the app's): its page is about who signed in alone (continuePage).
    */
   private async appChoose(pending: { clientId: string; redirectUri: string; scope: string | null } | undefined): Promise<boolean> {
-    if (!pending || pending.clientId === WEB_CLIENT || !nativeRedirect(pending.redirectUri)) return false;
+    if (!pending || pending.clientId === WEB_CLIENT || !this.kolab.appRedirect(pending.redirectUri)) return false;
     const scope = personScope(pending.scope);
     if (!scope || !('choose' in scope)) return false;
     const client = await this.client(pending.clientId, '');
-    return !!client && onPersonsDevice(client.redirectUris);
+    return !!client && onPersonsDevice(client.redirectUris, this.kolab.appRedirects.devSchemes);
   }
 
   /**
@@ -626,7 +626,7 @@ export class OAuthController {
     const asked = personScope(scope);
     if (!asked) return { refused: 'this sign-in doesn\'t leave its kolab to this page' };
     if ('error' in asked) return { refused: `the app asked for a sign-in Kolab can't do: ${asked.error}. Start it again` };
-    if (!client || !onPersonsDevice(client.redirectUris)) return { refused: 'a sign-in that leaves its kolab to this page is only for an app on your own computer or phone, such as konnect, and this one receives its answer elsewhere' };
+    if (!client || !onPersonsDevice(client.redirectUris, this.kolab.appRedirects.devSchemes)) return { refused: 'a sign-in that leaves its kolab to this page is only for an app on your own computer or phone, such as konnect, and this one receives its answer elsewhere' };
     if ('choose' in asked) return { scope: asked };
     const plan = await this.kolab.teamPlan(person, asked.team, asked.intent);
     return { scope: asked, plan, ...(plan.kind === 'refused' ? { refused: plan.refusedForApp } : {}) };
@@ -639,7 +639,7 @@ export class OAuthController {
     const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
     const check = await this.personCheck(person, pending.scope, client);
     const base = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: nativeRedirect(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: this.kolab.appRedirect(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
       konjirAdmin: await this.kolab.isAdmin(person), error: extra.error,
     };
     const target = formActionSource(pending.redirectUri);

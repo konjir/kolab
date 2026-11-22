@@ -10,7 +10,7 @@ import { sessionKey, type Kolab } from '@konjir/engine';
 import { closeAtEnd, openKolab, type TestKolab } from '@konjir/engine/testing';
 import { GitHubIdentity, StubIdentity, startServer } from '../src/server.js';
 
-const APP = 'com.konjir.konnect:/oauth';
+const APP = 'https://www.konjir.com/konnect/app/oauth';
 const CB = 'http://127.0.0.1:9/cb';
 const VERIFIER = 'v'.repeat(43);
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
@@ -181,20 +181,20 @@ test('konnect\'s app shows a person with a team a page about who signed in alone
   expect(titleOf(only.html)).toBe('Continue as @bob · Kolab');
   expect(only.html).toContain('<h1>Continue as <code>@bob</code></h1>');
   expect(only.html).toContain('Signed in with Stub as <code>bob</code>.');
-  expect(only.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>${APP}</code>. Its name is what it calls itself`);
+  expect(only.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>https://www.konjir.com</code>. Its name is what it calls itself`);
   // One primary button and the other-account link, and nothing about any team.
   expect(buttons(only.html)).toStrictEqual(['pick=continue', 'pick=other-account']);
   expect(only.html.match(/class="primary"/g)).toHaveLength(1);
   expect(only.html).toContain('<button class="link" type="submit" name="pick" value="other-account">Use a different Stub account</button>');
   for (const team of ['bobs', 'Bob&#39;s', 'kolab:', 'Team', 'team you worked in', 'Choose another', 'Your kolabs']) expect([team, only.html.includes(team)]).toStrictEqual([team, false]);
   expect(only.html).not.toContain('Konjir admin');
-  expect(only.res.headers.get('content-security-policy')).toContain('form-action \'self\' com.konjir.konnect:;');
+  expect(only.res.headers.get('content-security-policy')).toContain('form-action \'self\' https://www.konjir.com;');
   // No code until the page's own form is posted: a form from anywhere else is refused, and nothing reaches the app.
   const forged = await only.post({ pick: 'continue' }, { from: 'https://evil.example' });
   expect([forged.res.status, forged.left]).toStrictEqual([403, undefined]);
   const done = await only.post({ pick: 'continue' });
   expect(done.res.status).toBe(303);
-  expect(done.left!.toString()).toMatch(/^com\.konjir\.konnect:\/oauth\?code=kjc_[^&]+&state=st&iss=/);
+  expect(done.left!.toString()).toMatch(/^https:\/\/www\.konjir\.com\/konnect\/app\/oauth\?code=kjc_[^&]+&state=st&iss=/);
   const t = await exchange(base, app, done.left!.searchParams.get('code')!);
   expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:bobs role:product']);
   expect((await kolab.sessionInfo(t.body.access_token)).actor).toBe('bob');
