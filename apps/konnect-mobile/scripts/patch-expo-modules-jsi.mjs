@@ -10,7 +10,7 @@
 // same pointer from it there: the same code, which every Swift accepts. It runs at `npm install`
 // and `npm ci` (this workspace's postinstall) and before `prebuild` and `ios`, edits only that one
 // statement, and does nothing once upstream has changed it. Remove it when #52754 is fixed.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +37,10 @@ const FIXED = [
   '        try encode(JavaScriptValue.Slot(UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: address)!), runtime)',
 ].join('\n');
 
+if (!existsSync(file)) {
+  console.log(`patch-expo-modules-jsi: expo-modules-jsi ${version} has no ${file.slice(dir.length + 1)}; nothing patched. If iOS builds pass, remove this script.`);
+  process.exit(0);
+}
 const source = readFileSync(file, 'utf8');
 if (source.includes(FIXED)) {
   console.log(`patch-expo-modules-jsi: expo-modules-jsi ${version} is already patched (expo/expo#52754)`);

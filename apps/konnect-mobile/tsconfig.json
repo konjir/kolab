@@ -8,5 +8,7 @@
     "customConditions": ["react-native", "@konjir/source"],
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["app", "src", "test", ".expo/types/**/*.ts", "expo-env.d.ts"]
+  "include": ["app", "src", "test", ".expo/types/**/*.ts", "expo-env.d.ts"],
+  // Tests that run Node scripts are checked with Node's types, in tsconfig.config.json.
+  "exclude": ["test/eas.test.ts"]
 }

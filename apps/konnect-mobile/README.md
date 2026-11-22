@@ -130,9 +130,18 @@ What Lee does, in order, before the release workflows can ship anything. Until t
    - Then a Google Cloud service account with release rights, its JSON key uploaded to EAS (`npx eas credentials`, Android, Google Service Account) rather than kept in the repo.
 5. **Android push.** FCM v1 credentials, uploaded to EAS the same way.
 6. **The Expo access token for CI.** Make one on expo.dev and store it as the `EXPO_TOKEN` secret in both GitHub environments below. A personal Expo account has no robot users, so this is Lee's own token, acting as Lee.
-7. **GitHub environments:**
-   - `app-preview`, limited to the `main` branch, holding `EXPO_TOKEN`.
-   - `app-stores`, with Lee as its required reviewer, holding `EXPO_TOKEN`.
-8. **Kolab's push.** A separate Expo access token, which Kolab uses to send pushes through Expo, stored as the SecureString SSM parameter `/konjir/konjir-test/expo-access-token` (Terraform output `expo_access_token_parameter`), which Kolab reads as `KONJIR_EXPO_ACCESS_TOKEN`; `KONJIR_PUSH_PREVIEW=off` keeps message words out of every push. It is a different token from step 6.
+7. **The update signing key.** Updates are signed (expo-updates code signing). A build applies only an update signed with the key whose certificate it carries, `certs/certificate.pem`, which is in the repo. The private key was made with the certificate and is kept outside the repo, on Lee's machine, at `~/.config/konnect-mobile/updates-signing/private-key.pem` (mode 600). Store its contents as the `KONNECT_UPDATES_PRIVATE_KEY` secret in both environments below. Never commit it. To publish an update by hand, set `KONNECT_UPDATES_PRIVATE_KEY_PATH` to that file and `APP_VARIANT` to the channel's variant; `scripts/eas.mjs` refuses otherwise.
+8. **GitHub environments:**
+   - `app-preview`, limited to the `main` branch, holding `EXPO_TOKEN` and `KONNECT_UPDATES_PRIVATE_KEY`.
+   - `app-stores`, limited to the `main` branch, with Lee as its required reviewer, holding the same two.
+9. **A tag ruleset.** It lets only GitHub Actions create or move `konnect-native/*` tags, since they tell the release workflow which binaries exist.
+10. **Production's sign-in link.** Production signs in through `https://www.konjir.com/konnect/app/oauth`, a Universal Link (iOS 17.4 and later) and an App Link. www.konjir.com must serve two files naming the app:
+    - an `apple-app-site-association` with Lee's Apple Team ID and `com.konjir.konnect`
+    - an `assetlinks.json` with the Play app signing certificate's SHA-256
+
+    Both values come from steps 1 and 4.
+11. **Kolab's push.** A separate Expo access token, which Kolab uses to send pushes through Expo, stored as the SecureString SSM parameter `/konjir/konjir-test/expo-access-token` (Terraform output `expo_access_token_parameter`), which Kolab reads as `KONJIR_EXPO_ACCESS_TOKEN`; `KONJIR_PUSH_PREVIEW=off` keeps message words out of every push. It is a different token from step 6.
+
+**What the phone keeps.** The sign-in is in the secure store, on this device only. Kolab's answers are kept for up to 7 days in expo-sqlite, so the app opens offline: messages, channels and members, one cache per person. That cache is cleared when the person signs out or Kolab ends the sign-in.
 
 After the first build from CI, check expo.dev's usage page to see whether local builds count against the free plan's 15 + 15 builds a month.
