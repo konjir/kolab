@@ -77,6 +77,15 @@ export class LoginStore {
   }
 
   /**
+   * The client this phone registered with Kolab, kept across sign-ins (signing out revokes the
+   * grant, not the registration), so each sign-in doesn't register another: Kolab limits how many
+   * are registered from one place.
+   */
+  client(): Promise<string | null> { return this.kv.get(`${this.ns}.client`); }
+  keepClient(id: string): Promise<void> { return this.serial(() => this.kv.set(`${this.ns}.client`, id)); }
+  forgetClient(): Promise<void> { return this.serial(() => this.kv.remove(`${this.ns}.client`)); }
+
+  /**
    * The per-team sign-ins an earlier build kept (`<ns>.teams`, `<ns>.login.<team>`, `<ns>.current`),
    * taken out of the store: the caller revokes them. Empty once they are gone.
    */

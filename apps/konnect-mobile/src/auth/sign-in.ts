@@ -47,15 +47,19 @@ export const scopeFor = (ask: SignInAsk) => {
 /** The person closed the sign-in, or Kolab's page refused it: `message` says which, as Kolab did. */
 export class SignInStopped extends Error { name = 'SignInStopped'; }
 
-export async function signIn(opts: { url: string; scheme: string; ask: SignInAsk; clientName: string }): Promise<Login> {
+export async function signIn(opts: { url: string; scheme: string; ask: SignInAsk; clientName: string; clientId?: string | null }): Promise<Login> {
   const kolab = await discover(opts.url);
   const redirectUri = redirectFor(opts.scheme);
-  const reg = await fetch(kolab.registrationEndpoint, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ client_name: opts.clientName, redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }),
-  });
-  const client = await reg.json().catch(() => ({})) as { client_id?: string; error_description?: string };
-  if (!reg.ok || !client.client_id) throw new Error(`Kolab didn't register the app: ${client.error_description ?? reg.status}`);
+  // The registration kept from an earlier sign-in, or a new one.
+  let client: { client_id?: string; error_description?: string } = { client_id: opts.clientId ?? undefined };
+  if (!client.client_id) {
+    const reg = await fetch(kolab.registrationEndpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: opts.clientName, redirect_uris: [redirectUri], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }),
+    });
+    client = await reg.json().catch(() => ({})) as typeof client;
+    if (!reg.ok || !client.client_id) throw new Error(`Kolab didn't register the app: ${client.error_description ?? reg.status}`);
+  }
 
   const request = new AuthRequest({
     clientId: client.client_id, redirectUri, responseType: ResponseType.Code,

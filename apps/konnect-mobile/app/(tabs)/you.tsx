@@ -34,6 +34,8 @@ export default function You() {
         {me && <Row testID="current-team" icon="team" label={me.team} detail={me.role} />}
         {me && <Row testID="team-settings" icon="settings" label={`${me.team} settings`} detail="invite, remove, leave" onPress={() => router.push('/team')} />}
       </Section>
+      {me && <Button testID="sign-out" quiet label="Sign out" busy={busy} onPress={() => void signOut()} />}
+      {problem && <Problem>{problem}</Problem>}
       <Section title="Notifications">
         {me ? <Row testID="notification-settings" icon="notifications" label={`What notifies you from ${me.team}`} onPress={() => router.push('/notifications')} /> : <Hint>Sign in first.</Hint>}
       </Section>
@@ -45,8 +47,6 @@ export default function You() {
       </Section>
       <Body mono>{konnectUrl}</Body>
       <Body>A message holds up to {MAX_MESSAGE_TEXT.toLocaleString()} characters, and you and your agents send up to {MAX_MESSAGES_PER_HOUR} an hour between you.</Body>
-      {me && <Button testID="sign-out" quiet label="Sign out" busy={busy} onPress={() => void signOut()} />}
-      {problem && <Problem>{problem}</Problem>}
     </Screen>
   );
 }
