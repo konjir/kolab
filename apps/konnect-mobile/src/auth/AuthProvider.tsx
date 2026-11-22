@@ -8,6 +8,8 @@ import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { appExtra } from '@/config';
+import Storage from 'expo-sqlite/kv-store';
+import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
 import { discover, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type TeamSummary } from './store';
@@ -85,6 +87,9 @@ export function AuthProvider({ children, kv = secureKV }: { children: ReactNode;
       return login.team;
     },
     signOut: async (team) => {
+      // The phone stops hearing from the team before its sign-in ends (S4; a Kolab without push refuses, and that's fine).
+      const token = await Storage.getItem(PUSH_TOKEN_KEY).catch(() => null);
+      if (token) await auth.client(team).then((c) => unregisterDevice(c, token)).catch(() => undefined);
       dropClient(team);
       const r = await tokens.signOut(team);
       await reload();

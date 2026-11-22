@@ -25,6 +25,9 @@ jest.mock('../src/auth/AuthProvider', () => {
   const actual = jest.requireActual<typeof import('../src/auth/AuthProvider')>('../src/auth/AuthProvider');
   return { ...actual, AuthProvider: ({ children }: { children: ReactNode }) => <actual.AuthProvider kv={mockKv}>{children}</actual.AuthProvider> };
 });
+// Push: a simulator gets no token (Device.isDevice is false), and nothing is tapped.
+jest.mock('expo-device', () => ({ isDevice: false }));
+jest.mock('expo-notifications', () => ({ setNotificationHandler: jest.fn(), addNotificationResponseReceivedListener: () => ({ remove: jest.fn() }), getLastNotificationResponse: () => null, setBadgeCountAsync: async () => true }));
 // Home reads the team from Kolab; here the gate is what's tested, so nothing answers.
 jest.mock('../src/auth/mcp', () => ({ teamClient: () => new Promise(() => undefined) }));
 
