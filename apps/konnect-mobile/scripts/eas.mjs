@@ -8,7 +8,7 @@
 // Linked means app.config.ts names the EAS project (EAS_PROJECT_ID, read here from the resolved
 // config as extra.eas.projectId) and its owner. `eas whoami` needs no project, so it always runs.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -35,11 +35,6 @@ if (args[0] === 'update') {
     console.error(`eas update --channel ${channel}: APP_VARIANT is ${JSON.stringify(process.env.APP_VARIANT ?? null)}; an update for ${channel} must be built with APP_VARIANT=${want}. Nothing was sent to EAS.`);
     process.exit(2);
   }
-  // Updates are signed (expo-updates code signing): the certificate is in the app, the private key
-  // only in a secret (KONNECT_UPDATES_PRIVATE_KEY_PATH, a file).
-  const key = process.env.KONNECT_UPDATES_PRIVATE_KEY_PATH;
-  if (!key || !existsSync(key)) { console.error('eas update: KONNECT_UPDATES_PRIVATE_KEY_PATH names no file; updates are signed, and a build only applies a signed one. Nothing was sent to EAS.'); process.exit(2); }
-  args.push('--private-key-path', key);
   // The update's message, from KONNECT_UPDATE_MESSAGE: Nx joins the arguments after `--` into one
   // command line for a shell, so `-- --message "main at <sha>"` reaches eas-cli as three words (and
   // a message with shell syntax in it would run). From the environment it stays one argument,

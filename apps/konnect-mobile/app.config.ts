@@ -83,16 +83,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...(EAS_OWNER ? { owner: EAS_OWNER } : {}),
     // An update reaches only the builds whose native code it was made for.
     runtimeVersion: { policy: 'fingerprint' },
-    // Updates are signed (expo-updates code signing): a build applies only an update signed with the
-    // key whose certificate it carries, certs/certificate.pem. The private key is a secret, never in
-    // the repo (README, Release setup).
-    ...(EAS_PROJECT_ID ? {
-      updates: {
-        url: `https://u.expo.dev/${EAS_PROJECT_ID}`,
-        codeSigningCertificate: './certs/certificate.pem',
-        codeSigningMetadata: { keyid: 'main', alg: 'rsa-v1_5-sha256' },
-      },
-    } : {}),
+    // Updates aren't signed: expo-updates code signing needs a paid EAS plan, and Lee chose the free
+    // one (2026-11-22). An update is trusted as Expo's account and TLS are, as is what EAS submits.
+    ...(EAS_PROJECT_ID ? { updates: { url: `https://u.expo.dev/${EAS_PROJECT_ID}` } } : {}),
     ios: {
       bundleIdentifier: id,
       supportsTablet: false,

@@ -16,12 +16,12 @@ name: Mobile release
 #   4. "Update": a signed eas update on the preview channel, built as the preview variant.
 # - Production, by hand (workflow_dispatch), behind the app-stores environment (main only, Lee
 #   approves): local production builds submitted to TestFlight and Play's internal track, or with
-#   update-only, a signed update on the production channel. Promoting to the stores is done in their
+#   update-only, an update on the production channel. Promoting to the stores is done in their
 #   consoles.
 #
 # Every step is an Nx target of @konjir/konnect-mobile, but the Record jobs', which run
-# scripts/native.mjs directly. EXPO_TOKEN and the update signing key live only in the app-preview
-# and app-stores environments, both limited to main, and are read only on push to main or
+# scripts/native.mjs directly. EXPO_TOKEN lives only in the app-preview and app-stores
+# environments, both limited to main, and is read only on push to main or
 # workflow_dispatch, never on a pull request. Checkouts keep no credentials but the Record jobs',
 # which push the tag: they hold no Expo secret, install nothing and run native.mjs, which uses only
 # Node's own modules, on the runner's Node. Actions are pinned to commit SHAs, dependencies are
@@ -202,19 +202,12 @@ jobs:
           node-version: ${{ needs.fingerprint.outputs.node }}
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Update the preview channel (signed)
+      - name: Update the preview channel
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          KONNECT_UPDATES_PRIVATE_KEY: ${{ secrets.KONNECT_UPDATES_PRIVATE_KEY }}
           # One argument to eas-cli however it's worded (scripts/eas.mjs): never on Nx's command line.
           KONNECT_UPDATE_MESSAGE: main at ${{ github.sha }}
-        run: |
-          export KONNECT_UPDATES_PRIVATE_KEY_PATH="$RUNNER_TEMP/updates-private-key.pem"
-          trap 'rm -f "$KONNECT_UPDATES_PRIVATE_KEY_PATH"' EXIT
-          (umask 077; printf '%s\n' "$KONNECT_UPDATES_PRIVATE_KEY" > "$KONNECT_UPDATES_PRIVATE_KEY_PATH")
-          # The key is in the file now: out of the environment, so nothing run after (npx, nx, eas) inherits it.
-          unset KONNECT_UPDATES_PRIVATE_KEY
-          npx nx run @konjir/konnect-mobile:update-preview --output-style=stream -- --non-interactive
+        run: npx nx run @konjir/konnect-mobile:update-preview --output-style=stream -- --non-interactive
 
   production:
     name: Production (${{ matrix.platform }})
@@ -277,23 +270,16 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           FINGERPRINT: ${{ steps.build.outputs.fingerprint }}
         run: echo "$PLATFORM=$FINGERPRINT" >> "$GITHUB_OUTPUT"
-      - name: Update the production channel (signed)
+      - name: Update the production channel
         # Once, from the matrix's first leg (Android's, on the cheaper runner, once it ships; iOS's
         # until then): an update carries both platforms' bundles. Chosen from the matrix itself, not
         # by reading KONNECT_ANDROID again, so the two can never disagree and publish nothing.
         if: inputs.update-only && strategy.job-index == 0
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          KONNECT_UPDATES_PRIVATE_KEY: ${{ secrets.KONNECT_UPDATES_PRIVATE_KEY }}
           # Lee's words: from the environment, never on Nx's command line, where a shell would read them.
           KONNECT_UPDATE_MESSAGE: ${{ inputs.message }}
-        run: |
-          export KONNECT_UPDATES_PRIVATE_KEY_PATH="$RUNNER_TEMP/updates-private-key.pem"
-          trap 'rm -f "$KONNECT_UPDATES_PRIVATE_KEY_PATH"' EXIT
-          (umask 077; printf '%s\n' "$KONNECT_UPDATES_PRIVATE_KEY" > "$KONNECT_UPDATES_PRIVATE_KEY_PATH")
-          # The key is in the file now: out of the environment, so nothing run after (npx, nx, eas) inherits it.
-          unset KONNECT_UPDATES_PRIVATE_KEY
-          npx nx run @konjir/konnect-mobile:update-production --output-style=stream -- --non-interactive
+        run: npx nx run @konjir/konnect-mobile:update-production --output-style=stream -- --non-interactive
 
   record-production:
     name: Record production
