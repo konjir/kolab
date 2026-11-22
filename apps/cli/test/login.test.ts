@@ -319,7 +319,8 @@ test('kolab login again revokes the sign-in it replaces; logout that can\'t reac
   const gone = 'http://127.0.0.1:9/mcp';
   const all = JSON.parse(readFileSync(credentialsPath(), 'utf8'));
   writeFileSync(credentialsPath(), JSON.stringify({ ...all, [gone]: all[server.url] }));
-  expect(await rejection(logout(gone))).toMatch(/couldn't reach Kolab .* wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget/);
+  expect(await rejection(logout(gone))).toMatch(/couldn't reach Kolab .* wasn't revoked and is still kept: run kolab logout again, or kolab logout --forget to drop it anyway/);
+  expect(await rejection(logout(gone, { command: 'konnect logout acme' }))).toMatch(/is still kept: run konnect logout acme again, or konnect logout acme --forget to drop it anyway/);
   expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[gone]).toBeDefined();
   expect(await logout(gone, { forget: true })).toStrictEqual({ had: true, revoked: false });
   expect(JSON.parse(readFileSync(credentialsPath(), 'utf8'))[gone]).toBeUndefined();

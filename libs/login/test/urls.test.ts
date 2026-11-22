@@ -123,7 +123,9 @@ test('a sign-in kept for http to another host, from before the https check: logo
   const remote = 'http://kolab.example/mcp';
   const kept = { client: { client_id: 'kjcl_1' }, tokens: { access_token: 'kjs_a', refresh_token: 'kjr_r', token_type: 'Bearer' } };
   writeFileSync(path, JSON.stringify({ [remote]: kept, 'http://127.0.0.1:9/mcp': kept }));
-  await expect(logout(remote, { path })).rejects.toThrow(/http to another host.*To drop the sign-in kept for it without contacting Kolab, run konjir logout --forget/);
+  await expect(logout(remote, { path })).rejects.toThrow(/http to another host.*To drop the sign-in kept for it without contacting Kolab, run kolab logout --forget$/);
+  // The caller's own command is what the person is told to run: konnect's, for konnect.
+  await expect(logout(remote, { path, command: 'konnect logout acme' })).rejects.toThrow(/without contacting Kolab, run konnect logout acme --forget$/);
   expect(JSON.parse(readFileSync(path, 'utf8'))[remote]).toBeDefined();
   // kolab.example is never resolved, let alone sent the tokens: --forget only reads and drops the entry.
   expect(await logout(remote, { path, forget: true })).toStrictEqual({ had: true, revoked: false, why: 'konjir doesn\'t contact Kolab over http to another host' });

@@ -688,7 +688,7 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     return;
   }
   if (cmd === 'logout') {
-    const r = await logout(url, { forget: rest.includes('--forget') });
+    const r = await logout(url, { forget: rest.includes('--forget'), command: 'kolab logout' });
     const others = r.had ? [] : keptSignIns().filter((u) => u !== url);
     console.log(!r.had ? `No sign-in kept for ${safeUrl(url)}.${others.length ? ` kolab keeps ${others.length === 1 ? 'one' : 'sign-ins'} for ${others.map(safeUrl).join(', ')}: run kolab logout --url <url> for ${others.length === 1 ? 'it' : 'each'}.` : ''}`
       : r.revoked ? `Signed out of ${safeUrl(url)}: the sign-in is revoked and forgotten.`

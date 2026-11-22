@@ -946,14 +946,17 @@ export async function keepSignIn(url: string, path: string, saved: { client: Sto
 /**
  * `kolab logout`: revokes the grant at Kolab (RFC 7009), then forgets the sign-in. If Kolab can't
  * be reached, or refuses, the sign-in is kept, so the person can try again, and this throws, saying
- * so; with `forget`, it is forgotten anyway, unrevoked, and that is said too.
+ * so; with `forget`, it is forgotten anyway, unrevoked, and that is said too. `command` is the
+ * caller's own logout command, which those words tell the person to run again (`kolab logout` by
+ * default; konnect gives `konnect logout <team>`).
  */
-export async function logout(url: string, opts: { path?: string; forget?: boolean } = {}): Promise<{ had: boolean; revoked: boolean; why?: string }> {
+export async function logout(url: string, opts: { path?: string; forget?: boolean; command?: string } = {}): Promise<{ had: boolean; revoked: boolean; why?: string }> {
+  const command = opts.command ?? 'kolab logout';
   // A sign-in kept for a URL konjir no longer signs in over (http to another host, kept before the
   // check): --forget drops it without contacting Kolab, since that would send its tokens over http.
   let refused: string | undefined;
   try { checkKolabUrl(url); } catch (e) { refused = (e as Error).message; }
-  if (refused && !opts.forget) throw new Error(`${refused}. To drop the sign-in kept for it without contacting Kolab, run konjir logout --forget`);
+  if (refused && !opts.forget) throw new Error(`${refused}. To drop the sign-in kept for it without contacting Kolab, run ${command} --forget`);
   const provider = new StoredLogin(url, { path: opts.path, skipUrlCheck: !!refused });
   if (refused) {
     return provider.locked(async (owner) => {
@@ -970,7 +973,7 @@ export async function logout(url: string, opts: { path?: string; forget?: boolea
     try {
       revoked = (await revoke(url, saved)) === 'revoked';
     } catch (e) {
-      if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${safeUrl(url)} wasn't revoked and is still kept: run konjir logout again, or konjir logout --forget to drop it anyway`);
+      if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${safeUrl(url)} wasn't revoked and is still kept: run ${command} again, or ${command} --forget to drop it anyway`);
     }
     await provider.forget(owner);
     return { had: true, revoked };

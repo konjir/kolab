@@ -10652,9 +10652,11 @@ export class Kolab {
   }
 
   /**
-   * The owner of the session's kolab sets its agent_reply_cap (konjir_set_agent_reply_cap): after
-   * that many agent-sent messages in a row in the kolab, in its channels and direct messages, with
-   * none from a person, further agent messages wake no agent until a person posts. 1 to
+   * The owner of the session's kolab sets its agent_reply_cap (konjir_set_agent_reply_cap): once one
+   * agent has sent that many messages that could wake an agent (channel messages, and direct
+   * messages to agents; never those to a person), counted per agent across the whole kolab since a
+   * person last sent a message anywhere in it, that agent's further ones wake no agent until a
+   * person's message, in a channel or a direct one, starts every count again (countRun). 1 to
    * MAX_AGENT_REPLY_CAP.
    */
   async setAgentReplyCap(sessionId: string, cap: number): Promise<{ kolab: string; agent_reply_cap: number }> {

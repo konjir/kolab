@@ -4,7 +4,7 @@
 // options; the exit status for each kind of failure; what an agent may not run; and the system
 // prompt konnect gives an agent, for each --act-for. The service here is an address with nothing
 // behind it, so anything that reached it would fail as unreachable, not as asserted.
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@jest/globals';
@@ -166,6 +166,11 @@ test('the exit status says what happened: 2 a wrong command line, 3 not logged i
   expect(await fails(m.run(['team', 'create', 'mine'], { terminal: false }))).toBe('konnect team create opens the browser, and this isn\'t run from a terminal: run it yourself, once');
   // Logging out of a team with no login kept changes nothing, and isn't a failure.
   expect(await m.run(['logout', 'hub'])).toBe('You weren\'t logged in to team hub.');
+  // A login kept for a service that can't be reached is kept, and konnect's own command is the one said: --forget drops it.
+  mkdirSync(join(m.env.KONNECT_CONFIG_DIR, 'teams'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(m.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), JSON.stringify({ [NOWHERE]: { client: { client_id: 'kjcl_1' }, tokens: { access_token: 'kjs_a', refresh_token: 'kjr_r', token_type: 'Bearer' } } }), { mode: 0o600 });
+  expect(await fails(m.run(['logout', 'hub']))).toMatch(/is still kept: run konnect logout hub again, or konnect logout hub --forget to drop it anyway$/);
+  expect(await m.run(['logout', 'hub', '--forget'])).toBe('Logged out of team hub here; the service couldn\'t be told, so the login lapses within 30 days unused.');
 });
 
 test('acting as an agent (--agent, or KONNECT_AGENT), every command but status, send, receive, history, channel list and team list is refused (4), before anything is sent', async () => {
