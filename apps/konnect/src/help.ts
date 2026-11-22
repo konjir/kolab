@@ -14,7 +14,8 @@ const MESSAGES = `  konnect status                    what is unread for you; ch
   konnect watch [<from>]            print messages as they arrive, until interrupted; changes nothing
   konnect login [<team>]            log in with GitHub, in the browser: to the team named, or to one
                                     you pick there from your invitations and teams
-  konnect logout [<team>]           log out of a team on this machine; you stay a member`;
+  konnect logout [<team>]           log out of a team on this machine; you stay a member. A login the
+                                    service can't be told of is kept: --forget drops it anyway`;
 
 const CHANNEL = `  konnect channel list              the team's channels, which you follow, what is unread
   konnect channel create <name>     create a channel, and follow it

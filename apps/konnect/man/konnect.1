@@ -11,7 +11,7 @@ konnect \- chat for a team's people and their AI agents
 \fBkonnect history\fR [\fB\-n\fR \fIcount\fR] \fIof\fR
 \fBkonnect watch\fR [\fIfrom\fR]
 \fBkonnect login\fR [\fIteam\fR]
-\fBkonnect logout\fR [\fIteam\fR]
+\fBkonnect logout\fR [\fB\-\-forget\fR] [\fIteam\fR]
 
 \fBkonnect channel list\fR
 \fBkonnect channel create\fR \fIname\fR
@@ -137,9 +137,13 @@ Accept or decline each invitation there, and pick one team.
 It never creates a team.
 If you're already logged in to the team, no browser opens.
 .TP
-\fBkonnect logout\fR [\fIteam\fR]
+\fBkonnect logout\fR [\fB\-\-forget\fR] [\fIteam\fR]
 Log out of a team on this machine: the one named, or else the one a command would work in.
 You stay a member.
+.IP
+The login is revoked at the service first.
+When the service can't be told, because it can't be reached or refuses, the login is kept, so that you can try again, and konnect says so and exits with status 1.
+With \fB\-\-forget\fR, it is dropped from this machine anyway, and lapses within 30 days unused.
 .SS konnect channel
 .TP
 \fBkonnect channel list\fR
@@ -422,7 +426,7 @@ It has one tool for each command it may run, under the command's name:
 .PP
 Each does what its command does, as the agent.
 The other commands have no tool.
-\fBstatus\fR, \fBwatch\fR and \fBlease run\fR still work with \fB\-\-agent\fR, but the rest are a person's, and are refused with it: an agent can't create or follow a channel, create, archive or delete a team, invite, remove, leave, log in, add, run or remove agents, host, or break a lease.
+\fBstatus\fR, \fBwatch\fR and \fBlease run\fR still work with \fB\-\-agent\fR, but the rest are a person's, and are refused with it: an agent can't create, follow or unfollow a channel; create, archive or delete a team, invite, remove or leave; log in or out; list, add, run, attach to, stop or remove agents; host; or break a lease.
 .SS What wakes an agent
 A direct message to it, a channel message that mentions it, or any message in a channel named with \fB\-\-wake\-on\fR.
 .PP
@@ -540,7 +544,7 @@ konnect keeps no file in the folder it is run in.
 A message holds up to 32,000 characters and mentions up to 20 members.
 A team holds up to 200 channels.
 .SH PLUMBING
-Harnesses run these; people don't type them, and \fBkonnect \-\-help\fR leaves them out.
+Harnesses and the completion scripts run these; people don't type them, and \fBkonnect \-\-help\fR leaves them out.
 .TP
 \fBkonnect mcp\fR
 The agent's tools and system prompt, as an MCP server on standard input and output.
@@ -552,9 +556,6 @@ It waits for a message for the agent (\fBKONNECT_AGENT\fR), says on standard err
 .TP
 \fBkonnect _start\fR \fIfile\fR
 What a background session runs: the harness, its arguments and its folder wait in a file of konnect's own, which this reads once and removes, so that nothing a person wrote goes on tmux's or screen's command line.
-.TP
-\fBkonnect logout \-\-forget\fR
-Drop a login from this machine even when the service can't be told, for when it can't be reached: the login is revoked if the service answers, and dropped here either way.
 .TP
 \fBkonnect _complete \-\-\fR \fIword\fR...
 What the completion scripts ask: what could come next after the words, one a line.

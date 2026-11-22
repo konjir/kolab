@@ -586,7 +586,7 @@ async function revoke(url: string, saved: Saved): Promise<'revoked' | 'nothing'>
   try { res = await post(refresh, 'refresh_token'); } catch (e) {
     throw new Error(`couldn't reach Kolab at ${safeUrl(endpoint)} (${String((e as { cause?: { code?: string } }).cause?.code ?? (e as Error).message)})`);
   }
-  if (!res.ok) throw new Error(`Kolab answered ${res.status} at ${safeUrl(endpoint)}`);
+  if (!res.ok) throw Object.assign(new Error(`Kolab answered ${res.status} at ${safeUrl(endpoint)}`), { status: res.status });
   if (saved.tokens?.access_token) await post(saved.tokens.access_token, 'access_token').catch(() => undefined);
   return 'revoked';
 }
@@ -944,6 +944,15 @@ export async function keepSignIn(url: string, path: string, saved: { client: Sto
 }
 
 /**
+ * logout's refusal when Kolab couldn't be reached, or refused the revocation: the sign-in is still
+ * kept. `reason` is why, in Kolab's words; `status` is what Kolab answered, when it answered at all,
+ * so a caller can say it in its own words (konnect does).
+ */
+export class KeptSignIn extends Error {
+  constructor(message: string, readonly reason: string, readonly status?: number) { super(message); }
+}
+
+/**
  * `kolab logout`: revokes the grant at Kolab (RFC 7009), then forgets the sign-in. If Kolab can't
  * be reached, or refuses, the sign-in is kept, so the person can try again, and this throws, saying
  * so; with `forget`, it is forgotten anyway, unrevoked, and that is said too. `command` is the
@@ -973,7 +982,11 @@ export async function logout(url: string, opts: { path?: string; forget?: boolea
     try {
       revoked = (await revoke(url, saved)) === 'revoked';
     } catch (e) {
-      if (!opts.forget) throw new Error(`${(e as Error).message}, so your sign-in to ${safeUrl(url)} wasn't revoked and is still kept: run ${command} again, or ${command} --forget to drop it anyway`);
+      if (!opts.forget) {
+        const status = (e as { status?: unknown }).status;
+        throw new KeptSignIn(`${(e as Error).message}, so your sign-in to ${safeUrl(url)} wasn't revoked and is still kept: run ${command} again, or ${command} --forget to drop it anyway`,
+          (e as Error).message, typeof status === 'number' ? status : undefined);
+      }
     }
     await provider.forget(owner);
     return { had: true, revoked };

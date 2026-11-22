@@ -554,7 +554,8 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
   }
   // --url is Kolab's for every command but `kolab repo register`, whose own --url is the
   // repository's: there Kolab's comes from KONJIR_URL or the project, or from a --url before `repo`.
-  const given = (argv[0] === 'repo' ? undefined : flag(argv, 'url')) ?? process.env.KONJIR_URL;
+  const urlFlag = argv[0] === 'repo' ? undefined : flag(argv, 'url');
+  const given = urlFlag ?? process.env.KONJIR_URL;
   const token = sessionToken(flag(argv, 'token'));
   // --kolab names the kolab for any command, as login and connect take it, over the project's.
   const kolabFlag = flag(argv, 'kolab');
@@ -688,7 +689,9 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     return;
   }
   if (cmd === 'logout') {
-    const r = await logout(url, { forget: rest.includes('--forget'), command: 'kolab logout' });
+    // The command to run again names the same Kolab: a URL given by --url would otherwise resolve,
+    // run again bare, to KONJIR_URL, the project's or the default, and drop another sign-in.
+    const r = await logout(url, { forget: rest.includes('--forget'), command: urlFlag !== undefined ?`kolab logout --url ${withoutPassword(url)}` : 'kolab logout' });
     const others = r.had ? [] : keptSignIns().filter((u) => u !== url);
     console.log(!r.had ? `No sign-in kept for ${safeUrl(url)}.${others.length ? ` kolab keeps ${others.length === 1 ? 'one' : 'sign-ins'} for ${others.map(safeUrl).join(', ')}: run kolab logout --url <url> for ${others.length === 1 ? 'it' : 'each'}.` : ''}`
       : r.revoked ? `Signed out of ${safeUrl(url)}: the sign-in is revoked and forgotten.`

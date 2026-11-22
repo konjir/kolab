@@ -9,7 +9,7 @@
  */
 import { readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { logout } from '@konjir/login';
+import { KeptSignIn, logout } from '@konjir/login';
 import { Refused, said, type Invitation } from './client.js';
 import type { Ctx } from './context.js';
 import { UsageError } from './errors.js';
@@ -207,9 +207,13 @@ export async function logOut(ctx: Ctx, rest: string[]) {
   if (rest[0] !== undefined && ctx.args.team !== undefined && rest[0] !== ctx.args.team) throw new UsageError(`konnect logout ${printable(rest[0])} was given --team ${printable(ctx.args.team)}: name the team once`);
   const name = rest[0] !== undefined ? checkName(rest[0]) : ctx.team();
   const command = `konnect logout ${name}`;
-  // logout's own refusal names this command, and says the login is kept and how to drop it: said as it is.
   const r = await logout(ctx.url, { path: teamFile(name, ctx.env), forget: ctx.args.forget, command }).catch((e: unknown) => {
-    throw String((e as Error)?.message ?? e).includes(`${command} --forget`) ? e : said(e, name, ctx.url);
+    if (!(e instanceof KeptSignIn)) throw said(e, name, ctx.url);
+    // The login is kept, since the service wasn't told: said in konnect's words, with how to drop it
+    // anyway. A service that answered, even 401, refused the revocation; it never means logging in again.
+    const kept = `your login to team ${name} is still kept here: run ${command} again, or ${command} --forget to drop it anyway`;
+    if (e.status !== undefined) throw new Error(`the service refused to revoke your login (it answered ${e.status}), so ${kept}`);
+    throw new Error(`${said(new Error(e.reason), name, ctx.url).message}. Until then ${kept}`);
   });
   ctx.print({ team: name, had: r.had, revoked: r.revoked }, () => (!r.had ? `You weren't logged in to team ${name}.`
     : r.revoked ? `Logged out of team ${name}.` : `Logged out of team ${name} here; the service couldn't be told, so the login lapses within 30 days unused.`));
