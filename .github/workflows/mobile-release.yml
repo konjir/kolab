@@ -140,6 +140,10 @@ jobs:
         id: build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Lee's Apple team, an individual's (not a secret): with it, eas submit can see to the
+          # TestFlight internal group, which the App Store Connect key alone, holding no team, can't.
+          EXPO_APPLE_TEAM_ID: 7Y8QD34KJQ
+          EXPO_APPLE_TEAM_TYPE: INDIVIDUAL
           PLATFORM: ${{ matrix.platform }}
           ARTIFACT: ${{ runner.temp }}/${{ matrix.artifact }}
         run: |
@@ -254,6 +258,10 @@ jobs:
         id: build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Lee's Apple team, an individual's (not a secret): with it, eas submit can see to the
+          # TestFlight internal group, which the App Store Connect key alone, holding no team, can't.
+          EXPO_APPLE_TEAM_ID: 7Y8QD34KJQ
+          EXPO_APPLE_TEAM_TYPE: INDIVIDUAL
           PLATFORM: ${{ matrix.platform }}
           ARTIFACT: ${{ runner.temp }}/konnect.${{ matrix.platform == 'ios' && 'ipa' || 'aab' }}
         run: |

@@ -86,7 +86,7 @@ The app type-checks and lints with its own TypeScript 6.0 (SDK 58's), not the re
 | `build-dev` | `eas build --profile development`. The `development-simulator` profile builds for the iOS simulator. |
 | `build-preview` | `eas build --profile preview` (internal distribution) |
 | `build-production` | `eas build --profile production --auto-submit` |
-| `submit` | `eas submit --profile production --latest` |
+| `submit` | `eas submit --profile production --latest`, run as `APP_VARIANT=production` |
 | `update-preview`, `update-production` | `eas update --channel <channel>`, with `-- --message "…"` |
 | `version` | `eas build:version:get` |
 | `credentials` | `eas credentials` (interactive) |
@@ -107,7 +107,7 @@ The EAS project is `@icedlee337/konnect` (`EAS_PROJECT_ID` and `EAS_OWNER` in `a
 | `native-tag` | Records the binary just built, by pushing that tag. The release workflow runs `scripts/native.mjs tag` directly instead, with nothing installed, since that job can write to the repo. |
 | `build-preview-local`, `build-production-local` | `eas build --local` for that profile, with `-- --platform ios\|android --output <file>`. |
 | `build-dev-local`, `build-simulator-local` | A dev client, or one for the iOS simulator, built on this machine. |
-| `submit-preview`, `submit-production` | `eas submit` of a local build, with `-- --platform … --path <file>`. |
+| `submit-preview`, `submit-production` | `eas submit` of a local build, with `-- --platform … --path <file>`, run as that profile's `APP_VARIANT`: eas submit, unlike eas build, never applies a build profile's env, so `scripts/eas.mjs` refuses a submit whose `APP_VARIANT` isn't its profile's. |
 
 `.github/workflows/mobile-release.yml` runs these targets:
 - On each merge: the fingerprint, then a local build and submit only for a new fingerprint, then `update-preview`.
