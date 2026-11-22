@@ -1,0 +1,34 @@
+# Make a team from the phone through Kolab's page, see it on Home, then sign out of it. Against the
+# local Kolab (scripts/local-kolab.mts), signed out, as sign-in.yaml. TEAM names the new team; a
+# second run needs another name, since Kolab refuses one that's taken.
+appId: ${APP_ID}
+tags: [local-kolab]
+env:
+  TEAM: phone-made
+---
+- tapOn: "You"
+- tapOn:
+    id: "new-team"
+- inputText: ${TEAM}
+- hideKeyboard
+- tapOn: "Create"
+- extendedWaitUntil:
+    visible: "Make ${TEAM}"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Make ${TEAM} and sign in"
+- tapOn: "Make ${TEAM} and sign in"
+- extendedWaitUntil:
+    visible: "Made ${TEAM}, and signed in."
+    timeout: 30000
+- tapOn: "Home"
+- extendedWaitUntil:
+    visible: "general"
+    timeout: 20000
+- assertVisible: "ann, you"
+- tapOn: "You"
+- tapOn: "Sign out of ${TEAM}"
+- extendedWaitUntil:
+    visible: "Signed out of ${TEAM}."
+    timeout: 20000
