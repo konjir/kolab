@@ -6,7 +6,7 @@
 // mocked here), forgetting devices that are no longer registered and retrying with its own backoff.
 import { expect, test } from '@jest/globals';
 import { MAX_PUSH_DEVICES, PUSH_BATCH, UNREAD_COUNT_CEILING, type SentMessage } from '@konjir/types';
-import { wantsPush, type PushMessage, type PushTicket } from '@konjir/engine';
+import { PUSH_MAX_AGE_S, wantsPush, type PushMessage, type PushTicket } from '@konjir/engine';
 import { createHash, randomBytes } from 'node:crypto';
 import { appSignIn, openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
 
@@ -515,4 +515,63 @@ test('erasing a team removes its prefs and push jobs, and its members keep their
   await k2.archive({ kolab: 'hub' });
   expect(await rejection(k2.db.query(`update notification_pref set level = 'none'`))).toMatch(/archived/);
   await k2.db.query(`update push_device set last_seen_at = now()`);
+});
+
+test('a slow push holds the push lane, never the worker: with another push due behind it, the worker\'s timer leaves push jobs to the lane and does not spin', async () => {
+  const { kolab, ann, bo, batches } = await hub();
+  await kolab.registerPushDevice(bo, token('b'), 'ios');
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  kolab.push.send = async (messages) => { batches.push(messages); await gate; return messages.map(() => ({ ok: true as const })); };
+  await kolab.sendMessage(ann, 'bo', 'first, sent slowly');
+  await kolab.sendMessage(ann, 'bo', 'second, due behind it');
+  const query = kolab.db.query.bind(kolab.db);
+  let queries = 0;
+  kolab.db.query = (async (sql: string, params?: unknown[]) => { queries++; return query(sql, params); }) as typeof kolab.db.query;
+  kolab.startWorker();
+  const until = async (done: () => Promise<boolean> | boolean) => { for (let i = 0; i < 200 && !(await done()); i++) await new Promise((r) => setTimeout(r, 25)); };
+  await until(() => batches.length === 1);
+  expect(batches.length).toBe(1);
+  // The first push waits on the service; the second is due, and the lane takes it once the first is done.
+  queries = 0;
+  await new Promise((r) => setTimeout(r, 1000));
+  // Before, the worker's timer fell to its 20 ms floor and read the outbox about 200 times a second.
+  expect(queries).toBeLessThan(20);
+  release();
+  await until(async () => (await jobs(kolab)).length === 0);
+  expect(batches.map((b) => b[0].body)).toStrictEqual(['first, sent slowly', 'second, due behind it']);
+});
+
+test('a push job decides as it runs: a direct message\'s recipient removed from the team since is pushed nothing, as a channel\'s member is not', async () => {
+  const { kolab, ann, bo, cy, pushed } = await hub();
+  await kolab.registerPushDevice(bo, token('b'), 'ios');
+  await kolab.setNotificationPrefs(bo, { level: 'all' });
+  await kolab.sendMessage(ann, 'bo', 'before he left');
+  await kolab.sendChannelMessage(cy, 'general', 'to everyone, before he left');
+  expect((await jobs(kolab)).length).toBe(2);
+  await kolab.revoke('hub', 'bo');
+  expect((await pushed()).messages).toStrictEqual([]);
+  expect(await jobs(kolab)).toStrictEqual([]);
+});
+
+test(`a push job older than ${PUSH_MAX_AGE_S / 60} minutes is dropped as stale: an archived team unarchived later pushes none of its old messages`, async () => {
+  const { kolab, ann, bo, pushed } = await hub();
+  await kolab.registerPushDevice(bo, token('b'), 'ios');
+  await kolab.sendMessage(ann, 'bo', 'sent before the archive');
+  await kolab.archive({ kolab: 'hub' });
+  // Its job waits while the team is archived.
+  expect((await pushed()).messages).toStrictEqual([]);
+  expect((await jobs(kolab)).length).toBe(1);
+  await kolab.unarchive({ kolab: 'hub' });
+  await kolab.db.query(`update outbox set created_at = clock_timestamp() - make_interval(secs => $1)`, [PUSH_MAX_AGE_S + 1]);
+  expect((await pushed()).messages).toStrictEqual([]);
+  expect(await jobs(kolab)).toStrictEqual([]);
+});
+
+test('a push job just short of the age limit still goes', async () => {
+  const { kolab, ann, bo, pushed } = await hub();
+  await kolab.registerPushDevice(bo, token('b'), 'ios');
+  await kolab.sendMessage(ann, 'bo', 'late, not stale');
+  await kolab.db.query(`update outbox set created_at = clock_timestamp() - make_interval(secs => $1)`, [PUSH_MAX_AGE_S - 60]);
+  expect((await pushed()).messages.map((m) => m.body)).toStrictEqual(['late, not stale']);
 });

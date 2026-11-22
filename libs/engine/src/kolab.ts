@@ -767,6 +767,8 @@ interface PushPayload { message: string; kind: 'dm' | 'channel'; sent?: string[]
 export const PUSH_MAX_ATTEMPTS = 5;
 /** The longest a push job waits between tries, in seconds: a push hours late is no use. */
 export const PUSH_MAX_BACKOFF_S = 60;
+/** The oldest a push job runs, in seconds from when its send queued it: older, it is dropped as stale (pushJob). */
+export const PUSH_MAX_AGE_S = 3600;
 
 /** One push as Expo's push service takes it: to one device's token. */
 export interface PushMessage extends Omit<PushNotification, 'actor'> { to: string; sound: 'default' }
@@ -1516,12 +1518,18 @@ export class Kolab {
     const w = this.worker;
     if (!w || this.closed || this.stopping) return;
     let ms = w.pollMs;
+    let pushMs: number | undefined;
     try {
-      const r = await this.db.query<{ ms: number | string | null }>(
-        `select extract(epoch from min(greatest(run_after, coalesce(claimed_until, run_after))) - clock_timestamp()) * 1000 as ms
-           from outbox o where state = 'pending' and not ${archivedKolabSql('o.kolab_id')}`);
-      const next = r.rows[0]?.ms;
+      // Push jobs apart: while the push lane runs, the lane sees to its own jobs, and its next pass is
+      // set when it finishes (wakePushes), so a job due behind a slow push never sets this timer to
+      // its floor and spins the main pass.
+      const r = (await this.db.query<{ ms: number | string | null; push_ms: number | string | null }>(
+        `select extract(epoch from min(greatest(run_after, coalesce(claimed_until, run_after))) filter (where kind <> 'push') - clock_timestamp()) * 1000 as ms,
+                extract(epoch from min(greatest(run_after, coalesce(claimed_until, run_after))) filter (where kind = 'push') - clock_timestamp()) * 1000 as push_ms
+           from outbox o where state = 'pending' and not ${archivedKolabSql('o.kolab_id')}`)).rows[0];
+      const next = r?.ms;
       if (next !== null && next !== undefined) ms = Math.min(ms, Math.max(20, Math.ceil(Number(next)) + 5));
+      pushMs = r?.push_ms === null || r?.push_ms === undefined ? undefined : Math.max(20, Math.ceil(Number(r.push_ms)) + 5);
       // And when the next lease on work lapses (PLN15).
       const lease = (await this.db.query<{ ms: number | string | null }>(
         `select extract(epoch from min(w.lease_until) - clock_timestamp()) * 1000 as ms
@@ -1534,6 +1542,9 @@ export class Kolab {
       if (job !== null && job !== undefined) ms = Math.min(ms, Math.max(20, Math.ceil(Number(job)) + 5));
     } catch { /* the next pass reads it again */ }
     if (this.closed || this.stopping || w.running) return;
+    // Judged as the timer is set, not as the query ran: a lane that finished meanwhile has called
+    // this again, and the later call sets the timer.
+    if (pushMs !== undefined && !this.pushLane?.running) ms = Math.min(ms, pushMs);
     clearTimeout(w.timer);
     w.timer = setTimeout(() => this.wake(), ms);
     w.timer.unref();
@@ -1597,7 +1608,11 @@ export class Kolab {
     return done;
   }
 
-  /** The worker's push lane, beside its main pass (wake): one pass at a time, again if woken meanwhile. */
+  /**
+   * The worker's push lane, beside its main pass (wake): one pass at a time, again if woken meanwhile.
+   * While it runs, the worker's timer leaves push jobs out (scheduleWorker); when it finishes, it sets
+   * the timer again, push jobs included, for one that fell due or waits out its backoff.
+   */
   private pushLane?: { running?: Promise<void>; again: boolean };
   private wakePushes() {
     if (this.closed || this.stopping) return;
@@ -1608,7 +1623,7 @@ export class Kolab {
         lane.again = false;
         try { await this.drainOutbox({ lane: 'push' }); } catch (e) { if (!this.closed) log.error('the outbox worker could not read the push lane', { error: e }); }
       } while (lane.again && !this.closed && !this.stopping);
-    })().finally(() => { lane.running = undefined; });
+    })().finally(() => { lane.running = undefined; void this.scheduleWorker(); });
   }
 
   /**
@@ -11544,15 +11559,18 @@ export class Kolab {
   /**
    * A push job's message, read again from the message tables as the job runs: who sent it, its
    * words, its kolab, and whom it signalled when it was sent, as the send decided them: for a direct
-   * message its recipient; for a channel message every member who follows the channel (general
-   * without a choice of their own) or is mentioned, but its sender. Undefined once it is gone (its
-   * kolab erased).
+   * message its recipient, while they are still a member; for a channel message every member who
+   * follows the channel (general without a choice of their own) or is mentioned, but its sender.
+   * Undefined once it is gone (its kolab erased).
    */
   private async messageForPush(id: string, kind: 'dm' | 'channel'): Promise<SentMessage | undefined> {
     if (kind === 'dm') {
       const m = (await this.db.query<{ kolab_id: string; sent_by: string; sent_to: string; body: string }>(
         `select kolab_id, sent_by, sent_to, body from message where id = $1`, [id])).rows[0];
-      return m && { kind: 'dm', kolab: m.kolab_id, id, from: m.sent_by, to: m.sent_to, message: m.body, recipients: [m.sent_to] };
+      if (!m) return undefined;
+      // Its recipient only while still a member, as a channel message's are: one removed since is told nothing.
+      const member = (await this.membersIn(this.db, m.kolab_id)).some((h) => h.id === m.sent_to);
+      return { kind: 'dm', kolab: m.kolab_id, id, from: m.sent_by, to: m.sent_to, message: m.body, recipients: member ? [m.sent_to] : [] };
     }
     const m = (await this.db.query<{ kolab_id: string; channel_id: string; channel: string; sent_by: string; body: string; mentions: string[] | null }>(
       `select m.kolab_id, m.channel_id, c.name as channel, m.sent_by, m.body,
@@ -11612,7 +11630,8 @@ export class Kolab {
    * comes back unregistered is forgotten. Each batch sent is recorded on the job, so a job retried
    * after the service failed part way (send throws: the job is tried again with its own backoff,
    * PUSH_MAX_ATTEMPTS times, then dropped) sends each once. With push off on this process from the
-   * start (no `push.send`), it is dropped, and says so; a message gone since is nothing to push.
+   * start (no `push.send`), it is dropped, and says so; so is one older than PUSH_MAX_AGE_S (an
+   * archived kolab's jobs wait until it is unarchived); a message gone since is nothing to push.
    */
   private async pushJob(job: OutboxJob, claim: Claim): Promise<void> {
     const send = this.push.send;
@@ -11622,6 +11641,13 @@ export class Kolab {
       return;
     }
     if (!p?.message) return;
+    // Stale: a push is news only while it is fresh. A job left waiting (its kolab archived, then
+    // unarchived, or every process down) is dropped, and says so, rather than pushing old messages.
+    const age = (await this.db.query<{ s: number | string }>(`select extract(epoch from clock_timestamp() - created_at) as s from outbox where id = $1`, [job.id])).rows[0];
+    if (age && Number(age.s) > PUSH_MAX_AGE_S) {
+      log.info(`push job ${job.id} dropped: it waited ${Math.round(Number(age.s))} s, longer than a push is worth (${PUSH_MAX_AGE_S} s)`, { event: 'push_job_stale', id: job.id, kolab: job.kolab_id });
+      return;
+    }
     const m = await this.messageForPush(p.message, p.kind ?? 'dm');
     if (!m) return;
     const notifications = await this.pushNotifications(m);
