@@ -21,7 +21,10 @@ tags: [local-kolab]
 - extendedWaitUntil:
     visible: "Withdraw cy's invitation\\?"
     timeout: 10000
-- tapOn: "Withdraw"
+# The dialog's button, not the row's own "withdraw" behind it, which matches the same words.
+- tapOn:
+    text: "Withdraw"
+    below: "They won't be able to accept it\\."
 - extendedWaitUntil:
     visible: "Withdrew cy's invitation."
     timeout: 20000
