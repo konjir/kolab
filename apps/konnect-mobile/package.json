@@ -41,6 +41,9 @@
     "@konjir/types": "*",
     "@modelcontextprotocol/client": "^2.3.1",
     "@shopify/flash-list": "2.3.2",
+    "@tanstack/query-async-storage-persister": "^5.108.2",
+    "@tanstack/react-query": "^5.108.2",
+    "@tanstack/react-query-persist-client": "^5.108.2",
     "expo": "~58.0.26",
     "expo-application": "~58.1.2",
     "expo-auth-session": "~58.0.19",
@@ -72,6 +75,7 @@
     "react-native-reanimated": "4.7.1",
     "react-native-safe-area-context": "~5.11.1",
     "react-native-screens": "~4.30.1",
+    "react-native-svg": "15.16.0",
     "react-native-worklets": "0.13.0"
   },
   "devDependencies": {
@@ -142,9 +146,15 @@
         ],
         "cache": false
       },
-      "start": { "cache": false },
-      "ios": { "cache": false },
-      "android": { "cache": false },
+      "start": {
+        "cache": false
+      },
+      "ios": {
+        "cache": false
+      },
+      "android": {
+        "cache": false
+      },
       "prebuild": {
         "outputs": [
           "{projectRoot}/ios",
@@ -152,21 +162,51 @@
         ],
         "cache": false
       },
-      "doctor": { "cache": false },
-      "deps-check": { "cache": false },
-      "fingerprint": { "cache": false },
-      "e2e": { "cache": false },
-      "build-dev": { "cache": false },
-      "build-preview": { "cache": false },
-      "build-production": { "cache": false },
-      "submit": { "cache": false },
-      "update-preview": { "cache": false },
-      "update-production": { "cache": false },
-      "version": { "cache": false },
-      "credentials": { "cache": false },
-      "eas-whoami": { "cache": false },
-      "env-pull": { "cache": false },
-      "local-kolab": { "cache": false }
+      "doctor": {
+        "cache": false
+      },
+      "deps-check": {
+        "cache": false
+      },
+      "fingerprint": {
+        "cache": false
+      },
+      "e2e": {
+        "cache": false
+      },
+      "build-dev": {
+        "cache": false
+      },
+      "build-preview": {
+        "cache": false
+      },
+      "build-production": {
+        "cache": false
+      },
+      "submit": {
+        "cache": false
+      },
+      "update-preview": {
+        "cache": false
+      },
+      "update-production": {
+        "cache": false
+      },
+      "version": {
+        "cache": false
+      },
+      "credentials": {
+        "cache": false
+      },
+      "eas-whoami": {
+        "cache": false
+      },
+      "env-pull": {
+        "cache": false
+      },
+      "local-kolab": {
+        "cache": false
+      }
     }
   }
 }
