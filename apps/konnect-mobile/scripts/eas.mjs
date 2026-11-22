@@ -40,6 +40,16 @@ if (args[0] === 'update') {
   const key = process.env.KONNECT_UPDATES_PRIVATE_KEY_PATH;
   if (!key || !existsSync(key)) { console.error('eas update: KONNECT_UPDATES_PRIVATE_KEY_PATH names no file; updates are signed, and a build only applies a signed one. Nothing was sent to EAS.'); process.exit(2); }
   args.push('--private-key-path', key);
+  // The update's message, from KONNECT_UPDATE_MESSAGE: Nx joins the arguments after `--` into one
+  // command line for a shell, so `-- --message "main at <sha>"` reaches eas-cli as three words (and
+  // a message with shell syntax in it would run). From the environment it stays one argument,
+  // passed to eas-cli with no shell.
+  const message = process.env.KONNECT_UPDATE_MESSAGE;
+  if (message !== undefined) {
+    if (args.some((a) => a === '--message' || a.startsWith('--message=') || a === '-m')) { console.error('eas update: give the message once, in KONNECT_UPDATE_MESSAGE or --message, not both. Nothing was sent to EAS.'); process.exit(2); }
+    if (!message.trim()) { console.error('eas update: KONNECT_UPDATE_MESSAGE is empty. Nothing was sent to EAS.'); process.exit(2); }
+    args.push('--message', message);
+  }
 }
 
 // eas submit reads app.config.ts as APP_VARIANT says too, and never applies a build profile's env:

@@ -27,6 +27,16 @@ describe('eas update', () => {
     expect(r.stderr).toContain('updates are signed');
   });
 
+  test('takes its message from KONNECT_UPDATE_MESSAGE, given once and not empty', () => {
+    const signed = { APP_VARIANT: 'preview', KONNECT_UPDATES_PRIVATE_KEY_PATH: __filename };
+    const both = eas(['update', '--channel', 'preview', '--message', 'x'], { ...signed, KONNECT_UPDATE_MESSAGE: 'main at abc' });
+    expect(both.status).toBe(2);
+    expect(both.stderr).toContain('give the message once');
+    const empty = eas(['update', '--channel', 'preview'], { ...signed, KONNECT_UPDATE_MESSAGE: ' ' });
+    expect(empty.status).toBe(2);
+    expect(empty.stderr).toContain('KONNECT_UPDATE_MESSAGE is empty');
+  });
+
   test('is refused with the channel named more than once, however it is written', () => {
     for (const extra of [['--channel', 'production'], ['--channel=production'], ['--channel', 'preview']]) {
       const r = eas(['update', '--channel', 'preview', ...extra, '--message', 'x'], { APP_VARIANT: 'preview' });

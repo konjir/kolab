@@ -13,7 +13,7 @@
 - **Elsewhere:** browsing, making and following channels, profiles, team settings (invite, withdraw, remove, the reply cap, archive, delete, leave), and notification settings with push (phase 4).
 - **Waiting on the server:** push waits for the server's S4 and for the EAS project. Read-up-to waits for S2, conversation lists for S3 and avatars for S5. The app uses each once Kolab has it, and until then says so or falls back.
 
-Every operation is an Nx target, run from the repository root as `npx nx run @konjir/konnect-mobile:<target>`. Arguments after `--` go on to the command, such as `-- --platform ios` or `-- --message "Fix the composer"`.
+Every operation is an Nx target, run from the repository root as `npx nx run @konjir/konnect-mobile:<target>`. Arguments after `--` go on to the command, such as `-- --platform ios`. Nx joins them into one command line for a shell, so a value with spaces doesn't survive: an update's message goes in `KONNECT_UPDATE_MESSAGE` instead.
 
 ## Develop
 
@@ -87,7 +87,7 @@ The app type-checks and lints with its own TypeScript 6.0 (SDK 58's), not the re
 | `build-preview` | `eas build --profile preview` (internal distribution) |
 | `build-production` | `eas build --profile production --auto-submit` |
 | `submit` | `eas submit --profile production --latest`, run as `APP_VARIANT=production` |
-| `update-preview`, `update-production` | `eas update --channel <channel>`, with `-- --message "…"` |
+| `update-preview`, `update-production` | `eas update --channel <channel>`, its message in `KONNECT_UPDATE_MESSAGE="…"` |
 | `version` | `eas build:version:get` |
 | `credentials` | `eas credentials` (interactive) |
 | `credentials-production-ios`, `credentials-preview-ios`, `credentials-production-android`, `credentials-preview-android` | `eas credentials` for that app and platform, built as its `APP_VARIANT`. On iOS it signs in to Apple with the App Store Connect team key (`scripts/credentials.mjs`), whose `.p8` stays at `~/.config/konnect-mobile/AuthKey_<key id>.p8`, not the Apple ID sign-in that eas-cli 27.11.0 fails. Choose the same build profile when asked. |
