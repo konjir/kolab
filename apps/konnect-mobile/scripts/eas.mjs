@@ -42,6 +42,23 @@ if (args[0] === 'update') {
   args.push('--private-key-path', key);
 }
 
+// eas submit reads app.config.ts as APP_VARIANT says too, and never applies a build profile's env:
+// without it, a submit looks up the development app's bundle ID and credentials (com.konjir.konnect.dev),
+// which have none. So a submit names one profile, and is run as that profile's variant.
+export const VARIANT_OF_PROFILE = { preview: 'preview', production: 'production' };
+if (args[0] === 'submit') {
+  const named = args.filter((a) => a === '--profile' || a.startsWith('--profile='));
+  if (named.length !== 1) { console.error('eas submit: name the profile, once: --profile preview|production. Nothing was sent to EAS.'); process.exit(2); }
+  const at = args.indexOf('--profile');
+  const profile = at >= 0 ? args[at + 1] : named[0].slice('--profile='.length);
+  const want = VARIANT_OF_PROFILE[profile];
+  if (!want) { console.error(`eas submit: --profile is ${Object.keys(VARIANT_OF_PROFILE).join(' or ')}. Nothing was sent to EAS.`); process.exit(2); }
+  if (process.env.APP_VARIANT !== want) {
+    console.error(`eas submit --profile ${profile}: APP_VARIANT is ${JSON.stringify(process.env.APP_VARIANT ?? null)}; a submit for ${profile} must run with APP_VARIANT=${want}, or eas-cli looks up another app's bundle ID and credentials. Nothing was sent to EAS.`);
+    process.exit(2);
+  }
+}
+
 if (!NEEDS_NO_PROJECT.has(args[0])) {
   const config = spawnSync('npx', ['expo', 'config', '--json', '--type', 'public'], { cwd: root, encoding: 'utf8', env: { ...process.env, FORCE_COLOR: '0' } });
   if (config.status !== 0) {

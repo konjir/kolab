@@ -1,6 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,6 +36,32 @@ describe('eas update', () => {
     const r = eas(['update', '--channel=production', '--message', 'x'], { APP_VARIANT: 'preview' });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('must be built with APP_VARIANT=production');
+  });
+});
+
+describe('eas submit', () => {
+  test('is refused unless it runs as its profile\'s variant, before anything reaches EAS', () => {
+    for (const [profile, variant] of [['preview', undefined], ['preview', 'development'], ['production', 'preview']] as const) {
+      const r = eas(['submit', '--non-interactive', '--profile', profile, '--platform', 'ios'], { APP_VARIANT: variant });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain(`must run with APP_VARIANT=${profile}`);
+    }
+  });
+
+  test('names one known profile, once', () => {
+    for (const args of [['submit'], ['submit', '--profile', 'development'], ['submit', '--profile', 'preview', '--profile=production']]) {
+      const r = eas(args, { APP_VARIANT: 'preview' });
+      expect([args, r.status]).toStrictEqual([args, 2]);
+      expect(r.stderr).toMatch(/name the profile, once|--profile is preview or production/);
+    }
+  });
+
+  test('every submit target sets the variant its profile needs', () => {
+    const scripts = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')).scripts as Record<string, string>;
+    for (const [name, cmd] of Object.entries(scripts).filter(([, c]) => c.includes('eas.mjs submit'))) {
+      const profile = /--profile (\w+)/.exec(cmd)?.[1];
+      expect([name, cmd.startsWith(`APP_VARIANT=${profile} `)]).toStrictEqual([name, true]);
+    }
   });
 });
 
