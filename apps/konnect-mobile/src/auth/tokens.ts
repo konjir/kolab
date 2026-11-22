@@ -60,6 +60,11 @@ export interface TokensOptions {
    * the person lost the team (removed, left, archived, erased). `from` is the team they lost.
    */
   onTeamMoved?: (from: string, to: string) => void;
+  /**
+   * Told when a switch asked for lands after its caller was already answered (Unreachable while its
+   * new token was on the way): the kept login names `team` now, and whoever shows it reads it again.
+   */
+  onTeamChanged?: (team: string) => void;
 }
 
 type RefreshAnswer = { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error?: string; error_description?: string };
@@ -96,6 +101,8 @@ export class Tokens {
   /** Stops a refresh that is retrying, so what comes next (signing out, a new sign-in) needn't wait for Kolab. */
   private interrupt() {
     this.generation++;
+    // What comes next isn't waiting on the refresh stopped here.
+    this.retrying = false;
     for (const w of this.wake) w();
     this.wake.clear();
   }
@@ -142,7 +149,14 @@ export class Tokens {
    * TeamChanged rather than reach the new team.
    */
   async accessToken(team?: string): Promise<string> {
-    await this.waitTurn();
+    try {
+      await this.waitTurn();
+    } catch (e) {
+      // A refresh is retrying: the token in hand still serves while it lasts, for every caller.
+      const kept = e instanceof Unreachable ? await this.o.store.get() : undefined;
+      if (kept && kept.expiresAt > this.now() && (team === undefined || kept.team === team)) return kept.accessToken;
+      throw e;
+    }
     let login = await this.o.store.get();
     if (!login) throw new SignedOut('not signed in');
     if (!this.fresh(login)) {
@@ -195,21 +209,33 @@ export class Tokens {
    */
   switchTeam(team: string, ask: (accessToken: string) => Promise<{ kolab: string; role: string }>): Promise<Login> {
     this.interrupt();
-    return this.orUnreachable(this.exclusive(async () => {
+    // Whether the caller has been answered already, and whether Kolab has been asked.
+    const run = { answered: false, asked: false };
+    const work = this.exclusive(async () => {
       this.switching = true;
-      try { return await this.move(team, ask); } finally { this.switching = false; }
-    }));
+      try {
+        const login = await this.move(team, ask, run);
+        // Landed after its caller heard Unreachable: whoever shows the team reads it again.
+        if (run.answered) this.o.onTeamChanged?.(login.team);
+        return login;
+      } finally { this.switching = false; }
+    });
+    return this.orUnreachable(work).catch((e: unknown) => { run.answered = true; throw e; });
   }
 
-  private async move(team: string, ask: (accessToken: string) => Promise<{ kolab: string; role: string }>): Promise<Login> {
-    {
-      let login = await this.o.store.get();
-      if (!login) throw new SignedOut('not signed in');
-      if (!this.fresh(login)) login = await this.exchange();
-      const moved = await ask(login.accessToken);
-      await this.o.store.put({ ...login, team: moved.kolab, role: moved.role, expiresAt: 0 });
-      return this.exchange();
-    }
+  /**
+   * The switch itself. A switch whose caller was answered (Unreachable) before Kolab was asked is
+   * given up there: its caller was told it failed, so it never moves the sign-in later on its own.
+   */
+  private async move(team: string, ask: (accessToken: string) => Promise<{ kolab: string; role: string }>, run: { answered: boolean; asked: boolean }): Promise<Login> {
+    let login = await this.o.store.get();
+    if (!login) throw new SignedOut('not signed in');
+    if (!this.fresh(login)) login = await this.exchange();
+    if (run.answered) throw new Unreachable(`The switch to ${team} was given up: Kolab couldn't be reached`);
+    run.asked = true;
+    const moved = await ask(login.accessToken);
+    await this.o.store.put({ ...login, team: moved.kolab, role: moved.role, expiresAt: 0 });
+    return this.exchange();
   }
 
   /** One refresh at Kolab's token endpoint; the caller holds the turn. */

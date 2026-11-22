@@ -172,6 +172,51 @@ describe('a refresh whose answer was lost', () => {
     expect(await tokens.accessToken('side')).toBe('a-side');
   });
 
+  test('a switch whose stale token can\'t be renewed is given up before Kolab is asked, and never lands later on its own', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login({ expiresAt: 0 }));
+    let up = false;
+    const asked: string[] = [];
+    const changed: string[] = [];
+    const k = kolab([() => (up ? ok : offline())]);
+    const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 5, onTeamChanged: (t) => changed.push(t) });
+    // Network down at the switch: the caller hears so.
+    await expect(tokens.switchTeam('side', async (t) => { asked.push(t); return { kolab: 'side', role: 'engineer' }; })).rejects.toBeInstanceOf(Unreachable);
+    // Network back: the old team's refresh lands, but Kolab is never asked to switch.
+    up = true;
+    await until(() => k.sent.length >= 2);
+    await wait(20);
+    expect(asked).toEqual([]);
+    expect(changed).toEqual([]);
+    expect(await store.who()).toEqual({ actor: 'ann', team: 'hub', role: 'product' });
+    expect(await tokens.accessToken('hub')).toBe('access-1');
+  });
+
+  test('a switch Kolab made whose new token lands after its caller was answered says the team changed', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login({ expiresAt: 600_000 }));
+    let up = false;
+    const changed: string[] = [];
+    const k = kolab([() => (up ? reply({ access_token: 'a-side', refresh_token: 'r-side', expires_in: 900, scope: 'konjir kolab:side role:engineer' }) : offline())]);
+    const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 5, onTeamChanged: (t) => changed.push(t) });
+    await expect(tokens.switchTeam('side', async () => ({ kolab: 'side', role: 'engineer' }))).rejects.toBeInstanceOf(Unreachable);
+    up = true;
+    await until(() => changed.length > 0);
+    expect(changed).toEqual(['side']);
+  });
+
+  test('while a refresh retries, every caller gets the token in hand while it lasts, not only the one that started it', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login({ expiresAt: 30_000 }));
+    const k = kolab([offline]);
+    const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 60_000 });
+    expect(await tokens.accessToken()).toBe('access-0');
+    // A second caller, while the first's refresh is retrying.
+    expect(await tokens.accessToken('hub')).toBe('access-0');
+    await expect(tokens.accessToken('side')).rejects.toBeInstanceOf(Unreachable);
+    await tokens.signOut();
+  });
+
   test('signing out while it retries stops it, and revokes the refresh token it kept', async () => {
     const store = new LoginStore(kv(), URL_);
     await store.put(login());
