@@ -36,12 +36,13 @@ const routes = () => ({
   '(tabs)/you': require('../app/(tabs)/you').default,
   '(tabs)/dms': require('../app/(tabs)/dms').default,
   '(tabs)/activity': require('../app/(tabs)/activity').default,
+  '+not-found': require('../app/+not-found').default,
 });
 
 describe('the auth gate', () => {
   test('signed in to no team, the app is the sign-in screen and nothing else, even for a deep link', async () => {
     mockKv = storeWith([]);
-    await renderRouter(routes(), { initialUrl: '/you' });
+    await renderRouter(routes(), { initialUrl: '/expo-development-client?url=http%3A%2F%2F127.0.0.1%3A8081' });
     expect(await screen.findByTestId('sign-in-screen')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Sign in with GitHub' })).toBeTruthy();
     expect(screen.getByLabelText('Konjir')).toBeTruthy();
