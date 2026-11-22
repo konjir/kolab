@@ -38,6 +38,12 @@ export interface TokensOptions {
   /** The first wait before a refresh whose answer was lost is sent again; it doubles each time, up to `retryMaxMs`. */
   retryMs?: number;
   retryMaxMs?: number;
+  /**
+   * How long a lost refresh is retried: Kolab's retry window (refreshRetryS, 10 minutes), within
+   * which the same refresh token gets the same successor while that successor is unused. Past it, a
+   * retry would be a replay, so the sign-in is taken as ended.
+   */
+  retryWindowMs?: number;
   /** Told when Kolab ends the sign-in (a refused refresh), after it is forgotten. */
   onSignedOut?: () => void;
   /**
@@ -62,6 +68,7 @@ export class Tokens {
   private readonly earlyMs: number;
   private readonly retryMs: number;
   private readonly retryMaxMs: number;
+  private readonly retryWindowMs: number;
   /** Counts interruptions: a refresh still retrying when it changes stops (signing out, or in again). */
   private generation = 0;
   private wake = new Set<() => void>();
@@ -71,6 +78,7 @@ export class Tokens {
     this.earlyMs = o.earlyMs ?? 60_000;
     this.retryMs = o.retryMs ?? 1_000;
     this.retryMaxMs = o.retryMaxMs ?? 30_000;
+    this.retryWindowMs = o.retryWindowMs ?? 600_000;
   }
 
   /** Stops a refresh that is retrying, so what comes next (signing out, a new sign-in) needn't wait for Kolab. */
@@ -171,7 +179,14 @@ export class Tokens {
       method: 'POST', headers: FORM,
       body: form({ grant_type: 'refresh_token', refresh_token: login.refreshToken, client_id: login.clientId }),
     });
-    const { res, body } = await this.answer(send);
+    const answered = await this.answer(send);
+    if (!answered) {
+      // Kolab's retry window has passed with no answer: the refresh token can't be used again.
+      await this.o.store.remove();
+      this.o.onSignedOut?.();
+      throw new SignedOut('Kolab couldn\'t be reached to renew the sign-in for 10 minutes: sign in again');
+    }
+    const { res, body } = answered;
     if (!res.ok) {
       // The grant is over (revoked, expired, or the token already used): only a new sign-in helps.
       if (body.error === 'invalid_grant' || body.error === 'invalid_client') {
@@ -196,15 +211,21 @@ export class Tokens {
   /**
    * Kolab's answer to a refresh, sent again until one comes back that can be read. An answer lost on
    * the way (no connection, a timeout, a body cut off, Kolab busy or restarting) is never taken as
-   * the sign-in ending: the same refresh token, kept as it was, is sent again, waiting longer each
-   * time, because Kolab gives a retried refresh the same successor tokens for as long as they are
-   * unused, up to its grace window. Only Kolab's own refusal, or an interruption, ends it.
+   * the sign-in ending at once: the same refresh token, kept as it was, is sent again, waiting
+   * longer each time (1 s, doubling to 30 s), because for 10 minutes (Kolab's refreshRetryS) Kolab
+   * gives a retried refresh the same successor tokens while they are unused. Kolab's own refusal,
+   * or an interruption, ends it; so does the end of that window, with nothing (the caller signs out).
    */
-  private async answer(send: () => ReturnType<Fetch>): Promise<{ res: { ok: boolean; status: number }; body: RefreshAnswer }> {
+  private async answer(send: () => ReturnType<Fetch>): Promise<{ res: { ok: boolean; status: number }; body: RefreshAnswer } | undefined> {
     const generation = this.generation;
+    const until = this.now() + this.retryWindowMs;
     for (let attempt = 0; ; attempt++) {
-      if (attempt > 0) await this.pause(Math.min(this.retryMs * 2 ** (attempt - 1), this.retryMaxMs));
+      if (attempt > 0) {
+        const left = until - this.now();
+        if (left > 0) await this.pause(Math.min(this.retryMs * 2 ** (attempt - 1), this.retryMaxMs, left));
+      }
       if (generation !== this.generation) throw new Error('The refresh was stopped');
+      if (attempt > 0 && this.now() >= until) return undefined;
       let res;
       try { res = await send(); } catch { continue; }
       if (res.status >= 500 || res.status === 429) continue;

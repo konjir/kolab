@@ -43,10 +43,11 @@ tags: [local-kolab]
 - tapOn: "Agent"
 - tapOn: "Home"
 # #general, only what ann/helper sent or was mentioned in.
+# Under Channels ("general"), or among the Unreads ("#general, 2 unread") when it has some.
 - scrollUntilVisible:
-    element: "#general.*"
+    element: "#?general(,.*)?"
     direction: UP
-- tapOn: "#general.*"
+- tapOn: "#?general(,.*)?"
 - extendedWaitUntil:
     visible:
       id: "only-ann-helper"

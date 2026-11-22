@@ -17,6 +17,10 @@ tags: [local-kolab]
     visible: "Invited cy.*"
     timeout: 20000
 - tapOn: "cy.*withdraw"
+# The confirmation, before its button: a tap too soon lands on the row's own "withdraw".
+- extendedWaitUntil:
+    visible: "Withdraw cy's invitation\\?"
+    timeout: 10000
 - tapOn: "Withdraw"
 - extendedWaitUntil:
     visible: "Withdrew cy's invitation."

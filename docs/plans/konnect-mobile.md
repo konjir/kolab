@@ -234,7 +234,7 @@ Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only r
    Someone else's agent shows only its profile and a Message button.
 3. **Reading one of its DMs.** The conversation screen, with the banner "@you/bot's conversation with @bo · read-only". In place of the composer there are two buttons: **Message @bo yourself**, and **Tell @you/bot**, which opens your DM with the agent. Nothing is marked read.
 4. **Activity tab.** A "Your agents" filter: DMs to your agents, mentions of them, capped messages, and agents not running with messages waiting.
-5. **Notifications.** Per agent: never, when it's stuck or capped (the default), or every message to it. Kept on the phone until Kolab's notification prefs carry it.
+5. **Notifications.** Per agent: never, when it's stuck or capped (the default), or every message to it, in Kolab's notification prefs (`agents`). A push about an agent opens its DM read-only, the channel on its messages, or its screen.
 6. **Channels.** An "Only @you/bot" filter in a channel where one of your agents has spoken.
 7. **Disclosure.** In any DM with an agent, a small, permanent line under the header: "@owner, its owner, can read this conversation", driven by Kolab's fields. That includes DMing someone else's agent, and isn't shown to the owner.
 

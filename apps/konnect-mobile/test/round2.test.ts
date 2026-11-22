@@ -111,6 +111,22 @@ describe('a refresh whose answer was lost', () => {
     expect(await store.get()).toBeUndefined();
   });
 
+  test('stops after Kolab\'s 10-minute retry window and takes the sign-in as ended', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login());
+    const k = kolab([offline]);
+    let clock = 1_000;
+    let signedOut = 0;
+    // Each try takes a minute of the clock.
+    const fetch = async (url: string, init: { body: string }) => { clock += 60_000; return k.fetch(url, init); };
+    const tokens = new Tokens({ store, endpoints, fetch, now: () => clock, retryMs: 1, onSignedOut: () => { signedOut++; } });
+    await expect(tokens.accessToken()).rejects.toThrow('10 minutes');
+    expect(k.sent.length).toBe(10);
+    expect(new Set(k.sent)).toEqual(new Set(['refresh-0']));
+    expect(signedOut).toBe(1);
+    expect(await store.get()).toBeUndefined();
+  });
+
   test('signing out while it retries stops it, and revokes the refresh token it kept', async () => {
     const store = new LoginStore(kv(), URL_);
     await store.put(login());
