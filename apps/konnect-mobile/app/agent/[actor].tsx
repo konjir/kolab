@@ -39,7 +39,7 @@ export default function YourAgent() {
   const items = activity.data?.pages.flatMap((p) => p.items) ?? [];
   const lacking = status.data === null || activity.data?.pages.some((p) => 'lacking' in p && p.lacking);
   const conversations = useAgentConversations(team, actor);
-  const handle = m ? handleOf(m) : actor;
+  const handle = m ? handleOf(m) : actor; // as written in a message; shown as @handle
   const needs = needsYouWords(mine?.needs_you);
 
   if (m && m.owner !== me) {
@@ -47,7 +47,7 @@ export default function YourAgent() {
     return <Redirect href={{ pathname: '/profile/[actor]', params: { actor } }} />;
   }
   return (
-    <Screen title={handle} testID="agent">
+    <Screen title={`@${handle}`} testID="agent">
       <Stack.Screen options={{ headerShown: true, title: '', headerBackTitle: 'Home', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink }} />
       <View style={styles.header}>
         {m && <Avatar member={m} size={56} />}

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { StyleSheet, TextInput } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { useChannels, useMembers } from '@/kolab/hooks';
-import { handleOf } from '@/kolab/names';
+import { displayOf, handleOf } from '@/kolab/names';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
 import { Row, Screen, Section } from '@/ui';
 
@@ -25,7 +25,7 @@ export default function NewMessage() {
         style={[styles.input, { color: colors.ink, borderColor: colors.line, backgroundColor: colors['surface-raised'] }]} />
       <Section title="People and agents">
         {members.filter((m) => m.actor !== auth.current?.actor && (match(m.actor) || match(handleOf(m)))).map((m) => (
-          <Row key={m.actor} icon={m.kind === 'agent' ? 'agent' : 'person'} label={handleOf(m)} onPress={() => open('dm', m.actor)} />
+          <Row key={m.actor} icon={m.kind === 'agent' ? 'agent' : 'person'} label={displayOf(m)} onPress={() => open('dm', m.actor)} />
         ))}
       </Section>
       <Section title="Channels">

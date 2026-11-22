@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Alert, StyleSheet, TextInput, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { useApi, useChannels, useMembers } from '@/kolab/hooks';
-import { handleOf } from '@/kolab/names';
+import { displayOf } from '@/kolab/names';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
 import { Body, Button, Hint, Problem, Row, Screen, Section } from '@/ui';
 
@@ -71,8 +71,8 @@ export default function TeamSettings() {
       </Section>
       <Section title="Members">
         {members.filter((m) => m.actor !== me).map((m) => (
-          <Row key={m.actor} icon="remove" label={handleOf(m)} detail="remove" onPress={() => ask(`Remove ${handleOf(m)} from ${team}?`, m.kind === 'agent' ? 'The agent is removed, and its sign-ins end.' : 'They lose the team and its messages.', 'Remove',
-            () => void run(m.actor, async () => { const k = await api(team); await (m.kind === 'agent' ? k.removeAgent(m.actor) : k.removeMember(m.actor)); return `Removed ${handleOf(m)}.`; }))} />
+          <Row key={m.actor} icon="remove" label={displayOf(m)} detail="remove" onPress={() => ask(`Remove ${displayOf(m)} from ${team}?`, m.kind === 'agent' ? 'The agent is removed, and its sign-ins end.' : 'They lose the team and its messages.', 'Remove',
+            () => void run(m.actor, async () => { const k = await api(team); await (m.kind === 'agent' ? k.removeAgent(m.actor) : k.removeMember(m.actor)); return `Removed ${displayOf(m)}.`; }))} />
         ))}
       </Section>
 
