@@ -1,6 +1,6 @@
 import type { Member } from '@konjir/types';
 import { useRouter, type Href } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
@@ -9,6 +9,7 @@ import { Icon, type IconName } from '@/icons';
 import { useAnswers, useChannels, useMembers } from '@/kolab/hooks';
 import { handleOf } from '@/kolab/names';
 import { unreadOf, type Unread } from '@/kolab/unread';
+import { setBadge } from '@/push';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
 import { Hint, Problem, Screen, Section } from '@/ui';
 
@@ -29,6 +30,9 @@ export default function Home() {
   const channels = useChannels(team);
   const members = useMembers(team);
   const answers = useAnswers(team);
+  // The app's badge: what is unread in the team shown.
+  const unreadTotal = unreadOf(answers.data).total;
+  useEffect(() => { void setBadge(unreadTotal); }, [unreadTotal]);
   const [jump, setJump] = useState('');
   const [switching, setSwitching] = useState(false);
   if (!team) return null; // The root layout's gate shows the sign-in screen while no team is signed in.

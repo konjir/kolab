@@ -56,7 +56,7 @@ export default function You() {
       {problem && <Problem>{problem}</Problem>}
       {said && <Body>{said}</Body>}
       <Section title="Notifications">
-        <Hint>Which messages notify you: not built yet, it comes with push.</Hint>
+        {auth.current ? <Row testID="notification-settings" icon="notifications" label={`What notifies you from ${auth.current.team}`} onPress={() => router.push('/notifications')} /> : <Hint>Sign in to a team first.</Hint>}
       </Section>
       <Section title="This app">
         <Row icon="update" label="Version" detail={version} />

@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { remember } from '@/auth/pending-link';
 import { KolabCache } from '@/kolab/live';
+import { PushManager } from '@/PushManager';
 import { useAppTheme } from '@/theme';
 
 // The splash stays up until the stored sign-ins are read, so the tabs never flash before the gate.
@@ -51,9 +52,11 @@ function Gate() {
           <Stack.Screen name="new" options={{ presentation: 'modal' }} />
           <Stack.Screen name="profile/[actor]" />
           <Stack.Screen name="team" />
+          <Stack.Screen name="notifications" />
           <Stack.Screen name="dev" />
         </Stack.Protected>
       </Stack>
+      {signedIn && <PushManager />}
     </>
   );
 }
