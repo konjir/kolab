@@ -1,0 +1,172 @@
+{
+  "name": "@konjir/konnect-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "konnect for iOS and Android: a team's people and their agents, on a phone",
+  "license": "Apache-2.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "postinstall": "node scripts/patch-expo-modules-jsi.mjs",
+    "start": "expo start --dev-client",
+    "ios": "node scripts/patch-expo-modules-jsi.mjs && expo run:ios",
+    "android": "expo run:android",
+    "prebuild": "node scripts/patch-expo-modules-jsi.mjs && expo prebuild --clean",
+    "typecheck": "node scripts/typed-routes.mjs && tsc -p tsconfig.json && tsc -p tsconfig.config.json",
+    "lint": "expo lint --max-warnings 0",
+    "test": "jest",
+    "doctor": "node scripts/doctor.mjs",
+    "deps-check": "expo install --check",
+    "fingerprint": "node scripts/fingerprint.mjs",
+    "bundle-scan": "expo export --platform ios --platform android --output-dir dist/bundle --clear && node scripts/bundle-scan.mjs dist/bundle",
+    "e2e": "node scripts/e2e.mjs",
+    "build-dev": "node scripts/eas.mjs build --profile development",
+    "build-preview": "node scripts/eas.mjs build --profile preview",
+    "build-production": "node scripts/eas.mjs build --profile production --auto-submit",
+    "submit": "node scripts/eas.mjs submit --profile production --latest",
+    "update-preview": "node scripts/eas.mjs update --channel preview --environment preview",
+    "update-production": "node scripts/eas.mjs update --channel production --environment production",
+    "version": "node scripts/eas.mjs build:version:get",
+    "credentials": "node scripts/eas.mjs credentials",
+    "eas-whoami": "node scripts/eas.mjs whoami",
+    "env-pull": "node scripts/eas.mjs env:pull",
+    "local-kolab": "TSX_TSCONFIG_PATH=../../tsconfig.json tsx --conditions=@konjir/source scripts/local-kolab.mts"
+  },
+  "dependencies": {
+    "@expo-google-fonts/fraunces": "^0.4.1",
+    "@expo-google-fonts/instrument-sans": "^0.4.2",
+    "@expo-google-fonts/jetbrains-mono": "^0.4.1",
+    "@expo/metro-runtime": "~58.0.17",
+    "@expo/vector-icons": "^15.0.2",
+    "@konjir/brand": "*",
+    "@konjir/types": "*",
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@shopify/flash-list": "2.3.2",
+    "expo": "~58.0.26",
+    "expo-application": "~58.1.2",
+    "expo-auth-session": "~58.0.19",
+    "expo-clipboard": "~58.0.4",
+    "expo-constants": "~58.0.16",
+    "expo-crypto": "~58.0.8",
+    "expo-dev-client": "~58.0.21",
+    "expo-device": "~58.0.5",
+    "expo-font": "~58.0.12",
+    "expo-haptics": "~58.0.8",
+    "expo-image": "~58.0.18",
+    "expo-linking": "~58.0.17",
+    "expo-localization": "~58.0.5",
+    "expo-network": "~58.0.5",
+    "expo-notifications": "~58.1.9",
+    "expo-router": "~58.0.32",
+    "expo-secure-store": "~58.0.3",
+    "expo-splash-screen": "~58.0.14",
+    "expo-sqlite": "~58.0.18",
+    "expo-status-bar": "~58.0.5",
+    "expo-symbols": "~58.0.5",
+    "expo-system-ui": "~58.0.7",
+    "expo-updates": "~58.0.22",
+    "expo-web-browser": "~58.1.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-gesture-handler": "~3.3.0",
+    "react-native-reanimated": "4.7.1",
+    "react-native-safe-area-context": "~5.11.1",
+    "react-native-screens": "~4.30.1",
+    "react-native-worklets": "0.13.0"
+  },
+  "devDependencies": {
+    "@konjir/engine": "*",
+    "@konjir/login": "*",
+    "@konjir/server": "*",
+    "@testing-library/react-native": "^14.1.0",
+    "@types/react": "~19.3.0",
+    "eas-cli": "27.11.0",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "~58.0.4",
+    "expo-doctor": "1.21.8",
+    "jest-expo": "~58.0.15",
+    "typescript": "~6.0.3"
+  },
+  "nx": {
+    "tags": [
+      "scope:mobile"
+    ],
+    "targets": {
+      "typecheck": {
+        "inputs": [
+          "default",
+          "^production",
+          {
+            "externalDependencies": [
+              "typescript",
+              "expo",
+              "expo-router",
+              "react-native",
+              "@types/react"
+            ]
+          }
+        ],
+        "outputs": [
+          "{projectRoot}/.expo/types"
+        ],
+        "cache": true
+      },
+      "lint": {
+        "inputs": [
+          "default",
+          {
+            "externalDependencies": [
+              "eslint",
+              "eslint-config-expo"
+            ]
+          }
+        ],
+        "cache": true
+      },
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          {
+            "externalDependencies": [
+              "jest-expo",
+              "@testing-library/react-native"
+            ]
+          }
+        ],
+        "cache": true
+      },
+      "bundle-scan": {
+        "outputs": [
+          "{projectRoot}/dist/bundle"
+        ],
+        "cache": false
+      },
+      "start": { "cache": false },
+      "ios": { "cache": false },
+      "android": { "cache": false },
+      "prebuild": {
+        "outputs": [
+          "{projectRoot}/ios",
+          "{projectRoot}/android"
+        ],
+        "cache": false
+      },
+      "doctor": { "cache": false },
+      "deps-check": { "cache": false },
+      "fingerprint": { "cache": false },
+      "e2e": { "cache": false },
+      "build-dev": { "cache": false },
+      "build-preview": { "cache": false },
+      "build-production": { "cache": false },
+      "submit": { "cache": false },
+      "update-preview": { "cache": false },
+      "update-production": { "cache": false },
+      "version": { "cache": false },
+      "credentials": { "cache": false },
+      "eas-whoami": { "cache": false },
+      "env-pull": { "cache": false },
+      "local-kolab": { "cache": false }
+    }
+  }
+}

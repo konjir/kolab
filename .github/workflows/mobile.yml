@@ -1,0 +1,96 @@
+name: Mobile
+
+# Checks konnect for iOS and Android (apps/konnect-mobile, docs/plans/konnect-mobile.md) on every
+# pull request into main that touches it, its libraries or the workspace's dependencies. One job,
+# "Check konnect mobile", runs the app's Nx targets:
+# - typecheck: typed routes generated, then tsc (the app's own TypeScript 6, SDK 58's)
+# - lint: expo lint, with eslint-config-expo
+# - test: jest with jest-expo
+# - doctor: expo-doctor, which reads Expo's and React Native Directory's APIs
+# - deps-check: expo install --check, every library at the version SDK 58 pins
+# - bundle-scan: expo export for iOS and Android, then a scan of the bundles for anything that looks
+#   like a token or a secret
+# and checks that eas.json builds on the Node version production runs.
+#
+# Nothing here builds a binary or talks to EAS: preview builds and updates on merge, and store
+# releases behind the app-stores environment, come once the EAS project is linked (the plan's
+# phase 1, Lee's accounts). It isn't a required check: a path filter that skips a required check
+# leaves the pull request waiting forever (ci.yml). ci.yml's jobs also run this project's
+# typecheck, lint and test, as they do every affected project's.
+#
+# It runs on x64, not arm64 as ci.yml does: React Native ships the Hermes compiler that expo export
+# needs for Linux on x64 only. Hardening as ci.yml: a read-only token and no secrets, actions pinned
+# to commit SHAs, and dependencies installed without install scripts.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - apps/konnect-mobile/**
+      - libs/brand/**
+      - libs/types/**
+      - package.json
+      - package-lock.json
+      - nx.json
+      - .github/workflows/mobile.yml
+
+concurrency:
+  group: mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  check:
+    name: Check konnect mobile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read production's Node version
+        id: node
+        run: |
+          version=$(sed -n '/^variable "node_version"/,/^}/s/^ *default *= *"\([0-9.]*\)".*/\1/p' deploy/terraform/modules/kolab/main.tf)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=deploy/terraform/modules/kolab/main.tf::can't read node_version's default (got '$version')"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # EAS builds on the Node version eas.json names: the one production runs, so a build and the
+      # checks here agree.
+      - name: Check eas.json's Node version
+        env:
+          NODE_VERSION: ${{ steps.node.outputs.version }}
+        run: |
+          eas=$(node -p "require('./apps/konnect-mobile/eas.json').build.base.node")
+          if [ "$eas" != "$NODE_VERSION" ]; then
+            echo "::error file=apps/konnect-mobile/eas.json::build.base.node is $eas; production runs Node $NODE_VERSION"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Typecheck, lint and test
+        run: npx nx run-many -p @konjir/konnect-mobile -t typecheck lint test --output-style=static
+
+      - name: Doctor and dependency versions
+        run: npx nx run-many -p @konjir/konnect-mobile -t doctor deps-check --parallel=1 --output-style=static
+
+      - name: Export the bundles and scan them
+        run: npx nx run @konjir/konnect-mobile:bundle-scan --output-style=static

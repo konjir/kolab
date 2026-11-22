@@ -1,0 +1,6 @@
+{
+  // app.config.ts, which Expo runs in Node: Node's types, and none of the app's.
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": { "strict": true, "types": ["node"] },
+  "include": ["app.config.ts"]
+}
