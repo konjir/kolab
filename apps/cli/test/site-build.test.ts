@@ -542,14 +542,16 @@ test("konnect's app's sign-in redirect lands on a page of its own, which says to
 
 test("konnect's app links are written only from ids filled in deploy/site/app-links.json, each checked, and are otherwise left out and said so, failing closed", () => {
   const r = copy('app-links');
-  // As checked in, with no ids: neither file, and the build says why.
+  const config = JSON.parse(readFileSync(join(r, 'deploy/site/app-links.json'), 'utf8'));
+  const emptied = { ...config, apple_team_id: null, android: config.android.map((a: { package: string }) => ({ ...a, sha256_cert_fingerprints: [] })) };
+  // With no ids: neither file, and the build says why.
+  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify(emptied));
   const empty = build(r);
   expect([empty.status, empty.stderr]).toStrictEqual([0, '']);
   expect(empty.stdout).toContain('no apple-app-site-association: apple_team_id is not filled in');
   expect(empty.stdout).toContain('no assetlinks.json: no Android package has a fingerprint filled in');
   expect(existsSync(join(r, 'site/.well-known'))).toBe(false);
   // Filled in: Apple's and Google's files, for that path and those apps alone.
-  const config = JSON.parse(readFileSync(join(r, 'deploy/site/app-links.json'), 'utf8'));
   const fp = Array.from({ length: 32 }, (_, i) => i.toString(16).padStart(2, '0').toUpperCase()).join(':');
   config.apple_team_id = 'ABCDE12345';
   config.android[0].sha256_cert_fingerprints = [fp];
@@ -584,7 +586,7 @@ test("konnect's app links are written only from ids filled in deploy/site/app-li
   writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify({ ...config, ios_bundle_ids: ['com.example.other'] }));
   expect(build(r).stderr).toMatch(/ios_bundle_ids are konnect's own/);
   // Emptied again: both go.
-  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify({ ...config, apple_team_id: null, android: config.android.map((a: { package: string }) => ({ ...a, sha256_cert_fingerprints: [] })) }));
+  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify(emptied));
   expect(build(r).status).toBe(0);
   expect(existsSync(join(r, 'site/.well-known'))).toBe(false);
 });

@@ -1,0 +1,34 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "7Y8QD34KJQ.com.konjir.konnect"
+        ],
+        "components": [
+          {
+            "/": "/konnect/app/oauth",
+            "comment": "konnect's sign-in redirect for this build, and nothing else on this site"
+          }
+        ]
+      },
+      {
+        "appIDs": [
+          "7Y8QD34KJQ.com.konjir.konnect.preview"
+        ],
+        "components": [
+          {
+            "/": "/konnect/app/preview/oauth",
+            "comment": "konnect's sign-in redirect for this build, and nothing else on this site"
+          }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": [
+      "7Y8QD34KJQ.com.konjir.konnect",
+      "7Y8QD34KJQ.com.konjir.konnect.preview"
+    ]
+  }
+}

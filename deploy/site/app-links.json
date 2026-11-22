@@ -1,7 +1,7 @@
 {
   "_comment": "konnect's app links, for site/.well-known/ (deploy/site/build.mjs; site/README.md, 'konnect's app links'). Lee fills these in: apple_team_id, the Apple Developer team's 10-character id; and for each Android package, the SHA-256 fingerprints of the certificates it is signed with (Play App Signing's app signing key, and the upload key for builds installed outside Play), as AA:BB:… in upper case. Until apple_team_id is set, the build publishes no apple-app-site-association; until a package has a fingerprint, assetlinks.json leaves it out, and with none, isn't published. A value that isn't one fails the build.",
   "paths": { "com.konjir.konnect": "/konnect/app/oauth", "com.konjir.konnect.preview": "/konnect/app/preview/oauth" },
-  "apple_team_id": null,
+  "apple_team_id": "7Y8QD34KJQ",
   "ios_bundle_ids": ["com.konjir.konnect", "com.konjir.konnect.preview"],
   "android": [
     { "package": "com.konjir.konnect", "sha256_cert_fingerprints": [] },
