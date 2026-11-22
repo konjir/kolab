@@ -67,13 +67,15 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   const scheme = [Constants.expoConfig?.scheme].flat()[0] ?? 'com.konjir.konnect';
   // Kolab ended the sign-in: a count, so the same thing twice is seen twice.
   const [ended, setEnded] = useState(0);
+  // The kept sign-in names another team than the one shown (a switch that landed late): read it again.
+  const [changed, setChanged] = useState(0);
   const [moved, setMoved] = useState<{ from: string; to?: string }>();
   const [signIns, setSignIns] = useState(0);
   const { store, tokens } = useMemo(() => {
     const store = new LoginStore(kv, url);
     let oauth: Promise<KolabOAuth> | undefined;
     const endpoints = () => (oauth ??= discover(url).catch((e) => { oauth = undefined; throw e; }));
-    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: () => setEnded((n) => n + 1), onTeamMoved: (from, to) => setMoved({ from, to }) }) };
+    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: () => setEnded((n) => n + 1), onTeamMoved: (from, to) => setMoved({ from, to }), onTeamChanged: () => setChanged((n) => n + 1) }) };
   }, [kv, url]);
   // One MCP client per team: its token source is bound to that team, so a request in flight when
   // the sign-in moves never reaches the new team (Tokens' TeamChanged).
@@ -102,6 +104,15 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   useEffect(() => { if (ended) { dropClient(); void read().then(setState); } }, [ended, dropClient, read, setState]);
   // Kolab moved the sign-in (the team was lost): a new client for the new team, and the team shown.
   useEffect(() => { if (moved) { dropClient(); void read().then(setState); } }, [moved, dropClient, read, setState]);
+  useEffect(() => { if (changed) { dropClient(); void read().then(setState); } }, [changed, dropClient, read, setState]);
+  /**
+   * A request for the team shown was refused as another team's (TeamChanged): the kept sign-in
+   * moved without the app being told. The app shows the kept team again, never stays stuck refusing.
+   */
+  const resync = useCallback(async () => {
+    const who = await store.who();
+    if (who?.team !== latestTeam.current) setChanged((n) => n + 1);
+  }, [store]);
 
   const auth: Auth = {
     ready: state.ready, url, adapter, moved, signIns,
@@ -165,7 +176,8 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
       if (asked !== undefined && asked !== team) return Promise.reject(new TeamChanged(`asked for ${asked}, but the sign-in is in ${team || 'no team'}`));
       if (!client.current || client.current.team !== team) {
         dropClient();
-        const c = teamClient(url, { token: () => tokens.accessToken(team), renew: (refused) => tokens.renew(refused, team) });
+        const caught = (e: unknown): never => { if (e instanceof TeamChanged) void resync(); throw e; };
+        const c = teamClient(url, { token: () => tokens.accessToken(team).catch(caught), renew: (refused) => tokens.renew(refused, team).catch(caught) });
         const entry = { team, client: c };
         c.catch(() => { if (client.current === entry) client.current = undefined; });
         client.current = entry;

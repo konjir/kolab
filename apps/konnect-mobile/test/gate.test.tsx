@@ -38,21 +38,25 @@ const routes = () => ({
   '+not-found': require('../app/+not-found').default,
 });
 
+// Rendering the whole router (every tab's screen) is the slowest thing these tests do: under a
+// loaded machine it can take longer than Jest's default 5 s, which says nothing about the gate.
+const ROUTER_MS = 30_000;
+
 describe('the auth gate', () => {
   test('signed in to no team, the app is the sign-in screen and nothing else, even for a deep link', async () => {
     mockKv = storeWith();
     await renderRouter(routes(), { initialUrl: '/expo-development-client?url=http%3A%2F%2F127.0.0.1%3A8081' });
-    expect(await screen.findByTestId('sign-in-screen')).toBeTruthy();
+    expect(await screen.findByTestId('sign-in-screen', {}, { timeout: 10_000 })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Sign in with GitHub' })).toBeTruthy();
     expect(screen.getByLabelText('Konjir')).toBeTruthy();
     expect(screen.queryByTestId('you')).toBeNull();
     expect(screen.queryByTestId('home')).toBeNull();
-  });
+  }, ROUTER_MS);
 
   test('signed in, the tabs, and no sign-in screen', async () => {
     mockKv = storeWith('hub');
     await renderRouter(routes(), { initialUrl: '/' });
-    expect(await screen.findByTestId('home')).toBeTruthy();
+    expect(await screen.findByTestId('home', {}, { timeout: 10_000 })).toBeTruthy();
     expect(screen.queryByTestId('sign-in-screen')).toBeNull();
-  });
+  }, ROUTER_MS);
 });
