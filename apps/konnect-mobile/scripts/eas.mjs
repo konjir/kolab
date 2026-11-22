@@ -8,6 +8,7 @@
 // Linked means app.config.ts names the EAS project (EAS_PROJECT_ID, read here from the resolved
 // config as extra.eas.projectId) and its owner. `eas whoami` needs no project, so it always runs.
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +33,12 @@ if (!NEEDS_NO_PROJECT.has(args[0])) {
     ].join('\n'));
     process.exit(1);
   }
+}
+
+// Submitting needs the store accounts' details, which eas.json holds as placeholders until Lee fills them.
+if ((args[0] === 'submit' || args.includes('--auto-submit')) && readFileSync(join(root, 'eas.json'), 'utf8').includes('REPLACE_WITH_')) {
+  console.error(`eas ${args.join(' ')}: eas.json's submit.production still has placeholders (REPLACE_WITH_…): the App Store Connect app's ID and the Play service account key. Nothing was sent to EAS.`);
+  process.exit(1);
 }
 
 const eas = run('npx', ['eas', ...args]);

@@ -1,0 +1,147 @@
+name: Mobile release
+
+# Ships konnect for iOS and Android through EAS (docs/plans/konnect-mobile.md, phase 6):
+# - "Preview": on each merge to main that touches the app or its libraries, the native fingerprint
+#   is compared with the last preview build's. The same native code gets an over-the-air update on
+#   the preview channel (update-preview); new native code gets a new preview build (build-preview).
+# - "Production": run by hand (workflow_dispatch) behind the app-stores environment, whose required
+#   reviewer is Lee: either a store build that is then submitted (build-production, which submits
+#   itself), or, for a JavaScript-only fix, an update on the production channel (update-production).
+#
+# Both skip, saying why, until EAS is set up: an EXPO_TOKEN secret, and the EAS project linked in
+# app.config.ts (EAS_PROJECT_ID). The Nx targets refuse on their own too (scripts/eas.mjs), so a job
+# that reached them early would still send nothing. Hardening as ci.yml: actions pinned to commit
+# SHAs, dependencies installed without install scripts, and only EXPO_TOKEN as a secret.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/konnect-mobile/**
+      - libs/brand/**
+      - libs/types/**
+      - package-lock.json
+      - .github/workflows/mobile-release.yml
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'What to ship to production: a store build, or an over-the-air update'
+        type: choice
+        options: [build, update]
+        required: true
+      message:
+        description: 'For an update: what it fixes'
+        type: string
+        required: false
+
+concurrency:
+  group: mobile-release-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  preview:
+    name: Preview
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Is EAS set up?
+        id: ready
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then echo "::notice::No EXPO_TOKEN secret yet, so nothing ships (apps/konnect-mobile/README.md, Linking EAS)"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if grep -q "^const EAS_PROJECT_ID: string | undefined = undefined;" apps/konnect-mobile/app.config.ts; then echo "::notice::The EAS project isn't linked in app.config.ts yet, so nothing ships"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.ready.outputs.go == 'true'
+        with:
+          node-version: '22.23.3' # eas.json's, which mobile.yml checks against production's
+          cache: npm
+
+      - if: steps.ready.outputs.go == 'true'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # The fingerprint of the newest preview build, as EAS recorded it, against this commit's.
+      - name: Same native code as the last preview build?
+        if: steps.ready.outputs.go == 'true'
+        id: native
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          APP_VARIANT: preview
+        working-directory: apps/konnect-mobile
+        run: |
+          now=$(node scripts/fingerprint.mjs | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const f=JSON.parse(s);console.log(f.ios+"/"+f.android)})')
+          last=$(npx eas build:list --channel preview --status finished --limit 2 --json --non-interactive 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const b=JSON.parse(s);const by=Object.fromEntries(b.map(x=>[x.platform.toLowerCase(),x.runtimeVersion]));console.log((by.ios??"")+"/"+(by.android??""))}catch{console.log("")}})')
+          echo "This commit: $now; the last preview build: ${last:-none}"
+          if [ "$now" = "$last" ]; then echo "same=true" >> "$GITHUB_OUTPUT"; else echo "same=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Update the preview channel
+        if: steps.ready.outputs.go == 'true' && steps.native.outputs.same == 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          COMMIT: ${{ github.sha }}
+        run: npx nx run @konjir/konnect-mobile:update-preview --output-style=stream -- --message "main at $COMMIT" --non-interactive
+
+      - name: Build a new preview
+        if: steps.ready.outputs.go == 'true' && steps.native.outputs.same != 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx nx run @konjir/konnect-mobile:build-preview --output-style=stream -- --platform all --non-interactive --no-wait
+
+  production:
+    name: Production
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: app-stores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Is EAS set up?
+        id: ready
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then echo "::notice::No EXPO_TOKEN secret yet, so nothing ships"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if grep -q "^const EAS_PROJECT_ID: string | undefined = undefined;" apps/konnect-mobile/app.config.ts; then echo "::notice::The EAS project isn't linked in app.config.ts yet, so nothing ships"; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.ready.outputs.go == 'true'
+        with:
+          node-version: '22.23.3'
+          cache: npm
+
+      - if: steps.ready.outputs.go == 'true'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Store build, then submit
+        if: steps.ready.outputs.go == 'true' && inputs.release == 'build'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: npx nx run @konjir/konnect-mobile:build-production --output-style=stream -- --platform all --non-interactive --no-wait
+
+      - name: Over-the-air update
+        if: steps.ready.outputs.go == 'true' && inputs.release == 'update'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          MESSAGE: ${{ inputs.message }}
+        run: npx nx run @konjir/konnect-mobile:update-production --output-style=stream -- --message "$MESSAGE" --non-interactive

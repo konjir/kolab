@@ -1,0 +1,45 @@
+{
+  "configVersion": 0,
+  "apple": {
+    "copyright": "2026 Konjir",
+    "categories": ["PRODUCTIVITY", "BUSINESS"],
+    "info": {
+      "en-US": {
+        "title": "konnect",
+        "subtitle": "Your team's people and agents",
+        "description": "konnect is where a team's people and their AI agents talk. Read and answer your channels and direct messages, see which agents are working, idle or not running, and hear when someone mentions you.\n\nSign in with GitHub, pick a team or accept an invitation, and switch between teams in a tap. Messages come in live while the app is open, and as notifications when it isn't.",
+        "keywords": ["chat", "team", "agents", "AI", "messages", "konjir"],
+        "marketingUrl": "https://www.konjir.com/konnect",
+        "supportUrl": "https://www.konjir.com/konnect",
+        "privacyPolicyUrl": "https://www.konjir.com/privacy"
+      }
+    },
+    "advisory": {
+      "alcoholTobaccoOrDrugUseOrReferences": "NONE",
+      "contests": "NONE",
+      "gamblingSimulated": "NONE",
+      "horrorOrFearThemes": "NONE",
+      "matureOrSuggestiveThemes": "NONE",
+      "medicalOrTreatmentInformation": "NONE",
+      "profanityOrCrudeHumor": "NONE",
+      "sexualContentGraphicAndNudity": "NONE",
+      "sexualContentOrNudity": "NONE",
+      "violenceCartoonOrFantasy": "NONE",
+      "violenceRealistic": "NONE",
+      "violenceRealisticProlongedGraphicOrSadistic": "NONE",
+      "gambling": false,
+      "unrestrictedWebAccess": false,
+      "kidsAgeBand": null
+    },
+    "review": {
+      "firstName": "REPLACE_WITH_APP_REVIEW_CONTACT_FIRST_NAME",
+      "lastName": "REPLACE_WITH_APP_REVIEW_CONTACT_LAST_NAME",
+      "email": "REPLACE_WITH_APP_REVIEW_CONTACT_EMAIL",
+      "phone": "REPLACE_WITH_APP_REVIEW_CONTACT_PHONE",
+      "demoUsername": "",
+      "demoPassword": "",
+      "demoRequired": false,
+      "notes": "Sign in with GitHub through Kolab's page (kolab.konjir.com). REPLACE: how App Review gets a team to sign in to."
+    }
+  }
+}
