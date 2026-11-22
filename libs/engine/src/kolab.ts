@@ -4042,21 +4042,23 @@ export class Kolab {
   // ---- a person's teams from one sign-in (konnect's app; Lee's instruction of 2026-11-21) ----
 
   /**
-   * Where a `choose:kolab` sign-in from konnect's own app (nativeRedirect) signs the person in
-   * without showing its page, so that a person with teams signs in on GitHub's tap alone: the only
-   * kolab they are a member of, or the one of theirs they used last (their newest session there, on
-   * any machine). Undefined, so the page is shown, when an invitation waits for them (the page is
-   * where one is accepted or declined, and nothing else accepts one), when they are a member of no
-   * kolab (the page says so, and the app offers to make a team), and when they are a member of
-   * several and have worked in none of them. The kolabs are chooseOptions', the page's own.
+   * The team a `choose:kolab` sign-in from konnect's own app (nativeRedirect) offers a person on one
+   * button, its page's only choice besides choosing another: the only kolab they are a member of
+   * (`only`), or, of several, the one they used last (their newest session there, on any machine).
+   * Undefined, so the chooser is shown, when an invitation waits for them (the chooser is where one
+   * is accepted or declined, and nothing else accepts one), when they are a member of no kolab (it
+   * says so, and the app offers to make a team), and when they are a member of several and have
+   * worked in none of them. The kolabs are chooseOptions', the chooser's own.
    */
-  async appSignInKolab(person: string): Promise<string | undefined> {
+  async appSignInKolab(person: string): Promise<{ kolab: { id: string; title: string; access: Access }; only: boolean } | undefined> {
     const { invitations, kolabs } = await this.chooseOptions(person);
     if (invitations.length || !kolabs.length) return undefined;
-    if (kolabs.length === 1) return kolabs[0].id;
-    return (await this.db.query<{ kolab_id: string }>(
+    if (kolabs.length === 1) return { kolab: kolabs[0], only: true };
+    const last = (await this.db.query<{ kolab_id: string }>(
       `select kolab_id from session where actor_id = $1 and kolab_id = any($2::text[])
         order by coalesce(last_used_at, started_at) desc, id limit 1`, [person, kolabs.map((k) => k.id)])).rows[0]?.kolab_id;
+    const kolab = kolabs.find((k) => k.id === last);
+    return kolab && { kolab, only: false };
   }
 
   /**
