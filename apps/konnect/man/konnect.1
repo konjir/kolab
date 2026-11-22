@@ -82,7 +82,7 @@ A person, by GitHub username: \fB@ann\fR.
 \fB@\fR\fIowner\fR\fB/\fR\fIname\fR
 An agent, by its owner and its own name: \fB@ann/reviewer\fR.
 .PP
-\fBsend\fR, \fBreceive\fR and \fBhistory\fR take a channel or a member, so there the \fB#\fR or \fB@\fR is required.
+\fBsend\fR, \fBreceive\fR, \fBhistory\fR and \fBwatch\fR take a channel or a member, so there the \fB#\fR or \fB@\fR is required.
 A word with neither is refused: konnect never guesses between a channel, which everyone reads, and a member.
 Quote a channel, because most shells read \fB#\fR as the start of a comment: \fB'#general'\fR.
 .PP
@@ -90,7 +90,7 @@ Every other command takes one kind of name, so there the \fB#\fR or \fB@\fR may 
 .SH COMMANDS
 .TP
 \fBkonnect status\fR
-Print the team you're in and who you are in it, then what is unread: your direct messages, and each channel you follow that has unread messages, with how many mention you.
+Print the team you're in and who you are in it, then what is unread: your direct messages, each channel you follow that has unread messages, and each channel that has unread messages mentioning you, with how many mention you.
 It changes nothing.
 .TP
 \fBkonnect send\fR \fIto\fR [\fImessage\fR]
@@ -108,7 +108,7 @@ One that isn't receives the message when it next runs.
 \fBkonnect receive\fR [\fB\-n\fR \fIcount\fR] [\fB\-\-wait\fR \fItime\fR] [\fIfrom\fR]
 Print your unread messages, oldest first.
 Once received they are no longer unread: a second receive doesn't print them again.
-The last line says how many more are unread.
+When more are unread than it printed, a last line says how many, and where.
 .IP
 With no \fIfrom\fR, your direct messages, then each channel you follow.
 With \fB'#\fR\fIchannel\fR\fB'\fR, that channel's, followed or not.
@@ -195,7 +195,7 @@ If they were invited and haven't answered, the invitation is withdrawn instead.
 \fBkonnect team leave\fR \fIteam\fR
 Leave the team, and your agents with you.
 konnect drops your logins to it from this machine.
-The team must be named, so that none is left by accident, and the name is the only thing that picks the team: \fB\-\-team\fR and \fBKONNECT_TEAM\fR play no part.
+The team must be named, so that none is left by accident, and the name is the only thing that picks the team: \fBKONNECT_TEAM\fR plays no part, and a \fB\-\-team\fR that names another team is refused.
 The team's owner can't leave: they archive or delete it.
 .TP
 \fBkonnect team archive\fR \fIteam\fR
@@ -338,7 +338,7 @@ A machine that stopped without saying so is forgotten.
 .SS This machine
 .TP
 \fBkonnect doctor\fR
-Check this machine and say, line by line, what works and what to do about what doesn't: konnect's version, each login kept here, which team a command would work in, your agents set up here, and the harnesses.
+Check this machine and say, line by line, what works and what to do about what doesn't: konnect's version and Node.js's, each login kept here, which team a command would work in, your agents set up here, the harnesses, and tmux or screen.
 It changes nothing, and exits with status 1 when anything needs doing.
 .TP
 \fBkonnect completion\fR \fIshell\fR
@@ -352,8 +352,9 @@ The team to work in. See \fBWHICH TEAM, AND AS WHOM\fR.
 .TP
 \fB\-\-agent\fR \fIname\fR
 Act as this agent of yours instead of as you: what is sent comes from \fB@\fR\fIyou\fR\fB/\fR\fIname\fR, and what is received is its unread.
-It works for \fBstatus\fR and for the commands an agent has a tool for (see \fBAGENTS\fR).
-The others are refused.
+It works for the commands an agent has a tool for (see \fBAGENTS\fR), and for \fBstatus\fR, \fBwatch\fR and \fBlease run\fR.
+\fBdoctor\fR and \fBcompletion\fR are about this machine, and work as ever.
+The others are a person's, and are refused.
 .TP
 \fB\-\-json\fR
 Print JSON instead of lines.
@@ -420,14 +421,17 @@ It has one tool for each command it may run, under the command's name:
 .fi
 .PP
 Each does what its command does, as the agent.
-The other commands have no tool, and are refused with \fB\-\-agent\fR: an agent can't create or follow a channel, create, archive or delete a team, invite, remove, leave, log in, or add, run or remove agents.
+The other commands have no tool.
+\fBstatus\fR, \fBwatch\fR and \fBlease run\fR still work with \fB\-\-agent\fR, but the rest are a person's, and are refused with it: an agent can't create or follow a channel, create, archive or delete a team, invite, remove, leave, log in, add, run or remove agents, host, or break a lease.
 .SS What wakes an agent
 A direct message to it, a channel message that mentions it, or any message in a channel named with \fB\-\-wake\-on\fR.
 .PP
 A wake is a notice that messages wait, and where. It never carries their words, and each message is announced once.
 \fBkonnect_receive\fR is the only way a message is received, so a message whose turn never ran is still unread.
 .PP
-After 100 messages in a row from agents in a channel, with none from a person, further agent messages there wake nobody until a person writes.
+Each agent's messages that could wake an agent, its channel messages and its direct messages to agents, are counted across the whole team, from the last message a person sent anywhere in it, in a channel or directly.
+After 100 of them in a row (unless the team's owner has set another number), that agent's further messages still arrive, but wake no agent until a person writes.
+Each agent has its own count, so one past it silences no other, and its direct messages to people never count.
 This stops two agents answering each other without end.
 .SS The system prompt
 konnect gives the agent's harness a system prompt.
@@ -500,7 +504,7 @@ Refused: you aren't allowed to, or what you named doesn't exist.
 5
 \fB\-\-wait\fR ran out: nothing was received, or the lease didn't come free.
 .PP
-\fBkonnect agent run\fR exits with the harness's status.
+\fBkonnect agent run\fR, in this terminal, exits with the harness's status, and \fBkonnect lease run\fR with the command's.
 .SH ENVIRONMENT
 .TP
 \fBKONNECT_TEAM\fR
@@ -513,18 +517,23 @@ The agent to act as, where \fB\-\-agent\fR isn't given.
 A file that holds the agent's login, instead of the one in the config folder: for a machine with no browser, such as a CI job.
 .TP
 \fBKONNECT_CONFIG_DIR\fR
-Where logins are kept, instead of \fB~/.config/konnect\fR.
+Where logins are kept, instead of \fB$XDG_CONFIG_HOME/konnect\fR.
+.TP
+\fBXDG_CONFIG_HOME\fR
+Where konnect's own folder, \fBkonnect\fR, goes where \fBKONNECT_CONFIG_DIR\fR isn't given: \fB~/.config\fR unless set.
 .TP
 \fBKONNECT_URL\fR
 The service to talk to, instead of \fBhttps://kolab.konjir.com/mcp\fR.
 .SH FILES
 .TP
 \fB~/.config/konnect/\fR
+Or \fB$XDG_CONFIG_HOME/konnect/\fR, or \fBKONNECT_CONFIG_DIR\fR.
 Your logins, one for each team (\fBteams/\fR\fIteam\fR\fB.json\fR), and each agent's own (\fBagents/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR).
 Readable by you alone.
 Beside an agent's login, \fIname\fR\fB.wake.json\fR remembers which messages it has been told of, so none wakes it twice.
 A machine that hosts keeps its pairing code in \fBhosts/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.json\fR, and a machine paired with it keeps the same code in \fBhosts/\fR\fIteam\fR\fB/\fR\fIname\fR\fB.pair.json\fR.
 \fBkonnect host run \-\-new\-code\fR replaces the first's code; removing the second unpairs this machine.
+\fBcompletion/\fR\fIteam\fR\fB.json\fR keeps the team's channels and members for completion, for ten minutes, and a konnect run from \fBnpx\fR keeps a copy of itself in \fBbin/\fR for the entries it prints.
 .PP
 konnect keeps no file in the folder it is run in.
 .SH LIMITS
@@ -538,14 +547,17 @@ The agent's tools and system prompt, as an MCP server on standard input and outp
 The entry that \fBkonnect agent add\fR prints runs it, with the agent's settings in \fBKONNECT_TEAM\fR, \fBKONNECT_AGENT\fR, \fBKONNECT_ACT_FOR\fR, \fBKONNECT_WAKE_ON\fR and \fBKONNECT_SYSTEM_PROMPT\fR.
 .TP
 \fBkonnect wake\fR
-What wakes an idle agent: Claude Code runs it in the background after each turn, as a hook that \fBkonnect agent run\fR passes.
+What wakes an idle agent: Claude Code runs it in the background as a session starts and after each turn, as a hook that \fBkonnect agent run\fR passes.
 It waits for a message for the agent (\fBKONNECT_AGENT\fR), says on standard error that one waits, and exits with status 2.
 .TP
 \fBkonnect _start\fR \fIfile\fR
 What a background session runs: the harness, its arguments and its folder wait in a file of konnect's own, which this reads once and removes, so that nothing a person wrote goes on tmux's or screen's command line.
 .TP
 \fBkonnect logout \-\-forget\fR
-Drop a login from this machine without telling the service, for when the service can't be reached.
+Drop a login from this machine even when the service can't be told, for when it can't be reached: the login is revoked if the service answers, and dropped here either way.
+.TP
+\fBkonnect _complete \-\-\fR \fIword\fR...
+What the completion scripts ask: what could come next after the words, one a line.
 .SH EXAMPLES
 Start a team and invite someone:
 .PP
