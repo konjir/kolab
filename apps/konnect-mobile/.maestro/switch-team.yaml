@@ -1,39 +1,59 @@
-# One sign-in, two teams: Ann signs in to hub, sees side's unread in the switcher, switches to side
-# with no second sign-in, and back, then signs out. Needs a Kolab with konjir_list_my_teams and
-# konjir_switch_team, and local-kolab's seed (Ann in hub and side, a mention for her in side).
+# One sign-in, every team: Ann signs in to hub, sees side's unread in the switcher, switches to side
+# with no second sign-in and back, accepts Bo's invitation to ops on Kolab's page, and signs out.
+# Against a freshly started local-kolab (Ann in hub and side, a mention and a DM for her in side,
+# an invitation to ops), signed out.
 appId: ${APP_ID}
 tags: [local-kolab]
 ---
-- tapOn: "Sign in with GitHub"
-- extendedWaitUntil:
-    visible: "Sign in to hub"
-    timeout: 30000
-- tapOn: "Sign in to hub"
-- extendedWaitUntil:
-    visible: "general.*"
-    timeout: 30000
+- runFlow: subflows/sign-in-ann.yaml
+- assertVisible: "Teams: hub, unread in another team"
 - tapOn:
     id: "team-switcher"
 - extendedWaitUntil:
-    visible: "hub, current"
+    visible:
+      id: "team-hub"
     timeout: 20000
-- assertVisible: "side.*mention.*"
+- assertVisible:
+    id: "team-side"
+- assertVisible:
+    id: "accept-ops"
+# To side, with no sign-in: its Home, its mention among the unreads.
 - tapOn:
     id: "team-side"
 - extendedWaitUntil:
-    visible: "side"
+    visible: "Teams: side.*"
     timeout: 30000
+- assertVisible: "#general, .*unread"
+- tapOn: "#general, .*unread"
 - extendedWaitUntil:
-    visible: ".*this is side.*|#general.*unread.*"
+    visible: ".*this is side.*"
     timeout: 20000
+- tapOn: "Home"
+# And back to hub.
 - tapOn:
     id: "team-switcher"
 - tapOn:
     id: "team-hub"
 - extendedWaitUntil:
-    visible: "hub"
+    visible: "Teams: hub.*"
+    timeout: 30000
+# Bo's invitation: accepted on Kolab's page, which signs Ann in to ops.
+- tapOn:
+    id: "team-switcher"
+- tapOn:
+    id: "accept-ops"
+- extendedWaitUntil:
+    visible: "Choose where to sign in"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Accept and sign in"
+- tapOn: "Accept and sign in"
+- extendedWaitUntil:
+    visible: "Teams: ops.*"
     timeout: 30000
 - tapOn: "You"
+- assertVisible: "ops.*"
 - tapOn:
     id: "sign-out"
 - extendedWaitUntil:

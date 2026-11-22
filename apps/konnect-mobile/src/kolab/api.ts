@@ -5,7 +5,7 @@
  * these are the app's.
  */
 import type { Client } from '@modelcontextprotocol/client';
-import type { Channel, ChannelMessage, Member, Message } from '@konjir/types';
+import type { Channel, ChannelMessage, Conversation, Member, Message } from '@konjir/types';
 
 export class KolabRefused extends Error { name = 'KolabRefused'; }
 
@@ -43,6 +43,8 @@ export const kolab = (client: Client) => ({
   channels: () => call<Page<'channels', Channel> & { agent_reply_cap?: number }>(client, 'konjir_list_channels', { limit: 200 }),
   members: () => call<Page<'members', Member>>(client, 'konjir_list_members', { limit: 200 }),
   channelMessages: (channel: string, cursor?: string) => call<Page<'messages', ChannelMessage>>(client, 'konjir_list_channel_messages', { channel, limit: 50, ...(cursor ? { cursor } : {}) }),
+  /** Each DM partner's conversation, newest first, with its last message and unread count (S3). */
+  conversations: () => callNew<Page<'conversations', Conversation>>(client, 'konjir_list_conversations', { limit: 200 }),
   directMessages: (other: string, cursor?: string) => call<Page<'messages', Message>>(client, 'konjir_list_messages', { with: other, limit: 50, ...(cursor ? { cursor } : {}) }),
   sendMessage: (to: string, message: string, replyTo?: string) => call<{ sent: Message }>(client, 'konjir_send_message', { to, message, ...(replyTo ? { reply_to: replyTo } : {}) }),
   sendChannelMessage: (channel: string, message: string, mentions: string[], replyTo?: string) =>
@@ -75,17 +77,20 @@ export function hasTool(client: Client, name: string): Promise<boolean> {
   return names.then((n) => n.has(name));
 }
 
+/** A tool this Kolab hasn't: said as what it is, rather than as a failed call. */
+export class KolabLacks extends Error { name = 'KolabLacks'; }
+
+/** Calls `name`, or says plainly that this Kolab hasn't it (an older server). */
+export async function callNew<T>(client: Client, name: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (!(await hasTool(client, name))) throw new KolabLacks(`This Kolab is older than konnect's app: it has no ${name}.`);
+  return call<T>(client, name, args);
+}
+
 /**
- * Marks a conversation read up to `upTo` with S2's tools (konjir_mark_channel_read,
- * konjir_mark_messages_read), which only move forward. False when this Kolab hasn't them.
+ * Marks a conversation read up to `upTo`, the newest message seen (S2): konjir_mark_channel_read
+ * or konjir_mark_messages_read, which only move forward.
  */
-export async function markReadUpTo(client: Client, kind: 'channel' | 'dm', name: string, upTo: string): Promise<boolean> {
-  if (kind === 'channel') {
-    if (!(await hasTool(client, 'konjir_mark_channel_read'))) return false;
-    await call(client, 'konjir_mark_channel_read', { channel: name, up_to: upTo });
-  } else {
-    if (!(await hasTool(client, 'konjir_mark_messages_read'))) return false;
-    await call(client, 'konjir_mark_messages_read', { with: name, up_to: upTo });
-  }
-  return true;
+export async function markReadUpTo(client: Client, kind: 'channel' | 'dm', name: string, upTo: string): Promise<void> {
+  if (kind === 'channel') await callNew(client, 'konjir_mark_channel_read', { channel: name, up_to: upTo });
+  else await callNew(client, 'konjir_mark_messages_read', { with: name, up_to: upTo });
 }
