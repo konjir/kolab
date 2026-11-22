@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -194,6 +194,24 @@ export async function closeOpened(since: OpenedMark = NOTHING_OPENED) {
   for (const name of adhoc.splice(since.adhoc)) await attempt(() => onServer(`drop database if exists ${name} with (force)`));
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) throw new AggregateError(errors, `${errors.length} teardown steps failed`);
+}
+
+/**
+ * Signs `person` in through konnect's own app, straight through the engine, as its phone does over
+ * HTTP: a client whose one redirect URI is the app's (a new one each time, as each install
+ * registers its own, unless `client` names one), a `choose:kolab` sign-in, the person identified,
+ * consent to `kolab`, and the code exchanged. Its grant is the app's, which the app-only verbs
+ * (switchTeam, registerPushDevice and the like) take.
+ */
+export async function appSignIn(kolab: Kolab, person: string, k: string, opts: { client?: string } = {}) {
+  const redirectUri = 'com.konjir.konnect:/oauth';
+  const client = opts.client ?? (await kolab.registerClient({ name: 'konnect', redirectUris: [redirectUri] })).id;
+  const verifier = randomBytes(32).toString('base64url');
+  const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri, codeChallenge: createHash('sha256').update(verifier).digest('base64url'), scope: 'konjir choose:kolab' });
+  const { csrf } = await kolab.identifyAuthorization(binding, state, person);
+  const { code } = await kolab.consentPerson(binding, csrf, { kolab: k });
+  const t = await kolab.exchangeCode({ code, clientId: client, redirectUri, codeVerifier: verifier });
+  return { access: t.accessToken, refresh: t.refreshToken, client, session: t.session };
 }
 
 /** The kolab tests work in, owned by the organization `test-org`. */

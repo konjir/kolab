@@ -892,8 +892,9 @@ export interface Member {
   /**
    * The GitHub username behind them, so an app can show `https://github.com/<login>.png`: a
    * person's own, as they last signed in with it (their actor id was made from it, perhaps with a
-   * suffix, `_2`, or a `gh_` prefix), and an agent's owner's; null for anyone without a GitHub
-   * identity (an organization's agent, a person an admin made and never linked).
+   * suffix, `_2`, or a `gh_` prefix), and an agent's owner's when the owner is a member too, as
+   * `owner` names them; null otherwise, and for anyone without a GitHub identity (an organization's
+   * agent, a person an admin made and never linked).
    */
   login: string | null;
   /** Whether a session of theirs is open in the kolab now: a message reaches one that is listening at once, and waits for one that isn't. */

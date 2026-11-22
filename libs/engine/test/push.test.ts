@@ -7,13 +7,16 @@
 import { expect, test } from '@jest/globals';
 import { MAX_PUSH_DEVICES, PUSH_BATCH, UNREAD_COUNT_CEILING, type SentMessage } from '@konjir/types';
 import { wantsPush, type PushMessage, type PushTicket } from '@konjir/engine';
-import { openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
+import { createHash, randomBytes } from 'node:crypto';
+import { appSignIn, openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
 
 const token = (n: string | number) => `ExponentPushToken[${n}]`;
 
 /**
- * Ann owns `hub`; Bo and Cy write there; Bo has an agent. Each has a session. Push is on, with a
- * sender that records what it is given and answers each with `answer` (ok by default).
+ * Ann owns `hub`; Bo and Cy write there; Bo has an agent. Each person is signed in through konnect's
+ * app, whose sign-in alone registers devices and sets prefs, and the agent has a hand-issued session.
+ * `phone` signs a person in again, as another phone of theirs. Push is on, with a sender that records
+ * what it is given and answers each with `answer` (ok by default).
  */
 async function hub(opts: { answer?: (m: PushMessage) => PushTicket } = {}) {
   const k = await openKolab();
@@ -21,12 +24,12 @@ async function hub(opts: { answer?: (m: PushMessage) => PushTicket } = {}) {
   await k.addActor('bo-claude', { owner: 'bo' });
   await k.createKolab('hub', { owner: 'ann' });
   for (const id of ['bo', 'cy', 'bo-claude']) await k.grant('hub', id, 'write');
+  const signIns = { ann: await appSignIn(k, 'ann', 'hub'), bo: await appSignIn(k, 'bo', 'hub'), cy: await appSignIn(k, 'cy', 'hub') };
   const s = {
-    ann: await k.openSession('ann', 'product', { kolab: 'hub' }),
-    bo: await k.openSession('bo', 'engineer', { kolab: 'hub' }),
-    cy: await k.openSession('cy', 'engineer', { kolab: 'hub' }),
+    ann: signIns.ann.access, bo: signIns.bo.access, cy: signIns.cy.access,
     agent: await k.openSession('bo-claude', 'engineer', { kolab: 'hub' }),
   };
+  const phone = async (actor: string, kolab = 'hub') => (await appSignIn(k, actor, kolab)).access;
   const batches: PushMessage[][] = [];
   k.push.send = async (messages) => { batches.push(messages); return messages.map(opts.answer ?? (() => ({ ok: true }))); };
   const sent: SentMessage[] = [];
@@ -38,7 +41,7 @@ async function hub(opts: { answer?: (m: PushMessage) => PushTicket } = {}) {
     await k.drainOutbox();
     return { people: n, messages: batches.flat() };
   };
-  return { kolab: k, ...s, batches, sent, pushed };
+  return { kolab: k, ...s, signIns, phone, batches, sent, pushed };
 }
 
 const jobs = async (k: TestKolab) => (await k.db.query<{ kind: string; payload: unknown; attempts: number }>(`select kind, payload, attempts from outbox order by id`)).rows;
@@ -95,10 +98,8 @@ test('a person registers their app\'s token, idempotently; it moves to whoever r
 test('a device is the person\'s: registered from any team, it is one device, and unregistering it from any team stops it everywhere', async () => {
   const { kolab, bo } = await hub();
   await kolab.registerPushDevice(bo, token('phone'), 'ios');
-  // An admin opens one hand-issued session of a person's at a time: Bo's in hub ends first.
   await kolab.createKolab('side', { owner: 'bo' });
-  await kolab.endSession(bo);
-  const boSide = await kolab.openSession('bo', 'engineer', { kolab: 'side' });
+  const boSide = (await appSignIn(kolab, 'bo', 'side')).access;
   const again = await kolab.registerPushDevice(boSide, token('phone'), 'android');
   expect(again.device).toMatchObject({ token: token('phone'), platform: 'android' });
   expect((await kolab.db.query(`select token, actor_id, platform from push_device`)).rows)
@@ -182,11 +183,16 @@ test('across teams, the decision is the message\'s team\'s alone: each level in 
 });
 
 test(`a person keeps at most ${MAX_PUSH_DEVICES} devices, across their teams: one more forgets the least recently seen`, async () => {
-  const { kolab, bo } = await hub();
-  for (let i = 0; i < MAX_PUSH_DEVICES; i++) await kolab.registerPushDevice(bo, token(i), 'ios');
+  const { kolab, phone } = await hub();
+  // One device for each sign-in, so a phone each.
+  const phones: string[] = [];
+  for (let i = 0; i < MAX_PUSH_DEVICES; i++) {
+    phones.push(await phone('bo'));
+    await kolab.registerPushDevice(phones[i], token(i), 'ios');
+  }
   // Device 0 seen again: device 1 is now the stalest.
-  await kolab.registerPushDevice(bo, token(0), 'ios');
-  await kolab.registerPushDevice(bo, token('new'), 'android');
+  await kolab.registerPushDevice(phones[0], token(0), 'ios');
+  await kolab.registerPushDevice(await phone('bo'), token('new'), 'android');
   const kept = (await kolab.db.query<{ token: string }>(`select token from push_device where actor_id = 'bo'`)).rows.map((r) => r.token);
   expect(kept.length).toBe(MAX_PUSH_DEVICES);
   expect(kept).toContain(token(0));
@@ -210,9 +216,9 @@ test('notification prefs: mentions_and_dms and nothing muted by default; a level
 });
 
 test('a direct message to a person with a device queues one push job, which sends the sender, the start of the message, what to open and their unread', async () => {
-  const { kolab, ann, bo, cy, batches, sent } = await hub();
+  const { kolab, ann, bo, cy, phone, batches, sent } = await hub();
   await kolab.registerPushDevice(bo, token('b1'), 'ios');
-  await kolab.registerPushDevice(bo, token('b2'), 'android');
+  await kolab.registerPushDevice(await phone('bo'), token('b2'), 'android');
   await kolab.sendChannelMessage(cy, 'general', 'one unread in general');
   const long = 'x'.repeat(150);
   const m = await kolab.sendMessage(ann, 'bo', long);
@@ -231,9 +237,9 @@ test('a direct message to a person with a device queues one push job, which send
 });
 
 test('the job sends one push per device, and a channel message\'s title names the channel', async () => {
-  const { kolab, ann, bo, pushed } = await hub();
+  const { kolab, ann, bo, phone, pushed } = await hub();
   await kolab.registerPushDevice(bo, token('b1'), 'ios');
-  await kolab.registerPushDevice(bo, token('b2'), 'android');
+  await kolab.registerPushDevice(await phone('bo'), token('b2'), 'android');
   const m = await kolab.sendChannelMessage(ann, 'general', 'deploy is green, @bo', { mentions: ['bo'] });
   const r = await pushed();
   expect(r.people).toBe(1);
@@ -329,28 +335,77 @@ test('push off: nothing is decided or queued, and a job queued before it went of
   expect(await jobs(kolab)).toStrictEqual([]);
 });
 
-test('a device registered from a sign-in gets nothing once that sign-in is revoked or lapses', async () => {
-  const { kolab, ann, bo, pushed } = await hub();
+test('a device registered from the app\'s sign-in gets nothing once that sign-in is revoked, lapses, or has no open session', async () => {
+  const { kolab, ann, bo, signIns, pushed } = await hub();
   await kolab.registerPushDevice(bo, token('b'), 'ios');
-  await kolab.db.query(`insert into oauth_grant(id, client_id, actor_id, person_id, scope, expires_at) values ($1, 'app', 'bo', 'bo', 'konjir', now() + interval '1 day')`, ['g'.repeat(22)]);
-  await kolab.db.query(`update push_device set grant_id = $1`, ['g'.repeat(22)]);
   await kolab.sendMessage(ann, 'bo', 'while signed in');
   expect((await pushed()).messages.length).toBe(1);
-  await kolab.db.query(`update oauth_grant set revoked_at = now(), revoked_by = 'bo'`);
+  // The grant's session ended, the grant itself still live: nothing.
+  const grant = (await kolab.db.query<{ grant_id: string }>(`select grant_id from push_device`)).rows[0].grant_id;
+  await kolab.db.query(`update session set ended_at = now(), ended_by = 'bo' where grant_id = $1 and ended_at is null`, [grant]);
+  await kolab.sendMessage(ann, 'bo', 'with no session');
+  expect((await pushed()).messages).toStrictEqual([]);
+  // Lapsed.
+  await kolab.db.query(`update session set ended_at = null, ended_by = null where id = $1`, [signIns.bo.session]);
+  await kolab.sendMessage(ann, 'bo', 'open again');
+  expect((await pushed()).messages.length).toBe(1);
+  await kolab.db.query(`update oauth_grant set expires_at = now() - interval '1 second' where id = $1`, [grant]);
+  await kolab.sendMessage(ann, 'bo', 'after it lapsed');
+  expect((await pushed()).messages).toStrictEqual([]);
+  // Revoked, by signing out.
+  await kolab.db.query(`update oauth_grant set expires_at = now() + interval '1 day' where id = $1`, [grant]);
+  expect(await kolab.revokeToken(signIns.bo.refresh)).toBe(true);
   await kolab.sendMessage(ann, 'bo', 'after signing out');
   expect((await pushed()).messages).toStrictEqual([]);
-  await kolab.db.query(`update oauth_grant set revoked_at = null, revoked_by = null, expires_at = now() - interval '1 second'`);
-  await kolab.sendMessage(ann, 'bo', 'after it lapsed');
+  // A device with no sign-in at all, as one from before only the app could register, is never pushed to.
+  await kolab.db.query(`update push_device set grant_id = null`);
+  await kolab.sendMessage(ann, 'bo', 'no sign-in');
   expect((await pushed()).messages).toStrictEqual([]);
 });
 
+test('only konnect\'s app\'s sign-in registers a device, unregisters one or sets prefs: a hosted client\'s, the CLI\'s and a hand-issued session are refused; a second token from the same sign-in evicts the first', async () => {
+  const { kolab, ann, bo, phone, pushed } = await hub();
+  // A hosted MCP client signed in as Bo himself, and his CLI on loopback, and a hand-issued session.
+  const signedIn = async (redirectUri: string, scope?: string) => {
+    const client = (await kolab.registerClient({ name: 'Some client', redirectUris: [redirectUri] })).id;
+    const verifier = randomBytes(32).toString('base64url');
+    const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri, codeChallenge: createHash('sha256').update(verifier).digest('base64url'), ...(scope ? { scope } : {}) });
+    const { csrf } = await kolab.identifyAuthorization(binding, state, 'bo');
+    const { code } = scope
+      ? await kolab.consentPerson(binding, csrf, { kolab: 'hub' })
+      : await kolab.consent(binding, csrf, { as: { kind: 'self' }, kolab: 'hub', role: 'product' });
+    return (await kolab.exchangeCode({ code, clientId: client, redirectUri, codeVerifier: verifier })).accessToken;
+  };
+  const hosted = await signedIn('https://app.example/cb');
+  const cli = await signedIn('http://127.0.0.1:9/cb', 'konjir choose:kolab');
+  await kolab.addActor('dee');
+  await kolab.grant('hub', 'dee', 'write');
+  const hand = await kolab.openSession('dee', 'product', { kolab: 'hub' });
+  for (const [who, s, why] of [['hosted', hosted, /registering a device for push is for konnect's own app only/], ['cli', cli, /is for konnect's own app only/], ['hand', hand, /this session is no sign-in through an app/]] as const) {
+    expect([who, await rejection(kolab.registerPushDevice(s, token(who), 'ios'))]).toStrictEqual([who, expect.stringMatching(why)]);
+    expect([who, await rejection(kolab.unregisterPushDevice(s, token(who)))]).toStrictEqual([who, expect.stringMatching(/is for konnect's own app|no sign-in through an app/)]);
+    expect([who, await rejection(kolab.setNotificationPrefs(s, { level: 'all' }))]).toStrictEqual([who, expect.stringMatching(/is for konnect's own app|no sign-in through an app/)]);
+    expect([who, await rejection(kolab.notificationPrefs(s))]).toStrictEqual([who, expect.stringMatching(/is for konnect's own app|no sign-in through an app/)]);
+  }
+  expect((await kolab.db.query(`select 1 from push_device`)).rows).toStrictEqual([]);
+
+  // One device per sign-in: an intruder's token named from Bo's grant is evicted when the app registers its own again at launch.
+  await kolab.registerPushDevice(bo, token('intruder'), 'ios');
+  await kolab.registerPushDevice(bo, token('real'), 'ios');
+  expect((await kolab.db.query<{ token: string }>(`select token from push_device order by token`)).rows.map((r) => r.token)).toStrictEqual([token('real')]);
+  // Another phone of his, its own sign-in, keeps its own.
+  await kolab.registerPushDevice(await phone('bo'), token('tablet'), 'android');
+  await kolab.sendMessage(ann, 'bo', 'to both');
+  expect((await pushed()).messages.map((m) => m.to).sort()).toStrictEqual([token('real'), token('tablet')]);
+});
+
 test('a device Expo says is no longer registered is forgotten; other refusals are logged and not retried', async () => {
-  const { kolab, ann, bo, cy, pushed } = await hub({
+  const { kolab, ann, bo, cy, phone, pushed } = await hub({
     answer: (m) => (m.to === token('gone') ? { ok: false, unregistered: true, error: 'DeviceNotRegistered' }
       : m.to === token('big') ? { ok: false, unregistered: false, error: 'MessageTooBig' } : { ok: true }),
   });
   await kolab.registerPushDevice(bo, token('gone'), 'ios');
-  await kolab.registerPushDevice(bo, token('ok'), 'ios');
+  await kolab.registerPushDevice(await phone('bo'), token('ok'), 'ios');
   await kolab.registerPushDevice(cy, token('big'), 'ios');
   await kolab.setNotificationPrefs(cy, { level: 'all' });
   await kolab.sendChannelMessage(ann, 'general', 'hi', { mentions: ['bo'] });
@@ -366,8 +421,8 @@ test(`pushes go ${PUSH_BATCH} at a time; when the service fails, the job is retr
   for (const id of people) {
     await kolab.addActor(id);
     await kolab.grant('hub', id, 'read');
-    const s = await kolab.openSession(id, 'product', { kolab: 'hub' });
-    for (let d = 0; d < MAX_PUSH_DEVICES; d++) await kolab.registerPushDevice(s, token(`${id}-${d}`), 'ios');
+    // One device for each sign-in: a phone each.
+    for (let d = 0; d < MAX_PUSH_DEVICES; d++) await kolab.registerPushDevice((await appSignIn(kolab, id, 'hub')).access, token(`${id}-${d}`), 'ios');
   }
   let failNext = false;
   kolab.push.send = async (messages) => {

@@ -620,10 +620,13 @@ const LIVE_SESSION = `s.ended_at is null and (s.token_key = $1 or (s.token_key i
  */
 /**
  * Whether the push device `d`, left joined to the sign-in it was registered from as `dg`, may be
- * pushed to (0058): one registered from a hand-issued session always, one from a sign-in only while
- * that sign-in is neither revoked nor lapsed, so signing out of a team on the phone stops its pushes.
+ * pushed to (0058): only while that sign-in, konnect's app's (registerPushDevice), is neither
+ * revoked nor lapsed and has an open session, so signing out on the phone, or a sign-in left with
+ * no session, stops its pushes. A device with no sign-in (one registered before only the app's
+ * could) is never pushed to.
  */
-const LIVE_DEVICE = `(d.grant_id is null or (dg.revoked_at is null and dg.expires_at > now()))`;
+const LIVE_DEVICE = `(dg.id is not null and dg.revoked_at is null and dg.expires_at > now()
+       and exists (select 1 from session ds where ds.grant_id = dg.id and ds.ended_at is null))`;
 
 const OPEN_SESSION = `s.ended_at is null and (g.id is null and (s.expires_at is null or s.expires_at > now())
        or g.id is not null and g.revoked_at is null and g.expires_at > now())`;
@@ -2967,7 +2970,9 @@ export class Kolab {
   /**
    * Refreshes a grant (RFC 6749 §6): a new access token for its session, and a new refresh token
    * in place of the one used (rotation). The session keeps its id, kolab and role; its access is
-   * checked again, and one that can no longer reach its kolab ends. A refresh token used once
+   * checked again, and one that can no longer reach its kolab ends: konnect's app's sign-in then
+   * moves to another of the person's teams and is renewed there (moveAppGrantsIn), or is revoked
+   * when none is left. It takes the access lock first, as revokeGrant and switchTeam do. A refresh token used once
    * before, past refreshGraceS, is a replay: the grant is revoked and its session ends (D41).
    */
   async refreshGrant(p: { refreshToken: string; clientId: string }): Promise<OAuthTokens> {
@@ -2984,13 +2989,17 @@ export class Kolab {
       if (!t || t.client_id !== p.clientId) return undefined;
       if (t.used_long_ago) { replayed = t.grant_id; return undefined; }
       if (t.dead) return undefined;
-      const s = (await tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role }>(
-        `select id, actor_id, kolab_id, active_role from session where grant_id = $1 and ended_at is null for update`, [t.grant_id])).rows[0];
+      const open = () => tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role }>(
+        `select id, actor_id, kolab_id, active_role from session where grant_id = $1 and ended_at is null for update`, [t.grant_id]);
+      let s = (await open()).rows[0];
       if (!s) return undefined;
       if (!(await accessIn(tx, s.actor_id, s.kolab_id)).level) {
         await tx.query(`update session set ended_at = now(), ended_by = $2 where id = $1`, [s.id, SYSTEM_ACTOR]);
         await signal({ session: 'ended', id: s.id });
-        return 'unreachable' as const;
+        // konnect's app's sign-in moves to another of the person's teams (moveAppGrantsIn), and this refresh renews it there.
+        await this.moveAppGrantsIn(tx, [s.id], SYSTEM_ACTOR);
+        s = (await open()).rows[0];
+        if (!s) return 'unreachable' as const;
       }
       await tx.query(`update oauth_refresh_token set used_at = now() where key = $1`, [key]);
       await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
@@ -3038,6 +3047,9 @@ export class Kolab {
    */
   private async revokeGrant(grantId: string, by: Doer): Promise<void> {
     await this.inTransaction(async (tx, signal) => {
+      // The access lock first, as refreshGrant, switchTeam and every change of access take it, so a
+      // revocation is serialized with them and never takes the grant's and its session's rows in another order.
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
       await tx.query(`update oauth_grant set revoked_by = case when revoked_at is null then $2 else revoked_by end, revoked_at = coalesce(revoked_at, now()) where id = $1`, [grantId, by]);
       for (const { id, actor_id } of (await tx.query<{ id: string; actor_id: string }>(`update session set ended_at = now(), ended_by = $2 where grant_id = $1 and ended_at is null returning id, actor_id`, [grantId, by])).rows) {
         await signal({ session: 'ended', id });
@@ -3724,6 +3736,8 @@ export class Kolab {
           and (s.actor_id = $2 or s.actor_id in (select id from actor where owner_id = $2 and kind = 'agent'))
        returning s.id`, [kolab, person, by])).rows;
     for (const { id } of ended) await signal({ session: 'ended', id });
+    // konnect's app's sign-in in this kolab moves to another of the person's teams, or is revoked with none left.
+    await this.moveAppGrantsIn(tx, ended.map((r) => r.id), by);
     return { agents, ended: ended.length };
   }
 
@@ -3831,6 +3845,17 @@ export class Kolab {
       if (!(await ownsKolab(tx, by, k))) throw new AccessError(`only the owner of kolab ${k} can erase it`);
       if ((await tx.query(`select 1 from node where kolab_id = $1 limit 1`, [k])).rows.length) throw new TenancyError(keep);
       await tx.query(`select set_config('kj.erasing', $1, true)`, [k]);
+      // konnect's app's sign-ins here move to another of their person's teams first (moveAppGrantsIn),
+      // as a removal moves them; one with none left is revoked there. Then nothing below reaches them.
+      const here = (await tx.query<{ id: string; redirect_uris: string[] | null }>(
+        `select s.id, c.redirect_uris from session s join actor a on a.id = s.actor_id and a.kind = 'person'
+           join oauth_grant g on g.id = s.grant_id and g.revoked_at is null and g.expires_at > now() join oauth_client c on c.id = g.client_id
+          where s.kolab_id = $1 and s.ended_at is null`, [k])).rows.filter((r) => r.redirect_uris?.length && r.redirect_uris.every(nativeRedirect)).map((r) => r.id);
+      if (here.length) {
+        await tx.query(`update session set ended_at = now(), ended_by = $2 where id = any($1::text[])`, [here, by]);
+        for (const id of here) await signal({ session: 'ended', id });
+        await this.moveAppGrantsIn(tx, here, by, k);
+      }
       // The sign-ins whose sessions are here, and those that began here (a grant's scope names the
       // kolab it began in) with no live session elsewhere now: a session switched to another kolab
       // keeps its grant, and its person stays signed in there.
@@ -4084,11 +4109,13 @@ export class Kolab {
    * it), whether the session works there now, and their own inbox there (inboxCounts); and the
    * invitations waiting for them, oldest first. Every count is of the person's own unread, by their
    * own id, in a kolab they are a member of, so it tells nothing of any other kolab, nor of anyone
-   * else's inbox. Refused to an agent.
+   * else's inbox. Refused to an agent, and to any sign-in but konnect's app's (appSession).
    */
   async myTeams(sessionId: string): Promise<MyTeams> {
     const s = await this.session(sessionId);
     if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person lists their teams, from their own session`);
+    // Every team's unread is the app's alone to see, as the switch is.
+    await this.appSession(this.db, sessionId, { does: 'lists their teams', doing: 'listing your teams', instead: 'sign in with konnect\'s app' });
     const { invitations, kolabs } = await this.chooseOptions(s.actor_id);
     const teams: MyTeam[] = [];
     for (const k of kolabs) {
@@ -4232,6 +4259,41 @@ export class Kolab {
     if (plan.kind === 'refused') throw new TenancyError(plan.refused);
     await this.makeOwnKolab(s.actor_id, name, name);
     return { kolab: name, role: s.active_role };
+  }
+
+  /**
+   * In `tx`, under the access lock, konnect's app's sign-ins whose sessions just ended because their
+   * person can no longer work in that kolab (removed, left, unreachable, erased, archived): each that
+   * is still live and has no other open session moves to another of the person's teams, as a switch
+   * moves it (switchTeam): the grant's scope names that team, and a new session opens on it there,
+   * in the same role, on the same machine, with an access token no one is given, so the app's next
+   * refresh lands there and its devices keep being pushed (LIVE_DEVICE). The ended session's end was
+   * signalled already, which closes the app's stream, so it refreshes. The team is the one they used
+   * last, or else the first by name (appTeamIn), never `leaving`. With none left, the grant is
+   * revoked, as signing out revokes it, so nothing goes on pushing to a sign-in with no session.
+   * Other clients' grants, and agents', are left as they were.
+   */
+  private async moveAppGrantsIn(tx: Q, ended: string[], by: Doer, leaving?: string): Promise<void> {
+    if (!ended.length) return;
+    const rows = (await tx.query<{ actor_id: string; kolab_id: string; active_role: Role; grant_id: string; machine_key: string; place: string | null; redirect_uris: string[] | null }>(
+      `select distinct on (s.grant_id) s.actor_id, s.kolab_id, s.active_role, s.grant_id, s.machine_key, s.place, c.redirect_uris
+         from session s join actor a on a.id = s.actor_id and a.kind = 'person'
+         join oauth_grant g on g.id = s.grant_id and g.revoked_at is null and g.expires_at > now()
+         join oauth_client c on c.id = g.client_id
+        where s.id = any($1::text[]) and not exists (select 1 from session o where o.grant_id = s.grant_id and o.ended_at is null)
+        order by s.grant_id, s.ended_at desc`, [ended])).rows;
+    for (const r of rows) {
+      if (!r.redirect_uris?.length || !r.redirect_uris.every(nativeRedirect)) continue;
+      const to = await appTeamIn(tx, r.actor_id, [r.kolab_id, ...(leaving ? [leaving] : [])]);
+      if (!to) {
+        await tx.query(`update oauth_grant set revoked_at = now(), revoked_by = $2 where id = $1 and revoked_at is null`, [r.grant_id, by]);
+        continue;
+      }
+      await tx.query(`update oauth_grant set scope = $2 where id = $1`, [r.grant_id, grantedScope(to, r.active_role)]);
+      await insertSession(tx, newSessionToken(), {
+        actor: r.actor_id, role: r.active_role, kolab: to, machine: r.machine_key, place: r.place, grant: r.grant_id, ttlS: this.oauth.accessTtlS, by,
+      });
+    }
   }
 
   // ---- who holds access: a kolab's admins see it and change direct grants (W3.6, API8) ----
@@ -4609,7 +4671,9 @@ export class Kolab {
       const holders = await archiveHoldersOf(tx, kind, name, kind === 'kolab' ? [name] : kolabs);
       const catchUps = await this.reconcileAccessIn(tx, signal, holders);
       if (!archive || catchUps.length) await this.notifyWork(tx);   // every process's worker: the jobs it restores are due again
-      const ended = await endUnreachableIn(tx, signal, by);
+      const endedIds = await endUnreachableIn(tx, signal, by);
+      await this.moveAppGrantsIn(tx, endedIds, by);
+      const ended = endedIds.length;
       await this.releaseLostWorkIn(tx, signal);
       return { kolabs, agents, ended, catchUps };
     });
@@ -5000,18 +5064,7 @@ export class Kolab {
    * one kj_access per kolab the actor is tied to, not per kolab in Konjir.
    */
   async reachable(actorId: string): Promise<string[]> {
-    return (await this.db.query<{ id: string }>(
-      `with recursive teams(id) as (
-         select team_id from team_member where user_id = $1
-         union
-         select t.parent_id from team t join teams on t.id = teams.id where t.parent_id is not null
-       ), candidates(id) as (
-         select k.id from kolab k where k.owner_id = $1
-         union select k.id from kolab k join org_member m on m.org_id = k.owner_id and m.user_id = $1
-                where m.role = 'owner' or k.base_permission is not null
-         union select g.kolab_id from kolab_grant g where g.user_id = $1 or g.agent_id = $1 or g.team_id in (select id from teams)
-       )
-       select c.id from candidates c where (select a.rank from kj_access($1, c.id) a) >= 1 order by c.id`, [actorId])).rows.map((r) => r.id);
+    return reachableIn(this.db, actorId);
   }
 
   /**
@@ -5030,7 +5083,9 @@ export class Kolab {
       // Links and forks across kolabs that they hold are marked, or settle, as access changes (LNK8).
       const catchUps = await this.reconcileAccessIn(tx, signal, holders);
       if (catchUps.length) await this.notifyWork(tx);
-      const ended = await endUnreachableIn(tx, signal, by);
+      const endedIds = await endUnreachableIn(tx, signal, by);
+      await this.moveAppGrantsIn(tx, endedIds, by);
+      const ended = endedIds.length;
       await this.releaseLostWorkIn(tx, signal);
       return { ended, catchUps };
     });
@@ -5050,7 +5105,9 @@ export class Kolab {
       const catchUps = await this.reconcileAccessIn(tx, signal, holders);
       if (catchUps.length) await this.notifyWork(tx);
       // Kolab finds it, after a change made elsewhere: Kolab ends the sessions (W2.20).
-      const ended = await endUnreachableIn(tx, signal, SYSTEM_ACTOR);
+      const endedIds = await endUnreachableIn(tx, signal, SYSTEM_ACTOR);
+      await this.moveAppGrantsIn(tx, endedIds, SYSTEM_ACTOR);
+      const ended = endedIds.length;
       await this.releaseLostWorkIn(tx, signal);
       return { ended, catchUps };
     });
@@ -10451,8 +10508,9 @@ export class Kolab {
     const names = new Set(members.map((h) => h.id));
     const sorted = members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).filter((h) => after === undefined || h.id > after);
     const { rows, next } = pageOf(sorted.slice(0, size + 1), size, list, (h) => [h.id]);
-    // The person behind each shown: an agent's owner, whether or not the owner is a member here.
-    const behind = (h: { id: string; kind: ActorKind; owner_id: string | null }) => (h.kind === 'agent' ? h.owner_id : h.id);
+    // The person behind each shown: an agent's owner only when the owner is a member here, as `owner`
+    // names them, so no login says who owns an agent whose owner this kolab doesn't show.
+    const behind = (h: { id: string; kind: ActorKind; owner_id: string | null }) => (h.kind === 'agent' ? (h.owner_id !== null && names.has(h.owner_id) ? h.owner_id : null) : h.id);
     const logins = new Map((await this.db.query<{ actor_id: string; login: string }>(
       `select actor_id, login from identity where provider = $1 and actor_id = any($2::text[])`,
       [GITHUB_PROVIDER, [...new Set(rows.map(behind).filter((x): x is string => x !== null))]])).rows.map((r) => [r.actor_id, r.login]));
@@ -11136,20 +11194,25 @@ export class Kolab {
   /**
    * Registers the device of the session's person for push (konjir_register_push_device), by its
    * Expo push token and platform, from whichever of their teams the session is in: the device is the
-   * person's, and is pushed messages from every team they are a member of. Idempotent, renewing when
-   * it was last seen, and noting the sign-in it came from, so pushes stop once that sign-in is
-   * revoked or lapses (a sign-in moved to another team keeps its grant, and so its device). A token
-   * another person registered (the same phone, signed in as someone else) moves to the caller. A
-   * person keeps at most MAX_PUSH_DEVICES: one more forgets the least recently seen.
+   * person's, and is pushed messages from every team they are a member of. Only from konnect's own
+   * app's sign-in (appSession), never a hand-issued session or another client's. Idempotent,
+   * renewing when it was last seen, and noting the sign-in it came from, so pushes stop once that
+   * sign-in is revoked, lapses or has no open session (LIVE_DEVICE; a sign-in moved to another team
+   * keeps its grant, and so its device). One device for each sign-in: any other token registered
+   * from the same grant is forgotten. A token another person registered (the same phone, signed in
+   * as someone else) moves to the caller. A person keeps at most MAX_PUSH_DEVICES: one more forgets
+   * the least recently seen.
    */
   async registerPushDevice(sessionId: string, token: string, platform: string): Promise<{ device: PushDevice }> {
     if (typeof token !== 'string' || !EXPO_PUSH_TOKEN.test(token)) throw new LimitError('token is an Expo push token, ExponentPushToken[…], as the app\'s expo-notifications gives it');
     if (!(PUSH_PLATFORMS as readonly string[]).includes(platform)) throw new LimitError(`platform is one of ${PUSH_PLATFORMS.join(', ')}`);
     const s = await this.session(sessionId);
     this.personsOwn(s, 'registers a device for push');
+    // Only from konnect's app's own sign-in: a device then hears every team the person is in, so no
+    // other client's token, no hand-issued session and no stolen access token of another app's may name one.
+    const { grant_id: grant } = await this.appSession(this.db, sessionId, { does: 'registers a device for push', doing: 'registering a device for push', instead: 'sign in with konnect\'s app' });
     return this.inTransaction(async (tx) => {
       await this.pushMember(tx, s);
-      const grant = (await tx.query<{ grant_id: string | null }>(`select grant_id from session where id = $1`, [s.id])).rows[0]?.grant_id ?? null;
       await tx.exec('set local role kj_system');
       const row = (await tx.query<{ token: string; platform: PushPlatform; created_at: Date | string; last_seen_at: Date | string }>(
         `insert into push_device(token, actor_id, platform, grant_id) values ($1, $2, $3, $4)
@@ -11157,6 +11220,8 @@ export class Kolab {
            created_at = case when push_device.actor_id = excluded.actor_id then push_device.created_at else clock_timestamp() end,
            actor_id = excluded.actor_id, platform = excluded.platform, grant_id = excluded.grant_id, last_seen_at = clock_timestamp()
          returning token, platform, created_at, last_seen_at`, [token, s.actor_id, platform, grant])).rows[0];
+      // One device for each sign-in: the app registering its token again, as it does at launch, evicts any other token named from its grant.
+      await tx.query(`delete from push_device where grant_id = $1 and token <> $2`, [grant, token]);
       await tx.query(
         `delete from push_device where actor_id = $1 and token not in (
            select token from push_device where actor_id = $1 order by last_seen_at desc, token limit $2)`,
@@ -11175,6 +11240,7 @@ export class Kolab {
     if (typeof token !== 'string' || !token) throw new LimitError('token is the Expo push token the app registered');
     const s = await this.session(sessionId);
     this.personsOwn(s, 'unregisters a device');
+    await this.appSession(this.db, sessionId, { does: 'unregisters a device', doing: 'unregistering a device', instead: 'sign in with konnect\'s app' });
     return this.inTransaction(async (tx) => {
       // As Kolab's own login, not kj_system: the audit log is written by it alone (0024).
       const gone = (await tx.query<{ platform: PushPlatform }>(
@@ -11210,6 +11276,7 @@ export class Kolab {
     const names = asked === null ? null : [...new Set(asked.map(channelName))];
     const s = await this.session(sessionId);
     this.personsOwn(s, 'chooses what they are told of');
+    await this.appSession(this.db, sessionId, { does: 'chooses what they are told of', doing: 'choosing what you are told of', instead: 'sign in with konnect\'s app' });
     return this.inTransaction(async (tx) => {
       await this.pushMember(tx, s);
       let muted: string[] | null = null;
@@ -11234,6 +11301,7 @@ export class Kolab {
   async notificationPrefs(sessionId: string): Promise<NotificationPrefs> {
     const s = await this.session(sessionId);
     this.personsOwn(s, 'has notification prefs');
+    await this.appSession(this.db, sessionId, { does: 'has notification prefs', doing: 'notification prefs', instead: 'sign in with konnect\'s app' });
     if (!(await this.membersIn(this.db, s.kolab)).some((h) => h.id === s.actor_id)) {
       throw new AccessError(`${s.actor_id} is not a member of kolab ${s.kolab}: pushes are of its messages, for those who hold access there`);
     }
@@ -15670,13 +15738,50 @@ async function requireWithinCap(q: Q, agent: { id: string; owner?: string }, kol
  * Ends, in `tx`, every open session that can no longer reach its kolab, recording `by` as who
  * ended it: whoever made the change of access, or Kolab, when it finds one later. Returns how many.
  */
-async function endUnreachableIn(tx: Q, signal: Signal, by: Doer): Promise<number> {
+async function endUnreachableIn(tx: Q, signal: Signal, by: Doer): Promise<string[]> {
   const r = await tx.query<{ id: string }>(
     `update session s set ended_at = now(), ended_by = $1
       where s.ended_at is null and (select a.rank from kj_access(s.actor_id, s.kolab_id) a) = 0
      returning s.id`, [by]);
   for (const { id } of r.rows) await signal({ session: 'ended', id });   // the id is the sessionKey
-  return r.rows.length;
+  return r.rows.map((x) => x.id);
+}
+
+/**
+ * In `q`, the team a person's sign-in through konnect's app moves to (moveAppGrantsIn): of the kolabs
+ * they are a member of by their own access, live, and not `except`, the one they used last (their
+ * newest session there, on any machine), or else the first by name; undefined with none.
+ */
+async function appTeamIn(q: Q, person: string, except: string[]): Promise<string | undefined> {
+  const ids: string[] = [];
+  for (const id of await reachableIn(q, person)) {
+    if (except.includes(id)) continue;
+    if ((await q.query(`select 1 where ${archivedKolabSql('$1::text')}`, [id])).rows.length) continue;
+    if ((await ownerAccess(q, person, id)).level) ids.push(id);
+  }
+  if (!ids.length) return undefined;
+  const last = (await q.query<{ kolab_id: string }>(
+    `select kolab_id from session where actor_id = $1 and kolab_id = any($2::text[])
+      order by coalesce(last_used_at, started_at) desc, id limit 1`, [person, ids])).rows[0]?.kolab_id;
+  return last ?? ids.sort()[0];
+}
+
+/**
+ * In `q`, the kolabs an actor holds access to through ownership, membership or a grant (Kolab.reachable).
+ */
+async function reachableIn(q: Q, actorId: string): Promise<string[]> {
+  return (await q.query<{ id: string }>(
+    `with recursive teams(id) as (
+       select team_id from team_member where user_id = $1
+       union
+       select t.parent_id from team t join teams on t.id = teams.id where t.parent_id is not null
+     ), candidates(id) as (
+       select k.id from kolab k where k.owner_id = $1
+       union select k.id from kolab k join org_member m on m.org_id = k.owner_id and m.user_id = $1
+              where m.role = 'owner' or k.base_permission is not null
+       union select g.kolab_id from kolab_grant g where g.user_id = $1 or g.agent_id = $1 or g.team_id in (select id from teams)
+     )
+     select c.id from candidates c where (select a.rank from kj_access($1, c.id) a) >= 1 order by c.id`, [actorId])).rows.map((r) => r.id);
 }
 
 /**
