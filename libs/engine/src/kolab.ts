@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from 'node:crypto';
 import { resolve as resolvePath } from 'node:path';
 import { decodeTime, monotonicFactory, ulid } from 'ulid';
 import {
@@ -3001,7 +3001,10 @@ export class Kolab {
    * in place of the one used (rotation). The session keeps its id, kolab and role; its access is
    * checked again, and one that can no longer reach its kolab ends: konnect's app's sign-in then
    * moves to another of the person's teams and is renewed there (moveAppGrantsIn), or is revoked
-   * when none is left. It takes the access lock first, as revokeGrant and switchTeam do. A refresh token used once
+   * when none is left. It takes the access lock first, as revokeGrant and switchTeam do. The same
+   * refresh token presented again within refreshGraceS (its answer lost on the way) gets the same
+   * successor tokens, while they are still the grant's live ones (sameRefresh), and is otherwise
+   * refused without revoking anything; past refreshGraceS it is a replay, and revokes the grant. A refresh token used once
    * before, past refreshGraceS, is a replay: the grant is revoked and its session ends (D41).
    */
   async refreshGrant(p: { refreshToken: string; clientId: string }): Promise<OAuthTokens> {
@@ -3011,12 +3014,15 @@ export class Kolab {
     let replayed: string | null = null;
     const out = await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      const t = (await tx.query<{ grant_id: string; client_id: string; used_long_ago: boolean | null; dead: boolean; scope: string }>(
-        `select t.grant_id, g.client_id, (t.used_at is not null and t.used_at < now() - $2 * interval '1 second') as used_long_ago,
-                (t.used_at is not null or t.expires_at <= now() or g.revoked_at is not null or g.expires_at <= now()) as dead, g.scope
+      const t = (await tx.query<{ grant_id: string; client_id: string; used_long_ago: boolean | null; used: boolean; dead: boolean; scope: string; successor: string | null }>(
+        `select t.grant_id, g.client_id, (t.used_at is not null and t.used_at < now() - $2 * interval '1 second') as used_long_ago, t.used_at is not null as used,
+                (t.used_at is not null or t.expires_at <= now() or g.revoked_at is not null or g.expires_at <= now()) as dead, g.scope, t.successor
            from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where t.key = $1 for update of t`, [key, this.oauth.refreshGraceS])).rows[0];
       if (!t || t.client_id !== p.clientId) return undefined;
       if (t.used_long_ago) { replayed = t.grant_id; return undefined; }
+      // The same refresh again within the grace window: its answer was lost on the way (a phone's
+      // network), so the same successor tokens, while they are still the grant's live ones.
+      if (t.used) return t.successor ? this.sameRefresh(tx, p.refreshToken, t.grant_id, t.successor) : undefined;
       if (t.dead) return undefined;
       const open = () => tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role }>(
         `select id, actor_id, kolab_id, active_role from session where grant_id = $1 and ended_at is null for update`, [t.grant_id]);
@@ -3030,7 +3036,10 @@ export class Kolab {
         s = (await open()).rows[0];
         if (!s) return 'unreachable' as const;
       }
-      await tx.query(`update oauth_refresh_token set used_at = now() where key = $1`, [key]);
+      // Its successor, sealed with a key only this refresh token derives, for a retry of it (sameRefresh);
+      // the one before it is cleared, now that its successor, this token, is used.
+      await tx.query(`update oauth_refresh_token set successor = null where grant_id = $1 and successor is not null`, [t.grant_id]);
+      await tx.query(`update oauth_refresh_token set used_at = now(), successor = $2 where key = $1`, [key, sealSuccessor(p.refreshToken, { access, refresh })]);
       await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
         [sessionKey(refresh), t.grant_id, this.oauth.refreshTtlS]);
       await tx.query(`update oauth_grant set expires_at = now() + $2 * interval '1 second' where id = $1`, [t.grant_id, this.oauth.refreshTtlS]);
@@ -3043,6 +3052,27 @@ export class Kolab {
     if (out === 'unreachable') throw new OAuthGrantError('invalid_grant', 'this grant\'s actor can no longer reach its kolab; sign in again');
     if (!out) throw new OAuthGrantError('invalid_grant', 'that refresh token is unknown, expired, revoked, already used, or was issued to another client; sign in again');
     return out;
+  }
+
+  /**
+   * In `tx`, under the access lock, the answer a refresh already gave, for the same refresh token
+   * presented again within refreshGraceS (refreshGrant): its sealed successor opened with that token,
+   * returned only while it is still the grant's live answer: the successor refresh token unused and
+   * unexpired, the grant live, and its open session's access token the successor's, unexpired. Any
+   * other way, undefined, refused as before: a successor already used was received, and one a
+   * switch or another change replaced is no longer the grant's.
+   */
+  private async sameRefresh(tx: Q, refreshToken: string, grantId: string, sealed: string) {
+    const was = openSuccessor(refreshToken, sealed);
+    if (!was) return undefined;
+    const r = (await tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role; left_s: number }>(
+      `select s.id, s.actor_id, s.kolab_id, s.active_role, greatest(1, floor(extract(epoch from s.expires_at - now())))::int as left_s
+         from oauth_refresh_token n join oauth_grant g on g.id = n.grant_id join session s on s.grant_id = g.id and s.ended_at is null
+        where n.key = $1 and n.grant_id = $2 and n.used_at is null and n.expires_at > now()
+          and g.revoked_at is null and g.expires_at > now() and s.token_key = $3 and s.expires_at > now()`,
+      [sessionKey(was.refresh), grantId, sessionKey(was.access)])).rows[0];
+    if (!r) return undefined;
+    return { accessToken: was.access, refreshToken: was.refresh, expiresIn: r.left_s, scope: grantedScope(r.kolab_id, r.active_role), session: r.id, actor: r.actor_id, kolab: r.kolab_id, role: r.active_role };
   }
 
   /**
@@ -15183,6 +15213,31 @@ interface MarkInput {
 
 /** A new bearer token for a session: random, not a sortable ULID. An OAuth access token is one too (D55). */
 const newSessionToken = () => `kjs_${randomBytes(24).toString('base64url')}`;
+
+/**
+ * A refresh's successor tokens, sealed for its row (migration 0059) with a key only the refresh
+ * token itself derives (HKDF-SHA256, not the sha256 Kolab keeps as its key), AES-256-GCM: so the
+ * same refresh retried can be answered the same (refreshGrant), and the database alone opens nothing.
+ */
+function successorKey(refreshToken: string): Buffer {
+  return Buffer.from(hkdfSync('sha256', refreshToken, 'konjir-refresh-successor', 'kolab refresh successor v1', 32));
+}
+function sealSuccessor(refreshToken: string, t: { access: string; refresh: string }): string {
+  const iv = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', successorKey(refreshToken), iv);
+  const body = Buffer.concat([c.update(JSON.stringify(t), 'utf8'), c.final()]);
+  return `v1.${iv.toString('base64url')}.${body.toString('base64url')}.${c.getAuthTag().toString('base64url')}`;
+}
+function openSuccessor(refreshToken: string, sealed: string): { access: string; refresh: string } | undefined {
+  const [v, iv, body, tag] = sealed.split('.');
+  if (v !== 'v1' || !iv || !body || !tag) return undefined;
+  try {
+    const d = createDecipheriv('aes-256-gcm', successorKey(refreshToken), Buffer.from(iv, 'base64url'));
+    d.setAuthTag(Buffer.from(tag, 'base64url'));
+    const t = JSON.parse(Buffer.concat([d.update(Buffer.from(body, 'base64url')), d.final()]).toString('utf8')) as { access?: unknown; refresh?: unknown };
+    return typeof t.access === 'string' && typeof t.refresh === 'string' ? { access: t.access, refresh: t.refresh } : undefined;
+  } catch { return undefined; }
+}
 
 /**
  * Inserts an open session for `token`. A hand-issued session's id is its token's key (P1). A
