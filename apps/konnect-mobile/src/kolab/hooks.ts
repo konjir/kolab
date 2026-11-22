@@ -41,6 +41,7 @@ export function useConversation(team: string, kind: ConversationKind, name: stri
   const api = useApi();
   return useInfiniteQuery({
     queryKey: [team, kind, name],
+    enabled: !!team,
     initialPageParam: undefined as string | undefined,
     queryFn: async ({ pageParam }) => {
       const k = await api(team);

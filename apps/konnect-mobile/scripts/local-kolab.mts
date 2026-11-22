@@ -74,6 +74,26 @@ for (const [name, who] of Object.entries(PEOPLE)) {
   await signInToTeam(url, 'hub', { path: files[name], intent: 'join', clientName: 'konnect mobile local', open: allow, log: () => undefined });
 }
 
+// Something to look at: two more channels, a few messages for Ann (unread, one mentioning her),
+// and an agent of Ann's that has spoken, past nobody's cap. Written as Bo and the agent, through
+// the engine, as their own sessions would.
+if (process.env.KONNECT_LOCAL_SEED !== '0') {
+  await kolab.addActor('ann-reviewer', { owner: 'ann', ...by });
+  await kolab.grant('hub', 'ann-reviewer', 'write', by);
+  const bo = await kolab.openSession('bo', 'engineer', { kolab: 'hub', ...by });
+  const agent = await kolab.openSession('ann-reviewer', 'engineer', { kolab: 'hub', ...by });
+  for (const c of ['design', 'releases']) await kolab.makeChannel(bo, c);
+  const hello = await kolab.sendChannelMessage(bo, 'general', 'Morning all. The phone app signs in now: try it on the simulator.');
+  await kolab.sendChannelMessage(agent, 'general', '**Review done** for `apps/konnect-mobile`:\n\n- sign-in: PKCE and a per-team client\n- refresh: one at a time per team\n\nNothing blocking.', { replyTo: hello.id });
+  await kolab.sendChannelMessage(bo, 'general', '@ann can you look at the composer next?', { mentions: ['ann'] });
+  await kolab.sendChannelMessage(bo, 'design', 'Daybreak and Predawn both read well on the sign-in screen.');
+  await kolab.sendMessage(bo, 'ann', 'Hi Ann, a DM from Bo. Reply from the phone?');
+  await kolab.sendMessage(bo, 'ann', 'And a second one, so there are two unread.');
+  await kolab.sendMessage(agent, 'ann', 'I finished the review. Want the details in #general or here?');
+  await kolab.endSession(bo, { signingOut: true });
+  await kolab.endSession(agent, { signingOut: true });
+}
+
 /** A person's access token, refreshed by the MCP SDK's rules when it is near its end. */
 const token = async (name: string) => {
   const login = new StoredLogin(url, { path: files[name] });
@@ -91,7 +111,8 @@ const handoff = createServer((req, res) => {
 });
 await new Promise<void>((resolve) => handoff.listen(port + 1, '127.0.0.1', resolve));
 
-console.log(`Kolab on ${url}: team hub, with ann and bo signed in (kept in ${here}).`);
+console.log(`Kolab on ${url}: team hub, with ann and bo signed in (kept in ${here}), and ann's agent ann-reviewer.`);
+console.log('Sign in from the app as Ann: Kolab\'s stub sign-in is Ann\'s, and "Sign in to hub" on its page.');
 console.log(`A dev build reads the URL and their tokens from http://127.0.0.1:${port + 1}/spike. Ctrl-C stops it.`);
 
 const stop = async () => { handoff.close(); await server.close(); await kolab.close(); rmSync(here, { recursive: true, force: true }); process.exit(0); };

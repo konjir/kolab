@@ -1,0 +1,36 @@
+# Unreads, a DM and a channel: what local-kolab seeds for Ann (two DMs from Bo, one from her agent,
+# a mention in #general), read and answered from the phone, then signed out. Against the local
+# Kolab, freshly started, with the app signed out, as sign-in.yaml.
+appId: ${APP_ID}
+tags: [local-kolab]
+---
+- tapOn: "Sign in with GitHub"
+- extendedWaitUntil:
+    visible: "Sign in to hub"
+    timeout: 30000
+- tapOn: "Sign in to hub"
+- extendedWaitUntil:
+    visible: "UNREADS"
+    timeout: 30000
+- assertVisible: "bo, 2 unread"
+- assertVisible: "#general.*unread"
+- tapOn: "bo, 2 unread"
+- extendedWaitUntil:
+    visible: ".*Hi Ann, a DM from Bo.*"
+    timeout: 20000
+- assertVisible: ".*And a second one.*"
+- tapOn:
+    id: "composer"
+- inputText: "Yes, from the phone."
+- tapOn:
+    id: "send"
+- extendedWaitUntil:
+    visible: ".*Yes, from the phone.*"
+    timeout: 20000
+- assertNotVisible: "Not sent.*"
+- tapOn: "Home"
+- tapOn: "#general.*"
+- extendedWaitUntil:
+    visible: ".*Review done.*"
+    timeout: 20000
+- assertVisible: ".*@ann can you look at the composer next.*"
