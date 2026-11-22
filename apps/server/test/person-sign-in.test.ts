@@ -276,18 +276,20 @@ test('konnect\'s own app, every redirect URI on its schemes, may sign the person
     return { status: r.status, body: await r.json() as Record<string, string> };
   };
 
-  // choose:kolab: the page, on "this device", may lead to the app's scheme; accepting the invitation signs in there.
+  // choose:kolab: the page, on "this device", may lead to the app's scheme. For a person with a team
+  // it is about who signed in alone (switch-team.test.ts), the invitation waiting taken in the app.
   const p = await page(base, idp, app, 'konjir choose:kolab', BOB, APP);
   expect(p.res.status).toBe(200);
   expect(p.res.headers.get('content-security-policy')).toContain(`form-action 'self' com.konjir.konnect:;`);
   expect(p.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>${APP}</code>`);
-  expect(buttons(p.html)).toStrictEqual(['pick=kolab:bobs', `pick=accept:${inv.id}`, `pick=decline:${inv.id}`, 'decision=deny']);
-  const done = await p.post({ pick: `accept:${inv.id}` });
+  expect(buttons(p.html)).toStrictEqual(['pick=continue', 'pick=other-account']);
+  expect(p.html).not.toContain(inv.id);
+  const done = await p.post({ pick: 'continue' });
   expect(done.res.status).toBe(303);
   expect(done.left!.toString()).toMatch(/^com\.konjir\.konnect:\/oauth\?code=kjc_[^&]+&state=st&iss=/);
   const code = done.left!.searchParams.get('code')!;
   const t = await exchange(code, APP);
-  expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:anns role:product']);
+  expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:bobs role:product']);
   expect((await kolab.sessionInfo(t.body.access_token)).actor).toBe('bob');
   // Replayed, the code is refused, and the grant it opened revoked.
   expect((await exchange(code, APP)).body.error).toBe('invalid_grant');

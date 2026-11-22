@@ -326,14 +326,10 @@ export interface ChooseView extends PersonView {
 }
 
 /**
- * The page konnect's own app's `choose:kolab` sign-in shows a person with teams (Kolab.appSignInKolab):
- * the one team it opens in, their only one or the one they worked in last, on one button.
+ * The page konnect's own app's `choose:kolab` sign-in shows a person with a team (signInApp): about
+ * who signed in alone, naming and choosing no team, which the app shows and changes itself.
  */
-export interface ContinueView extends PersonView {
-  kolab: { id: string; title: string; access: Access };
-  /** Whether it is their only team: otherwise it is the one they worked in last. */
-  only: boolean;
-}
+export type ContinueView = PersonView;
 
 /** A `team:<name>` sign-in's page: what allowing it does (TeamPlan). */
 export interface TeamView extends PersonView {
@@ -395,25 +391,22 @@ ${none}
 }
 
 /**
- * The page of konnect's own app's `choose:kolab` sign-in for a person with teams, and nothing else
- * to decide (ContinueView): who signed in, the app asking, as on every person's page (its name its
- * own say-so, a Konjir admin told what it can do), and the team it opens in, on one primary button,
- * `pick=kolab:<name>`, which signs in there as choosing it on the chooser does. *Choose another team*,
- * `pick=choose`, shows the chooser (choosePage) instead. Nothing leaves for the app until one is posted.
+ * The page of konnect's own app's `choose:kolab` sign-in for a person with a team (ContinueView): who
+ * signed in, and the app asking, as on every person's page (its name its own say-so, its redirect
+ * URI, a Konjir admin told what it can do), on one primary button, *Continue as @<login>*
+ * (`pick=continue`), and *Use a different GitHub account* (`pick=other-account`), which asks the
+ * identity provider again. It names and chooses no team: Continue opens the session where Kolab
+ * says (appSignInKolab), and the app moves it from there. Nothing leaves for the app until it is posted.
  */
 export function continuePage(v: ContinueView): string {
-  const k = v.kolab;
   return `<h1>Continue as <code>@${esc(v.login)}</code></h1>
 ${personIntro(v)}
 <form class="card" method="post" action="/oauth/consent">
 ${personAsks(v)}
 ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
-<dl class="locked">
-<dt>Team</dt><dd><code>${esc(k.id)}</code>${k.title && k.title !== k.id ? ` ${esc(k.title)}` : ''}<small>${v.only ? 'Your team' : 'The team you worked in last'}: you hold ${esc(describe(k.access))}. The app can move to your other teams from there.</small></dd>
-</dl>
 ${personHidden(v)}
-<div class="row"><button class="primary" type="submit" name="pick" value="kolab:${esc(k.id)}">Continue as @${esc(v.login)}</button></div>
-<p><button class="link" type="submit" name="pick" value="choose">Choose another team</button></p>
+<div class="row"><button class="primary" type="submit" name="pick" value="continue">Continue as @${esc(v.login)}</button></div>
+<p><button class="link" type="submit" name="pick" value="other-account">Use a different ${esc(v.provider)} account</button></p>
 </form>`;
 }
 

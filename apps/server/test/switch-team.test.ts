@@ -1,6 +1,6 @@
 // One sign-in, every team (Lee's instruction of 2026-11-21, konnect's app): over HTTP, with the stub
-// identity provider in GitHub's place. konnect's own app shows a person with teams one button, for
-// their only team or where they worked last, and every other client sees the page as before;
+// identity provider in GitHub's place. konnect's own app shows a person with a team a page about who
+// signed in alone, and takes invitations and new teams in the app; every other client sees its page as before;
 // konjir_list_my_teams lists the person's kolabs with their own unread there, as their answers count
 // it and nothing of any other kolab; konjir_switch_team moves the app's grant to another of them, its
 // session ended and a new one opened in one transaction, the new access token taken by a refresh.
@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import { sessionKey, type Kolab } from '@konjir/engine';
 import { closeAtEnd, openKolab, type TestKolab } from '@konjir/engine/testing';
-import { StubIdentity, startServer } from '../src/server.js';
+import { GitHubIdentity, StubIdentity, startServer } from '../src/server.js';
 
 const APP = 'com.konjir.konnect:/oauth';
 const CB = 'http://127.0.0.1:9/cb';
@@ -62,12 +62,14 @@ async function signIn(base: string, idp: StubIdentity, client: string, who: { su
   const u = new URL('/oauth/authorize', base);
   u.search = new URLSearchParams({ response_type: 'code', client_id: client, redirect_uri: opts.redirect ?? APP, state: 'st', code_challenge: s256(VERIFIER), code_challenge_method: 'S256', resource: `${base}/mcp`, scope: opts.scope ?? 'konjir choose:kolab' }).toString();
   const first = await browser.go(u);
-  const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(first.html)?.[1] ?? '';
-  const post = (fields: Record<string, string>, o: { from?: string } = {}) => browser.go('/oauth/consent', {
+  const field = (html: string, name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)?.[1] ?? '';
+  /** Sends the form of the page `html`, in this browser, with what a button adds. */
+  const postOn = (html: string, fields: Record<string, string>, o: { from?: string } = {}) => browser.go('/oauth/consent', {
     method: 'POST', headers: { origin: o.from ?? base, 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ csrf: field('csrf'), sign_in: field('sign_in'), ...fields }).toString(),
+    body: new URLSearchParams({ csrf: field(html, 'csrf'), sign_in: field(html, 'sign_in'), ...fields }).toString(),
   });
-  return { ...first, post };
+  const post = (fields: Record<string, string>, o: { from?: string } = {}) => postOn(first.html, fields, o);
+  return { ...first, post, postOn };
 }
 
 const tokenEndpoint = async (base: string, form: Record<string, string>) => {
@@ -82,9 +84,8 @@ const refresh = (base: string, client: string, refreshToken: string) =>
 /** The app's tokens, signed in through the app's redirect and exchanged. */
 async function appTokens(base: string, idp: StubIdentity, client: string, who: { subject: string; login: string }, scope?: string) {
   const s = await signIn(base, idp, client, who, { scope });
-  // The one-button page's button, or a team page's Allow.
-  const pick = /name="pick" value="(kolab:[^"]+)"/.exec(s.html)?.[1];
-  const left = (await s.post(pick ? { pick } : { decision: 'allow', shown: 'member' })).left!;
+  // The app's Continue, or a team page's Allow.
+  const left = (await s.post(s.html.includes('value="continue"') ? { pick: 'continue' } : { decision: 'allow', shown: 'member' })).left!;
   const t = await exchange(base, client, left.searchParams.get('code')!);
   if (t.status !== 200) throw new Error(JSON.stringify(t.body));
   return t.body;
@@ -164,79 +165,198 @@ async function world(kolab: TestKolab) {
   await kolab.grant('anns', 'dave', 'read');
 }
 
-/** The one-button page's title, and the team its button signs in to. */
-const offered = (html: string) => [/<title>([^<]*)<\/title>/.exec(html)?.[1], /<button class="primary" type="submit" name="pick" value="([^"]+)"/.exec(html)?.[1]];
+/** A page's title, and every button it offers, name=value. */
+const titleOf = (html: string) => /<title>([^<]*)<\/title>/.exec(html)?.[1];
+const buttons = (html: string) => [...html.matchAll(/<button[^>]*name="([^"]+)" value="([^"]+)"/g)].map((m) => `${m[1]}=${m[2]}`);
 
-test('konnect\'s app shows a person with teams one button, for their only team or where they worked last, and nothing reaches the app until it is pressed; several and none used, an invitation waiting, or none at all show the chooser as before', async () => {
+test('konnect\'s app shows a person with a team a page about who signed in alone, Continue on one button, naming and choosing no team; Continue opens where they worked last, or the first by name; an invitation waiting changes nothing; no team at all gets the chooser', async () => {
   const kolab = await openKolab();
   const { base, idp } = await serve(kolab);
-  for (const who of [ANN, BOB, CAROL]) await kolab.signInWith({ provider: 'stub', ...who });
+  for (const who of [ANN, BOB, CAROL, DAVE]) await kolab.signInWith({ provider: 'stub', ...who });
   await kolab.makeOwnKolab('bob', 'bobs', 'Bob\'s');
   const app = await register(base);
 
-  // One team: a page, not a redirect, naming it on one primary button, with the app's own name, and its scheme the form's only other target.
   const only = await signIn(base, idp, app, BOB);
   expect([only.res.status, only.left]).toStrictEqual([200, undefined]);
-  expect(offered(only.html)).toStrictEqual(['Continue as @bob · Kolab', 'kolab:bobs']);
+  expect(titleOf(only.html)).toBe('Continue as @bob · Kolab');
   expect(only.html).toContain('<h1>Continue as <code>@bob</code></h1>');
-  expect(only.html).toContain('<code>bobs</code> Bob&#39;s<small>Your team: you hold Admin.');
+  expect(only.html).toContain('Signed in with Stub as <code>bob</code>.');
   expect(only.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>${APP}</code>. Its name is what it calls itself`);
+  // One primary button and the other-account link, and nothing about any team.
+  expect(buttons(only.html)).toStrictEqual(['pick=continue', 'pick=other-account']);
   expect(only.html.match(/class="primary"/g)).toHaveLength(1);
-  expect(only.html).toContain('<button class="link" type="submit" name="pick" value="choose">Choose another team</button>');
+  expect(only.html).toContain('<button class="link" type="submit" name="pick" value="other-account">Use a different Stub account</button>');
+  for (const team of ['bobs', 'Bob&#39;s', 'kolab:', 'Team', 'team you worked in', 'Choose another', 'Your kolabs']) expect([team, only.html.includes(team)]).toStrictEqual([team, false]);
   expect(only.html).not.toContain('Konjir admin');
   expect(only.res.headers.get('content-security-policy')).toContain('form-action \'self\' com.konjir.konnect:;');
-  // No code is issued until the page's own form is posted: a form from anywhere else is refused, and nothing reaches the app.
-  const forged = await only.post({ pick: 'kolab:bobs' }, { from: 'https://evil.example' });
+  // No code until the page's own form is posted: a form from anywhere else is refused, and nothing reaches the app.
+  const forged = await only.post({ pick: 'continue' }, { from: 'https://evil.example' });
   expect([forged.res.status, forged.left]).toStrictEqual([403, undefined]);
-  const t = await exchange(base, app, (await only.post({ pick: 'kolab:bobs' })).left!.searchParams.get('code')!);
+  const done = await only.post({ pick: 'continue' });
+  expect(done.res.status).toBe(303);
+  expect(done.left!.toString()).toMatch(/^com\.konjir\.konnect:\/oauth\?code=kjc_[^&]+&state=st&iss=/);
+  const t = await exchange(base, app, done.left!.searchParams.get('code')!);
   expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:bobs role:product']);
   expect((await kolab.sessionInfo(t.body.access_token)).actor).toBe('bob');
+  // The same form again: used once is used.
+  expect((await only.post({ pick: 'continue' })).left).toBeUndefined();
 
-  // Two teams, the second never worked in: the one they worked in last, said so.
+  // A second team, never worked in: Continue still opens where they worked last.
   await kolab.makeOwnKolab('ann', 'anns', 'Ann\'s');
   await kolab.grant('anns', 'bob', 'read');
-  const last = await signIn(base, idp, app, BOB);
-  expect(offered(last.html)).toStrictEqual(['Continue as @bob · Kolab', 'kolab:bobs']);
-  expect(last.html).toContain('The team you worked in last: you hold Admin.');
-  // Choose another team: the chooser, for the same sign-in, and a choice there signs in as ever.
-  const chooser = await last.post({ pick: 'choose' });
-  expect([chooser.res.status, chooser.left]).toStrictEqual([200, undefined]);
-  expect(/<title>([^<]*)<\/title>/.exec(chooser.html)?.[1]).toBe('Choose where to sign in · Kolab');
-  expect(chooser.html).toContain('value="kolab:anns"');
-  expect((await exchange(base, app, (await last.post({ pick: 'kolab:anns' })).left!.searchParams.get('code')!)).body.scope).toBe('konjir kolab:anns role:product');
-  // That sign-in made anns the newest; a session of theirs in bobs, on any machine, makes bobs the newest again.
-  expect(offered((await signIn(base, idp, app, BOB)).html)[1]).toBe('kolab:anns');
-  await kolab.openSession('bob', 'product', { kolab: 'bobs' });
-  expect(offered((await signIn(base, idp, app, BOB)).html)[1]).toBe('kolab:bobs');
+  const continued = async (who: typeof BOB) => {
+    const p = await signIn(base, idp, app, who);
+    expect([who.login, buttons(p.html)]).toStrictEqual([who.login, ['pick=continue', 'pick=other-account']]);
+    return (await exchange(base, app, (await p.post({ pick: 'continue' })).left!.searchParams.get('code')!)).body.scope;
+  };
+  expect(await continued(BOB)).toBe('konjir kolab:bobs role:product');
+  // A session of theirs in anns, on any machine, makes anns the newest.
+  await kolab.openSession('bob', 'product', { kolab: 'anns' });
+  expect(await continued(BOB)).toBe('konjir kolab:anns role:product');
+  // Several teams, none ever used: no chooser, the first by name.
+  await kolab.makeOwnKolab('carol', 'carols', 'Carol\'s');
+  await kolab.makeOwnKolab('carol', 'aardvarks', 'Aardvarks');
+  expect(await continued(CAROL)).toBe('konjir kolab:aardvarks role:product');
+
+  // An invitation waiting: the same page, no chooser and no Accept; the app takes invitations itself.
+  const inCarols = await kolab.openSession('carol', 'product', { kolab: 'carols' });
+  await kolab.inviteAccounts(inCarols, ['bob', 'dave'], { provider: 'stub', find: async (login) => ({ subject: login === 'bob' ? '22' : '44', login, person: true }) });
+  const invited = await signIn(base, idp, app, BOB);
+  expect(titleOf(invited.html)).toBe('Continue as @bob · Kolab');
+  expect(buttons(invited.html)).toStrictEqual(['pick=continue', 'pick=other-account']);
+  expect(invited.html).not.toContain('carols');
+  expect(await kolab.access('bob', 'carols')).toMatchObject({ level: null });
 
   // A Konjir admin is told what the app can do, on this page too.
   await kolab.makeAdmin('bob');
   expect((await signIn(base, idp, app, BOB)).html).toContain('You are a Konjir admin: this app can run every admin verb as you.');
 
-  // Several teams and none used: the chooser.
-  await kolab.makeOwnKolab('carol', 'carols', 'Carol\'s');
-  await kolab.grant('carols', 'ann', 'read');
-  await kolab.makeOwnKolab('ann', 'anns-2', 'Ann\'s too');
-  const several = await signIn(base, idp, app, ANN);
-  expect(several.left).toBeUndefined();
-  expect(/<title>([^<]*)<\/title>/.exec(several.html)?.[1]).toBe('Choose where to sign in · Kolab');
+  // No team at all: the chooser, since a session must be in a kolab, with the invitation waiting to accept there.
+  const none = await signIn(base, idp, app, DAVE);
+  expect(titleOf(none.html)).toBe('Choose where to sign in · Kolab');
+  const [accept] = buttons(none.html).filter((b) => b.startsWith('pick=accept:'));
+  expect(accept).toBeTruthy();
+  const joined = await none.post({ pick: accept.slice('pick='.length) });
+  expect((await exchange(base, app, joined.left!.searchParams.get('code')!)).body.scope).toBe('konjir kolab:carols role:product');
+  // And with nothing at all, it says so, and closing it tells the app there was nothing to choose, as before.
+  const nothing = await signIn(base, idp, app, { subject: '55', login: 'eve' });
+  expect(nothing.html).toContain('you are a member of no kolab yet');
+  expect((await nothing.post({ decision: 'deny' })).left!.searchParams.get('error_description')).toMatch(/^nothing to sign in to/);
+});
 
-  // An invitation waiting: the chooser, where it is accepted or declined, with the person's kolabs.
-  const session = await kolab.openSession('carol', 'product', { kolab: 'carols' });
-  const { invited: [inv] } = await kolab.inviteAccounts(session, ['bob'], { provider: 'stub', find: async () => ({ subject: '22', login: 'bob', person: true }) });
-  const invited = await signIn(base, idp, app, BOB);
-  expect(invited.left).toBeUndefined();
-  expect(invited.html).toContain(`value="accept:${inv.id}"`);
-  const accepted = await invited.post({ pick: `accept:${inv.id}` });
-  expect((await exchange(base, app, accepted.left!.searchParams.get('code')!)).body.scope).toBe('konjir kolab:carols role:product');
-  // Accepted, nothing waits: one button again, for carols, where the sign-in just opened.
-  expect(offered((await signIn(base, idp, app, BOB)).html)).toStrictEqual(['Continue as @bob · Kolab', 'kolab:carols']);
+test('Use a different GitHub account forgets who signed in and asks the identity provider again with prompt=select_account, for the same sign-in: its client, PKCE and state, now for whoever signs in', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  await world(kolab);
+  const app = await register(base);
+  const p = await signIn(base, idp, app, BOB);
+  expect(titleOf(p.html)).toBe('Continue as @bob · Kolab');
+  expect(idp.prompts.at(-1)).toBeUndefined();
+  // From anywhere but the page, refused, and nothing restarts.
+  expect((await p.post({ pick: 'other-account' }, { from: 'https://evil.example' })).res.status).toBe(403);
+  // From the page: back to the provider, asked to let the person choose, and its answer is Ann.
+  idp.next(ANN);
+  const again = await p.post({ pick: 'other-account' });
+  expect(idp.prompts.at(-1)).toBe('select_account');
+  expect([again.res.status, again.left]).toStrictEqual([200, undefined]);
+  expect(titleOf(again.html)).toBe('Continue as @ann · Kolab');
+  expect(again.html).toContain('Signed in with Stub as <code>ann</code>.');
+  // Bob's form is no longer this sign-in's: Continue on it is refused, and nothing reaches the app.
+  const stale = await p.post({ pick: 'continue' });
+  expect([stale.res.status, stale.left]).toStrictEqual([400, undefined]);
+  // Ann's Continue: the code goes to the same redirect with the client's own state, and the client's verifier exchanges it, for Ann.
+  const done = await p.postOn(again.html, { pick: 'continue' });
+  expect(done.left!.searchParams.get('state')).toBe('st');
+  const t = await exchange(base, app, done.left!.searchParams.get('code')!);
+  expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:anns role:product']);
+  expect((await kolab.sessionInfo(t.body.access_token)).actor).toBe('ann');
 
-  // No team: the page says so, and closing it tells the app there was nothing to choose, as before.
-  const none = await signIn(base, idp, app, { subject: '55', login: 'eve' });
-  expect(none.left).toBeUndefined();
-  expect(none.html).toContain('you are a member of no kolab yet');
-  expect((await none.post({ decision: 'deny' })).left!.searchParams.get('error_description')).toMatch(/^nothing to sign in to/);
+  // GitHub is asked for its account picker only then, and the page's forms may lead to it.
+  const gh = new GitHubIdentity({ clientId: 'cid', clientSecret: 'secret' });
+  const plain = new URL(gh.authorizationUrl({ redirectUri: `${base}/cb`, state: 's', codeChallenge: 'c' }));
+  const picking = new URL(gh.authorizationUrl({ redirectUri: `${base}/cb`, state: 's', codeChallenge: 'c', prompt: 'select_account' }));
+  expect([plain.searchParams.get('prompt'), picking.searchParams.get('prompt')]).toStrictEqual([null, 'select_account']);
+  expect(gh.authorizationOrigin).toBe('https://github.com');
+});
+
+test('konjir_accept_invitation, konjir_decline_invitation and konjir_make_team take invitations and make teams in the app, as the sign-in page does, audited alike; refused to an agent and to any sign-in but the app\'s', async () => {
+  const kolab = await openKolab();
+  const { base, mcp, idp } = await serve(kolab);
+  await world(kolab);
+  const inCarols = await kolab.openSession('carol', 'product', { kolab: 'carols' });
+  const lookup = { provider: 'stub', find: async (login: string) => ({ subject: login === 'bob' ? '22' : '44', login, person: true }) };
+  await kolab.inviteAccounts(inCarols, ['bob', 'dave'], lookup);
+  await kolab.endSession(await kolab.openSession('bob', 'product', { kolab: 'bobs' }));
+  const app = await register(base);
+  const t = await appTokens(base, idp, app, BOB);
+  expect(t.scope).toBe('konjir kolab:bobs role:product');
+  const me = t.access_token;
+
+  // Accept: Bob is a member of carols now, his session still in bobs; the switch takes it there.
+  expect((await tool(mcp, me, 'konjir_accept_invitation', { kolab: 'carols' })).ok).toStrictEqual({ kolab: 'carols', role: 'product' });
+  expect(await kolab.access('bob', 'carols')).toStrictEqual({ level: 'read', layers: [] });
+  expect((await kolab.sessionInfo(me)).kolab).toBe('bobs');
+  const listed = (await tool(mcp, me, 'konjir_list_my_teams')).ok!;
+  expect([(listed.teams as { kolab: string }[]).map((x) => x.kolab), listed.invitations]).toStrictEqual([['anns', 'bobs', 'carols'], []]);
+  // Accepted once is accepted; and no invitation waits for a kolab nobody invited him to, whether or not it exists.
+  for (const k of ['carols', 'anns', 'nosuch', '']) {
+    expect([k, (await tool(mcp, me, 'konjir_accept_invitation', { kolab: k })).error]).toStrictEqual([k, expect.stringMatching(/^TenancyError: no invitation to a kolab [^:]*waits for you: konjir_list_my_teams lists those that do\./)]);
+  }
+  // The same grant and audit as Dave's Accept on the sign-in page (here through the CLI's chooser).
+  const cli = await register(base, [CB]);
+  const page = await signIn(base, idp, cli, DAVE, { redirect: CB });
+  const accept = buttons(page.html).find((b) => b.startsWith('pick=accept:'))!;
+  expect((await page.post({ pick: accept.slice('pick='.length) })).left!.searchParams.get('code')).toBeTruthy();
+  const audit = (await kolab.db.query<{ subject: string; action: string; kolab_id: string; done_by: string; detail: { level: string; layers: string[]; invitation: string } }>(
+    `select subject, action, kolab_id, done_by, detail from audit_event where kolab_id = 'carols' and subject in ('bob', 'dave') order by subject`)).rows;
+  expect(audit.map(({ detail: { invitation, ...d }, ...r }) => ({ ...r, detail: d, invitation: /^ivt_/.test(invitation) }))).toStrictEqual([
+    { subject: 'bob', action: 'grant.set', kolab_id: 'carols', done_by: 'bob', detail: { level: 'read', layers: [] }, invitation: true },
+    { subject: 'dave', action: 'grant.set', kolab_id: 'carols', done_by: 'dave', detail: { level: 'read', layers: [] }, invitation: true },
+  ]);
+  const settled = (await kolab.db.query<{ accepted_by: string }>(`select accepted_by from kolab_invitation where kolab_id = 'carols' and accepted_at is not null order by accepted_by`)).rows;
+  expect(settled.map((r) => r.accepted_by)).toStrictEqual(['bob', 'dave']);
+
+  // Decline: as Decline on the page, by him; then it is neither listed nor acceptable.
+  await kolab.makeOwnKolab('carol', 'carols-2', 'Carol\'s too');
+  await kolab.endSession(inCarols);
+  const inCarols2 = await kolab.openSession('carol', 'product', { kolab: 'carols-2' });
+  await kolab.inviteAccounts(inCarols2, ['bob'], lookup);
+  expect((await tool(mcp, me, 'konjir_list_my_teams')).ok!.invitations).toMatchObject([{ kolab: 'carols-2', invited_by: 'carol' }]);
+  expect((await tool(mcp, me, 'konjir_decline_invitation', { kolab: 'carols-2' })).ok).toStrictEqual({ declined: true });
+  expect((await kolab.db.query(`select 1 from kolab_invitation where kolab_id = 'carols-2' and declined_by = 'bob' and declined_at is not null`)).rows).toHaveLength(1);
+  expect((await tool(mcp, me, 'konjir_list_my_teams')).ok!.invitations).toStrictEqual([]);
+  expect((await tool(mcp, me, 'konjir_decline_invitation', { kolab: 'carols-2' })).error).toMatch(/no invitation to a kolab carols-2 waits for you/);
+  expect((await tool(mcp, me, 'konjir_accept_invitation', { kolab: 'carols-2' })).error).toMatch(/no invitation to a kolab carols-2 waits for you/);
+
+  // Make: his, private, no agent, the session still where it was.
+  expect((await tool(mcp, me, 'konjir_make_team', { name: 'acme' })).ok).toStrictEqual({ kolab: 'acme', role: 'product' });
+  expect(await kolab.kolabRow('acme')).toMatchObject({ owner: 'bob', visibility: 'private' });
+  expect(await kolab.listActors({ owner: 'bob' })).toStrictEqual([]);
+  expect((await kolab.sessionInfo(me)).kolab).toBe('bobs');
+  // As team:<name> intent:create refuses: taken, his own too, with a free name; reserved; not a name.
+  expect((await tool(mcp, me, 'konjir_make_team', { name: 'acme' })).error).toMatch(/the kolab name acme is taken, by a kolab you are a member of.*The name acme-bob is free\./);
+  expect((await tool(mcp, me, 'konjir_make_team', { name: 'carols' })).error).toMatch(/the kolab name carols is taken/);
+  expect((await tool(mcp, me, 'konjir_make_team', { name: 'konjir-x' })).error).toMatch(/reserved/);
+  expect((await tool(mcp, me, 'konjir_make_team', { name: 'Bad Name' })).error).toMatch(/can't be a kolab's name/);
+
+  // Refused to an agent, a hand-issued session and the CLI's sign-in, each saying so, and nothing changes.
+  await kolab.addOwnAgent('bob', 'bot');
+  await kolab.grant('bobs', 'bob-bot', 'read');
+  const agent = await kolab.openSession('bob-bot', 'product', { kolab: 'bobs' });
+  const hand = await kolab.openSession('bob', 'product', { kolab: 'bobs' });
+  const bobCli = await exchange(base, cli, (await (await signIn(base, idp, cli, BOB, { redirect: CB })).post({ pick: 'kolab:bobs' })).left!.searchParams.get('code')!, CB);
+  await kolab.makeOwnKolab('carol', 'carols-3', 'Carol\'s third');
+  await kolab.endSession(inCarols2);
+  await kolab.inviteAccounts(await kolab.openSession('carol', 'product', { kolab: 'carols-3' }), ['bob'], lookup);
+  const calls: [string, Record<string, string>][] = [['konjir_accept_invitation', { kolab: 'carols-3' }], ['konjir_decline_invitation', { kolab: 'carols-3' }], ['konjir_make_team', { name: 'other' }]];
+  for (const [name, args] of calls) {
+    expect([name, (await tool(mcp, agent, name, args)).error]).toStrictEqual([name, expect.stringMatching(/bob-bot is an agent: only a person/)]);
+    expect([name, (await tool(mcp, hand, name, args)).error]).toStrictEqual([name, expect.stringMatching(/this session is no sign-in through an app/)]);
+    expect([name, (await tool(mcp, bobCli.body.access_token, name, args)).error]).toStrictEqual([name, expect.stringMatching(/is for konnect's own app only/)]);
+  }
+  expect(await kolab.access('bob', 'carols-3')).toMatchObject({ level: null });
+  expect(await kolab.kolabRow('other')).toBeUndefined();
+  expect((await tool(mcp, me, 'konjir_list_my_teams')).ok!.invitations).toMatchObject([{ kolab: 'carols-3' }]);
 });
 
 test('every other client sees the page as before: konnect\'s CLI on loopback, and the app itself naming its team', async () => {

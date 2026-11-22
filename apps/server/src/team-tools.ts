@@ -9,11 +9,14 @@ import { KOLAB } from './tokens.js';
 
 const listMyTeams = args({});
 const switchTeam = args({ kolab: z.string().describe('The kolab to work in now: one of yours, as konjir_list_my_teams lists them') });
+const invitation = args({ kolab: z.string().describe('The kolab whose invitation it is, as konjir_list_my_teams lists your invitations') });
+const makeTeam = args({ name: z.string().describe('The new kolab\'s name, unique across Konjir: up to 40 lowercase letters, digits and \'-\', starting with a letter or digit') });
 
 /**
  * A person's teams from one sign-in (Lee's instruction of 2026-11-21, konnect's app): the person
- * signs in once, with GitHub, and moves between the kolabs they are a member of. Each is refused to
- * an agent's session.
+ * signs in once, with GitHub, and moves between the kolabs they are a member of, takes invitations
+ * and makes teams, all in the app. Each is refused to an agent's session; all but the list are
+ * refused to any sign-in but the app's.
  */
 @Injectable()
 export class TeamTools {
@@ -36,5 +39,32 @@ export class TeamTools {
   })
   switchTeam({ kolab }: z.infer<typeof switchTeam>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.switchTeam(s, kolab));
+  }
+
+  @McpTool({
+    name: 'konjir_accept_invitation',
+    description: 'For a person\'s own session in konnect\'s app only: accept the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Accept on Kolab\'s sign-in page does: you get the access it gives (Read, enough to send and read messages and to bring your own agents), and your unread there starts now. This sign-in stays where it is: konjir_switch_team moves it there. A kolab with no invitation waiting for you is refused, and so is any other app\'s sign-in, which accepts on the sign-in page. Returns the kolab and the role you would work in there.',
+    schema: invitation,
+  })
+  acceptInvitation({ kolab }: z.infer<typeof invitation>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.acceptTeamInvitation(s, kolab));
+  }
+
+  @McpTool({
+    name: 'konjir_decline_invitation',
+    description: 'For a person\'s own session in konnect\'s app only: decline the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Decline on Kolab\'s sign-in page does: no one can accept it any more, and its owner isn\'t told. A kolab with no invitation waiting for you is refused, and so is any other app\'s sign-in.',
+    schema: invitation,
+  })
+  declineInvitation({ kolab }: z.infer<typeof invitation>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.declineTeamInvitation(s, kolab));
+  }
+
+  @McpTool({
+    name: 'konjir_make_team',
+    description: 'For a person\'s own session in konnect\'s app only: make a new kolab, private and yours, with no agent, exactly as a sign-in that creates a team does: its name follows the kolab rules and is unique across Konjir, so a name that is taken, by anyone, yours too, is refused with a free one suggested, and a reserved or badly formed one is refused; you own at most a few kolabs, and make only a few in a while. This sign-in stays where it is: konjir_switch_team moves it there. Any other app\'s sign-in is refused. Returns the kolab and the role you would work in there.',
+    schema: makeTeam,
+  })
+  makeTeam({ name }: z.infer<typeof makeTeam>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.makeTeam(s, name));
   }
 }

@@ -442,36 +442,89 @@ export class OAuthController {
       if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
       throw e;
     }
-    if (await this.signInApp(res, id, binding, csrf, { login: who.login, created: person.created })) return;
     await this.consent(res, 200, id, binding, csrf, { login: who.login, created: person.created });
   }
 
   /**
-   * konnect's own app signing in on `choose:kolab` (every redirect URI one of its schemes): a person
-   * with teams is shown one button, *Continue as @<login>*, for the team it opens in, their only one
-   * or the one they worked in last (Kolab.appSignInKolab), with the app's name and the Konjir admin's
-   * warning as every person's page has them, and *Choose another team* for the chooser (Lee's
-   * instruction of 2026-11-21: one tap, never none). The button posts the page's form as the
-   * chooser's does, so nothing goes to the app without it. Only as the identity provider answers, and
-   * only while no invitation waits and Kolab can tell which team; otherwise the chooser is shown as
-   * for any client. Every other client, the CLI's loopback ones included, sees the chooser. Returns
-   * whether it answered.
+   * Whether a pending sign-in is konnect's own app's on `choose:kolab` (its redirect URI one of the
+   * app's, its client's every one the app's): its page is about who signed in alone (continuePage).
    */
-  private async signInApp(res: Response, id: string, binding: string, csrf: string, extra: { login: string; created: boolean }): Promise<boolean> {
-    const pending = await this.kolab.pendingAuthorization(binding);
-    if (!pending?.person || pending.clientId === WEB_CLIENT || !nativeRedirect(pending.redirectUri)) return false;
+  private async appChoose(pending: { clientId: string; redirectUri: string; scope: string | null } | undefined): Promise<boolean> {
+    if (!pending || pending.clientId === WEB_CLIENT || !nativeRedirect(pending.redirectUri)) return false;
     const scope = personScope(pending.scope);
     if (!scope || !('choose' in scope)) return false;
     const client = await this.client(pending.clientId, '');
-    if (!client || !onPersonsDevice(client.redirectUris)) return false;
-    const offer = await this.kolab.appSignInKolab(pending.person);
-    if (!offer) return false;
+    return !!client && onPersonsDevice(client.redirectUris);
+  }
+
+  /**
+   * konnect's own app signing in on `choose:kolab`, for a person with a team (Lee's design of
+   * 2026-11-21): a page about the GitHub identity alone, *Continue as @<login>*, with the app's name
+   * and redirect URI and a Konjir admin's warning as every person's page has them, and *Use a
+   * different GitHub account*. It names and chooses no team: the app shows and changes that itself
+   * (konjir_list_my_teams, konjir_switch_team, konjir_accept_invitation, konjir_make_team).
+   * Continue posts the page's form, so nothing goes to the app without that tap (personConsented).
+   * A person with no team gets the chooser, which offers to make a team or accept an invitation,
+   * since a session must be in a kolab. Every other client sees its page as before. It is the page
+   * consent shows for such a sign-in whenever it shows one: as the identity provider answers, and
+   * again with an error. Returns whether it answered.
+   */
+  private async signInApp(res: Response, status: number, id: string, binding: string, csrf: string, extra: { login?: string; created?: boolean; error?: string }): Promise<boolean> {
+    const pending = await this.kolab.pendingAuthorization(binding);
+    if (!pending?.person || !(await this.appChoose(pending))) return false;
+    if (!(await this.kolab.appSignInKolab(pending.person))) return false;
+    const client = await this.client(pending.clientId, '');
+    const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const view: ContinueView = {
-      signIn: id, csrf, client: client.name, redirect: redirectShown(pending.redirectUri), native: true, person: pending.person, login: extra.login, provider: this.idp!.label,
-      created: extra.created, konjirAdmin: await this.kolab.isAdmin(pending.person), ...offer,
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: true, person: pending.person, login, provider: this.idp!.label,
+      created: !!extra.created, konjirAdmin: await this.kolab.isAdmin(pending.person), error: extra.error,
     };
-    const target = formActionSource(pending.redirectUri);
-    sendPage(res, 200, `Continue as @${extra.login}`, continuePage(view), { formTargets: target ? [target] : [] });
+    // Its forms lead on to the app (Continue) and to the identity provider (another account).
+    const targets = [formActionSource(pending.redirectUri), this.idp!.authorizationOrigin].filter((t): t is string => !!t);
+    sendPage(res, status, `Continue as @${login}`, continuePage(view), { formTargets: targets });
+    return true;
+  }
+
+  /**
+   * The answer to konnect's app's page (signInApp), from its own form, already checked for Kolab's
+   * origin, its token and this browser's binding: `continue` opens the session where Kolab says
+   * (appSignInKolab) through consentPerson, as a choice on the chooser does, and sends the code to
+   * the app; `other-account` forgets who signed in (restartIdentification) and asks the identity
+   * provider again, with `prompt=select_account`, for the same sign-in: its client, redirect URI,
+   * state and PKCE stay, and its page is shown again for whoever signs in. Undefined for any other
+   * answer, which the chooser's handling takes.
+   */
+  private async appAnswered(res: Response, base: string, s: { id: string; binding: string; csrf: string; person: string }, pick: string): Promise<true | undefined> {
+    if (pick === 'other-account') {
+      let state: string;
+      try {
+        ({ state } = await this.kolab.restartIdentification(s.binding, s.csrf));
+      } catch (e) {
+        if (e instanceof OAuthGrantError) { sendError(res, 400, e.message); return true; }
+        throw e;
+      }
+      res.setHeader('referrer-policy', 'no-referrer');
+      res.redirect(303, this.idp!.authorizationUrl({
+        redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${s.id}.${state}`, codeChallenge: s256(providerVerifier(s.binding)), prompt: 'select_account',
+      }));
+      return true;
+    }
+    if (pick !== 'continue') return undefined;
+    const kolab = await this.kolab.appSignInKolab(s.person);
+    // A team gone since the page was shown, and none left: the chooser, which offers to make one.
+    if (!kolab) { await this.consent(res, 200, s.id, s.binding, s.csrf, {}); return true; }
+    try {
+      const r = await this.kolab.consentPerson(s.binding, s.csrf, { kolab });
+      clearBinding(res, this.options, s.id);
+      res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
+    } catch (e) {
+      if (e instanceof OAuthGrantError) { sendError(res, 400, e.message); return true; }
+      if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) {
+        await this.consent(res, 400, s.id, s.binding, s.csrf, { error: maskTokens(e) });
+        return true;
+      }
+      throw e;
+    }
     return true;
   }
 
@@ -493,6 +546,7 @@ export class OAuthController {
     const client = await this.client(pending.clientId, '');
     const web = pending.clientId === WEB_CLIENT;
     if (!web && setupScope(pending.scope)) return this.setupConsent(res, status, id, csrf, pending, client, extra);
+    if (!web && await this.signInApp(res, status, id, binding, csrf, extra)) return;
     if (!web && personScope(pending.scope)) return this.personConsent(res, status, id, csrf, pending, client, extra);
     const { kolabs, agents, signedIn, lastAgent, invite } = await this.kolab.consentOptions(pending.person, { inviteKey: web ? pending.inviteKey : null, clientId: pending.clientId });
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
@@ -609,8 +663,10 @@ export class OAuthController {
     const { id, binding, csrf, person } = s;
     const check = await this.personCheck(person, s.scope, await this.client(s.clientId, ''));
     const pick = str('pick');
-    // The app's one-button page (signInApp) asks for the chooser instead: shown as for any client.
-    if (!check.refused && check.scope && 'choose' in check.scope && pick === 'choose') return this.consent(res, 200, id, binding, csrf, {});
+    // konnect's app's own page (signInApp) answers Continue or another account here, and nothing else does.
+    if (!check.refused && (pick === 'continue' || pick === 'other-account')
+        && await this.appChoose(await this.kolab.pendingAuthorization(binding, { csrf }))
+        && await this.appAnswered(res, base, { id, binding, csrf, person }, pick)) return;
     const allowing = !check.refused && (check.scope && 'choose' in check.scope ? !!pick : str('decision') === 'allow');
     if (!allowing) {
       if (!check.refused && str('decision') !== 'deny' && (pick || str('decision'))) {
