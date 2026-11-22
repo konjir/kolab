@@ -43,8 +43,8 @@ const csp = (formTargets: string[]) =>
  * source can't name: loopback http, `http://[::1]:<port>`, or https, `https://[2001:db8::1]/…`
  * (registration takes either). Then the scheme alone, `http:` or `https:` (CSP3 lets `http:` match
  * https too). That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only
- * to the sign-in's own registered redirect URI. Konnect's app's production one, APP_REDIRECT_URI, is
- * https like any other. One of its development builds' (APP_DEV_REDIRECT_URIS, which registration
+ * to the sign-in's own registered redirect URI. Konnect's app's https ones, APP_HTTPS_REDIRECT_URIS, are
+ * https like any others. One of its development builds' (APP_DEV_REDIRECT_URIS, which registration
  * took only on a Kolab that allows them) has no origin: then its scheme, `com.konjir.konnect.dev:`
  * say, which matches that scheme alone. Anything else, none.
  */

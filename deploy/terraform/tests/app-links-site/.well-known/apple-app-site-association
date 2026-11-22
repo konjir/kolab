@@ -1,3 +1,3 @@
 {
-  "applinks": { "details": [{ "appIDs": ["ABCDE12345.com.konjir.konnect"], "components": [{ "/": "/konnect/app/oauth" }] }] }
+  "applinks": { "details": [{ "appIDs": ["ABCDE12345.com.konjir.konnect"], "components": [{ "/": "/konnect/app/oauth" }] }, { "appIDs": ["ABCDE12345.com.konjir.konnect.preview"], "components": [{ "/": "/konnect/app/preview/oauth" }] }] }
 }
