@@ -27,6 +27,7 @@ const STYLE = [
   'ul.choices{list-style:none;padding:0;margin:8px 0}ul.choices li{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line-strong)}',
   'ul.choices li:first-child{border-top:0}ul.choices small{display:block;color:var(--ink-muted)}ul.choices .row{margin-top:0}',
   '.note{font-weight:600}',
+  'button.link{min-height:0;padding:0;border:0;background:none;color:var(--accent);text-decoration:underline;font-size:.9em}',
 ].join('\n');
 const STYLE_HASH = createHash('sha256').update(STYLE).digest('base64');
 const csp = (formTargets: string[]) =>
@@ -324,6 +325,16 @@ export interface ChooseView extends PersonView {
   note?: string;
 }
 
+/**
+ * The page konnect's own app's `choose:kolab` sign-in shows a person with teams (Kolab.appSignInKolab):
+ * the one team it opens in, their only one or the one they worked in last, on one button.
+ */
+export interface ContinueView extends PersonView {
+  kolab: { id: string; title: string; access: Access };
+  /** Whether it is their only team: otherwise it is the one they worked in last. */
+  only: boolean;
+}
+
 /** A `team:<name>` sign-in's page: what allowing it does (TeamPlan). */
 export interface TeamView extends PersonView {
   plan?: TeamPlan;
@@ -380,6 +391,29 @@ ${kolabs}
 ${invitations}
 ${none}
 <div class="row"><button type="submit" name="decision" value="deny">${none ? 'Close' : 'Deny'}</button></div>
+</form>`;
+}
+
+/**
+ * The page of konnect's own app's `choose:kolab` sign-in for a person with teams, and nothing else
+ * to decide (ContinueView): who signed in, the app asking, as on every person's page (its name its
+ * own say-so, a Konjir admin told what it can do), and the team it opens in, on one primary button,
+ * `pick=kolab:<name>`, which signs in there as choosing it on the chooser does. *Choose another team*,
+ * `pick=choose`, shows the chooser (choosePage) instead. Nothing leaves for the app until one is posted.
+ */
+export function continuePage(v: ContinueView): string {
+  const k = v.kolab;
+  return `<h1>Continue as <code>@${esc(v.login)}</code></h1>
+${personIntro(v)}
+<form class="card" method="post" action="/oauth/consent">
+${personAsks(v)}
+${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+<dl class="locked">
+<dt>Team</dt><dd><code>${esc(k.id)}</code>${k.title && k.title !== k.id ? ` ${esc(k.title)}` : ''}<small>${v.only ? 'Your team' : 'The team you worked in last'}: you hold ${esc(describe(k.access))}. The app can move to your other teams from there.</small></dd>
+</dl>
+${personHidden(v)}
+<div class="row"><button class="primary" type="submit" name="pick" value="kolab:${esc(k.id)}">Continue as @${esc(v.login)}</button></div>
+<p><button class="link" type="submit" name="pick" value="choose">Choose another team</button></p>
 </form>`;
 }
 
