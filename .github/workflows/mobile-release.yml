@@ -13,7 +13,7 @@ name: Mobile release
 #      internal track).
 #   3. "Record": the tag of each platform built, pushed by a job that can write to the repo, holds
 #      no Expo secret and installs nothing.
-#   4. "Update": a signed eas update on the preview channel, built as the preview variant.
+#   4. "Update": an (unsigned) eas update on the preview channel, built as the preview variant.
 # - Production, by hand (workflow_dispatch), behind the app-stores environment (main only, Lee
 #   approves): local production builds submitted to TestFlight and Play's internal track, or with
 #   update-only, an update on the production channel. Promoting to the stores is done in their

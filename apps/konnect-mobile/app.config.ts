@@ -84,7 +84,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     // An update reaches only the builds whose native code it was made for.
     runtimeVersion: { policy: 'fingerprint' },
     // Updates aren't signed: expo-updates code signing needs a paid EAS plan, and Lee chose the free
-    // one (2026-11-22). An update is trusted as Expo's account and TLS are, as is what EAS submits.
+    // one (2026-11-22). Whoever can publish to the EAS project can run code in every installed app on
+    // that channel (README, Release setup, step 7).
     ...(EAS_PROJECT_ID ? { updates: { url: `https://u.expo.dev/${EAS_PROJECT_ID}` } } : {}),
     ios: {
       bundleIdentifier: id,
