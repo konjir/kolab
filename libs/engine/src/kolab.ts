@@ -307,11 +307,23 @@ export function loopbackRedirect(uri: string): boolean {
 }
 
 /**
- * The private-use URI schemes of konnect's own iOS and Android app (RFC 8252 §7.1), one per build
- * variant: reverse-DNS names of konjir.com, Konjir's own domain. Named one by one: no other app's
- * scheme is ever a redirect URI, and no scheme is allowed for its shape.
+ * konnect's own app's redirect URI in production (Lee's decision of 2026-11-21): an https link on
+ * Konjir's own site that the app claims as a Universal Link on iOS and an App Link on Android, each
+ * verified by the site (`/.well-known/apple-app-site-association`, `/.well-known/assetlinks.json`,
+ * site/README.md), so only konnect's signed app receives a code sent there; without the app, the
+ * site's page at that path says to open or install it, and never shows or uses the code. Matched as
+ * a string, exactly: no other path, query, fragment, host or case.
  */
-export const NATIVE_REDIRECT_SCHEMES = ['com.konjir.konnect', 'com.konjir.konnect.dev', 'com.konjir.konnect.preview'] as const;
+export const APP_REDIRECT_URI = 'https://www.konjir.com/konnect/app/oauth';
+
+/**
+ * The private-use URI schemes of konnect's development and preview builds (RFC 8252 §7.1), allowed
+ * only on a Kolab configured to (KONJIR_APP_DEV_SCHEMES=on: local-kolab and tests, never
+ * production), since any app may claim a scheme. Named one by one: no other app's scheme is ever a
+ * redirect URI, and no scheme is allowed for its shape. The production build's own scheme,
+ * `com.konjir.konnect`, is no redirect URI at all: production signs in through APP_REDIRECT_URI.
+ */
+export const APP_DEV_SCHEMES = ['com.konjir.konnect.dev', 'com.konjir.konnect.preview'] as const;
 
 /**
  * The one redirect URI each of those schemes may be, `<scheme>:/oauth` (RFC 8252 §7.1's form: a
@@ -319,21 +331,30 @@ export const NATIVE_REDIRECT_SCHEMES = ['com.konjir.konnect', 'com.konjir.konnec
  * `native`. Matched as a string, exactly: no other path, no query, no fragment, no `//host`, and
  * not in another case.
  */
-export const NATIVE_REDIRECT_URIS: readonly string[] = NATIVE_REDIRECT_SCHEMES.map((s) => `${s}:/oauth`);
+export const APP_DEV_REDIRECT_URIS: readonly string[] = APP_DEV_SCHEMES.map((s) => `${s}:/oauth`);
 
-/** Whether a redirect URI is konnect's own app's, on the person's own phone or computer: exactly one of NATIVE_REDIRECT_URIS. */
-export function nativeRedirect(uri: string): boolean {
-  return typeof uri === 'string' && NATIVE_REDIRECT_URIS.includes(uri);
+/**
+ * Whether a redirect URI is konnect's own app's, on the person's own phone or computer: exactly
+ * APP_REDIRECT_URI, or, with `devSchemes` (the Kolab's appRedirects.devSchemes), exactly one of
+ * APP_DEV_REDIRECT_URIS.
+ */
+export function appRedirect(uri: string, devSchemes: boolean): boolean {
+  return typeof uri === 'string' && (uri === APP_REDIRECT_URI || (devSchemes && APP_DEV_REDIRECT_URIS.includes(uri)));
+}
+
+/** Whether every one of a client's redirect URIs is konnect's own app's (appRedirect): the app's own client. */
+export function appClient(redirectUris: readonly string[] | null | undefined, devSchemes: boolean): boolean {
+  return !!redirectUris?.length && redirectUris.every((u) => appRedirect(u, devSchemes));
 }
 
 /**
  * Whether a client's redirect URIs are all on the person's own device, so a sign-in that signs the
  * person in on one button (personScope) may answer there: every one loopback, as konnect's CLI's
- * are, or every one konnect's own app's (nativeRedirect). A client mixing either with anything
- * else, or the two together, is not.
+ * are, or every one konnect's own app's (appClient). A client mixing either with anything else, or
+ * the two together, is not.
  */
-export function onPersonsDevice(redirectUris: readonly string[]): boolean {
-  return redirectUris.length > 0 && (redirectUris.every(loopbackRedirect) || redirectUris.every(nativeRedirect));
+export function onPersonsDevice(redirectUris: readonly string[], devSchemes: boolean): boolean {
+  return redirectUris.length > 0 && (redirectUris.every(loopbackRedirect) || appClient(redirectUris, devSchemes));
 }
 
 /**
@@ -416,13 +437,13 @@ export function validRedirectHost(host: string): boolean {
 
 /**
  * Whether Kolab may send codes to `uri` (OAuth 2.1 §2.3.1, RFC 8252): an https URL, or http on a
- * loopback address, on a host validRedirectHost allows, or exactly one of konnect's own app's
- * (NATIVE_REDIRECT_URIS). Never a fragment or credentials (written as `#`, `user@` or `user:pass@`,
- * even empty), and no other scheme: no other app's own scheme, and never javascript:, data:, file:
- * and the like.
+ * loopback address, on a host validRedirectHost allows, or, with `devSchemes`, exactly one of
+ * konnect's development builds' (APP_DEV_REDIRECT_URIS). Never a fragment or credentials (written
+ * as `#`, `user@` or `user:pass@`, even empty), and no other scheme: no other app's own scheme, and
+ * never javascript:, data:, file: and the like.
  */
-export function validRedirectUri(uri: string): boolean {
-  if (nativeRedirect(uri)) return true;
+export function validRedirectUri(uri: string, devSchemes = false): boolean {
+  if (devSchemes && APP_DEV_REDIRECT_URIS.includes(uri)) return true;
   if (typeof uri !== 'string' || uri.length > 2000 || uri.includes('#')) return false;
   let u: URL;
   try { u = new URL(uri); } catch { return false; }
@@ -449,8 +470,8 @@ function trailingDotHost(uri: string): boolean {
  * (validRedirectUri: no fragment or credentials), exactly, but for the port of a loopback http
  * URI, which a native client picks when it runs (RFC 8252 §7.3).
  */
-export function redirectUriMatches(registered: string[], given: string): boolean {
-  if (!validRedirectUri(given)) return false;
+export function redirectUriMatches(registered: string[], given: string, devSchemes = false): boolean {
+  if (!validRedirectUri(given, devSchemes)) return false;
   if (registered.includes(given)) return true;
   let g: URL;
   try { g = new URL(given); } catch { return false; }
@@ -838,6 +859,14 @@ export class Kolab {
    * false, a push carries no words of its message.
    */
   readonly push: { send: PushSend | null; preview: boolean } = { send: null, preview: true };
+  /**
+   * Which redirect URIs are konnect's own app's (appRedirect): always APP_REDIRECT_URI, and, with
+   * `devSchemes`, its development builds' private-use schemes, for local-kolab and tests
+   * (KONJIR_APP_DEV_SCHEMES=on, startServer). Off unless set.
+   */
+  readonly appRedirects = { devSchemes: false };
+  /** Whether a redirect URI is konnect's own app's on this Kolab (appRedirect). */
+  appRedirect(uri: string): boolean { return appRedirect(uri, this.appRedirects.devSchemes); }
   /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
   private readonly origin = randomBytes(9).toString('base64url');
   private listening?: Promise<Listening | undefined>;
@@ -2333,10 +2362,10 @@ export class Kolab {
     const uris = [...new Set(c.redirectUris)];
     if (!uris.length || uris.length > 10) throw new OAuthGrantError('invalid_redirect_uri', 'register 1 to 10 redirect URIs');
     for (const u of uris) {
-      if (validRedirectUri(u)) continue;
+      if (validRedirectUri(u, this.appRedirects.devSchemes)) continue;
       const shown = u.slice(0, 200);
       if (trailingDotHost(u)) throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: its host ends in a dot, which Kolab doesn't allow (the consent page couldn't name it), so write the host without the trailing dot`);
-      throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials; the only app scheme is konnect's own, ${NATIVE_REDIRECT_URIS.join(', ')}`);
+      throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials${this.appRedirects.devSchemes ? `; the only app schemes are konnect's own development builds', ${APP_DEV_REDIRECT_URIS.join(', ')}` : ''}`);
     }
     const name = (c.name ?? '').trim().slice(0, 200) || 'An MCP client';
     const id = `kjcl_${randomBytes(18).toString('base64url')}`;
@@ -3850,7 +3879,7 @@ export class Kolab {
       const here = (await tx.query<{ id: string; redirect_uris: string[] | null }>(
         `select s.id, c.redirect_uris from session s join actor a on a.id = s.actor_id and a.kind = 'person'
            join oauth_grant g on g.id = s.grant_id and g.revoked_at is null and g.expires_at > now() join oauth_client c on c.id = g.client_id
-          where s.kolab_id = $1 and s.ended_at is null`, [k])).rows.filter((r) => r.redirect_uris?.length && r.redirect_uris.every(nativeRedirect)).map((r) => r.id);
+          where s.kolab_id = $1 and s.ended_at is null`, [k])).rows.filter((r) => appClient(r.redirect_uris, this.appRedirects.devSchemes)).map((r) => r.id);
       if (here.length) {
         await tx.query(`update session set ended_at = now(), ended_by = $2 where id = any($1::text[])`, [here, by]);
         for (const id of here) await signal({ session: 'ended', id });
@@ -4044,7 +4073,7 @@ export class Kolab {
     if (!scope) throw new AccessError('this sign-in doesn\'t leave its kolab to the page');
     if ('error' in scope) throw new AccessError(`this sign-in can't be allowed: ${scope.error}`);
     const client = await this.oauthClient(req.client_id);
-    if (!client || !onPersonsDevice(client.redirectUris)) {
+    if (!client || !onPersonsDevice(client.redirectUris, this.appRedirects.devSchemes)) {
       throw new AccessError('a sign-in that leaves its kolab to the page is only for an app on your own computer or phone, and this one receives its answer elsewhere');
     }
     const person = req.actor_id;
@@ -4085,7 +4114,7 @@ export class Kolab {
   // ---- a person's teams from one sign-in (konnect's app; Lee's instruction of 2026-11-21) ----
 
   /**
-   * Where a `choose:kolab` sign-in from konnect's own app (nativeRedirect) opens its session when the
+   * Where a `choose:kolab` sign-in from konnect's own app (appRedirect) opens its session when the
    * person presses Continue on its page, which is about who signed in and names no team: the kolab of
    * theirs they used last (their newest session there, on any machine), or else the first by name.
    * The app shows and changes the team itself (konjir_list_my_teams, konjir_switch_team), and takes
@@ -4168,7 +4197,7 @@ export class Kolab {
    * grant's open session, now this one (refreshGrant), rotating as ever. The old access token is
    * dead from the moment this commits. Refused to an agent, to a session that is no grant's
    * (hand-issued) or whose grant is revoked or lapsed, to any client's grant but konnect's app's
-   * (every redirect URI one of NATIVE_REDIRECT_URIS, as S1 lets sign in on choose:kolab), and for a
+   * (every redirect URI konnect's app's, appClient, as S1 lets sign in on choose:kolab), and for a
    * kolab the person isn't a member of, which reads the same whether it exists or not. To the kolab
    * it works in already, it changes nothing.
    */
@@ -4195,7 +4224,7 @@ export class Kolab {
 
   /**
    * In `q`, the open session `sessionId` reaches, when it is a person's sign-in through konnect's own
-   * app: a grant's, still live, whose client's every redirect URI is one of NATIVE_REDIRECT_URIS (as
+   * app: a grant's, still live, whose client's every redirect URI is konnect's app's (appClient; as
    * S1 lets sign in on choose:kolab). With `lock`, the session's row is locked. Refused otherwise,
    * with what the caller `does` and is `doing`, and what to do `instead`: an agent's session, a
    * hand-issued one, one whose grant was revoked or lapsed, and any other client's sign-in.
@@ -4210,7 +4239,7 @@ export class Kolab {
     if (!s) throw new RoleError('no open session for that token');
     if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person ${say.does}, from their own sign-in`);
     if (!s.grant_id || !s.grant_live) throw new AccessError(`this session is no sign-in through an app: ${say.doing} is for konnect's own app; ${say.instead}`);
-    if (!s.redirect_uris?.length || !s.redirect_uris.every(nativeRedirect)) throw new AccessError(`${say.doing} is for konnect's own app only: ${say.instead}`);
+    if (!appClient(s.redirect_uris, this.appRedirects.devSchemes)) throw new AccessError(`${say.doing} is for konnect's own app only: ${say.instead}`);
     return s as typeof s & { grant_id: string };
   }
 
@@ -4283,7 +4312,7 @@ export class Kolab {
         where s.id = any($1::text[]) and not exists (select 1 from session o where o.grant_id = s.grant_id and o.ended_at is null)
         order by s.grant_id, s.ended_at desc`, [ended])).rows;
     for (const r of rows) {
-      if (!r.redirect_uris?.length || !r.redirect_uris.every(nativeRedirect)) continue;
+      if (!appClient(r.redirect_uris, this.appRedirects.devSchemes)) continue;
       const to = await appTeamIn(tx, r.actor_id, [r.kolab_id, ...(leaving ? [leaving] : [])]);
       if (!to) {
         await tx.query(`update oauth_grant set revoked_at = now(), revoked_by = $2 where id = $1 and revoked_at is null`, [r.grant_id, by]);

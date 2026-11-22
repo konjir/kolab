@@ -269,7 +269,7 @@ test('konnect\'s own app, every redirect URI on its schemes, may sign the person
   const kolab = await openKolab();
   const { base, idp } = await serve(kolab);
   const { inv } = await world(kolab);
-  const APP = 'com.konjir.konnect:/oauth';
+  const APP = 'https://www.konjir.com/konnect/app/oauth';
   const app = await register(base, [APP, 'com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth']);
   const exchange = async (code: string, redirect: string) => {
     const r = await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: app, redirect_uri: redirect, code_verifier: VERIFIER }).toString() });
@@ -280,13 +280,13 @@ test('konnect\'s own app, every redirect URI on its schemes, may sign the person
   // it is about who signed in alone (switch-team.test.ts), the invitation waiting taken in the app.
   const p = await page(base, idp, app, 'konjir choose:kolab', BOB, APP);
   expect(p.res.status).toBe(200);
-  expect(p.res.headers.get('content-security-policy')).toContain(`form-action 'self' com.konjir.konnect:;`);
-  expect(p.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>${APP}</code>`);
+  expect(p.res.headers.get('content-security-policy')).toContain(`form-action 'self' https://www.konjir.com;`);
+  expect(p.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>https://www.konjir.com</code>`);
   expect(buttons(p.html)).toStrictEqual(['pick=continue', 'pick=other-account']);
   expect(p.html).not.toContain(inv.id);
   const done = await p.post({ pick: 'continue' });
   expect(done.res.status).toBe(303);
-  expect(done.left!.toString()).toMatch(/^com\.konjir\.konnect:\/oauth\?code=kjc_[^&]+&state=st&iss=/);
+  expect(done.left!.toString()).toMatch(/^https:\/\/www\.konjir\.com\/konnect\/app\/oauth\?code=kjc_[^&]+&state=st&iss=/);
   const code = done.left!.searchParams.get('code')!;
   const t = await exchange(code, APP);
   expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:bobs role:product']);

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
-import { nativeRedirect, setupDigest, type SetupPlan, type TeamIntent, type TeamPlan } from '@konjir/engine';
+import { APP_DEV_REDIRECT_URIS, setupDigest, type SetupPlan, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
 import type { Access, InvitePreview, PendingInvitation, Role } from '@konjir/types';
 import { worded, type Wording } from '../wording.js';
@@ -43,12 +43,13 @@ const csp = (formTargets: string[]) =>
  * source can't name: loopback http, `http://[::1]:<port>`, or https, `https://[2001:db8::1]/…`
  * (registration takes either). Then the scheme alone, `http:` or `https:` (CSP3 lets `http:` match
  * https too). That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only
- * to the sign-in's own registered redirect URI. Or it is one of konnect's own app's
- * (nativeRedirect), which has no origin: then its scheme, `com.konjir.konnect:` say, which matches
- * that scheme alone. Anything else, none.
+ * to the sign-in's own registered redirect URI. Konnect's app's production one, APP_REDIRECT_URI, is
+ * https like any other. One of its development builds' (APP_DEV_REDIRECT_URIS, which registration
+ * took only on a Kolab that allows them) has no origin: then its scheme, `com.konjir.konnect.dev:`
+ * say, which matches that scheme alone. Anything else, none.
  */
 export function formActionSource(redirectUri: string): string | undefined {
-  if (nativeRedirect(redirectUri)) return redirectUri.slice(0, redirectUri.indexOf(':') + 1);
+  if (APP_DEV_REDIRECT_URIS.includes(redirectUri)) return redirectUri.slice(0, redirectUri.indexOf(':') + 1);
   let u: URL;
   try { u = new URL(redirectUri); } catch { return undefined; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined;
@@ -307,7 +308,7 @@ interface PersonView {
   csrf: string;
   client: string;
   redirect: string;
-  /** The redirect is konnect's own app's (nativeRedirect), on a phone as likely as a computer: the page says "this device". */
+  /** The redirect is konnect's own app's (appRedirect), on a phone as likely as a computer: the page says "this device". */
   native?: boolean;
   person: string; login: string; provider: string; created: boolean;
   /** The person is a Konjir admin: the app works as them, with every admin verb (D111), and the page says so. */

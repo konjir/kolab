@@ -27,6 +27,19 @@ export type { PushOptions } from './tokens.js';
 
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
 
+/**
+ * KONJIR_APP_DEV_SCHEMES: `on` lets konnect's development builds' schemes sign in (local-kolab),
+ * `off` refuses them; unset leaves the Kolab as it was opened (off, unless a test opened it on).
+ * Anything else is refused, so a typo never turns them on in production.
+ */
+export function appDevSchemesFromEnv(env: Record<string, string | undefined> = process.env): boolean | undefined {
+  const v = env.KONJIR_APP_DEV_SCHEMES?.trim().toLowerCase();
+  if (v === undefined || v === '') return undefined;
+  if (v === 'on') return true;
+  if (v === 'off') return false;
+  throw new Error('KONJIR_APP_DEV_SCHEMES is on or off');
+}
+
 export async function startServer(opts: {
   port?: number; host?: string; dataDir?: string; kolab?: Kolab;
   /** The break-glass admin token (W2.22, D69); null disables it, leaving Konjir's admins, people who sign in, alone. */
@@ -64,9 +77,17 @@ export async function startServer(opts: {
    * KONJIR_EXPO_ACCESS_TOKEN and KONJIR_PUSH_PREVIEW), off without a token. Tests give their own fetch.
    */
   push?: PushOptions;
+  /**
+   * Whether konnect's development builds' private-use schemes (APP_DEV_REDIRECT_URIS) are redirect
+   * URIs here, beside the app's https link: by default KONJIR_APP_DEV_SCHEMES=on, for local-kolab;
+   * never in production. A Kolab given with them on keeps them unless this says false.
+   */
+  appDevSchemes?: boolean;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
+  const devSchemes = opts.appDevSchemes ?? appDevSchemesFromEnv();
+  if (devSchemes !== undefined) kolab.appRedirects.devSchemes = devSchemes;
   if (opts.handIssuedTokenDays !== undefined) {
     if (!(Number.isFinite(opts.handIssuedTokenDays) && opts.handIssuedTokenDays > 0 && opts.handIssuedTokenDays <= 365)) {
       throw new Error(`a hand-issued token lasts more than 0 and at most 365 days, not ${opts.handIssuedTokenDays}`);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
 import { ADMIN_DOER, type AccessLevel, type ArchiveTarget, type KolabPolicy, type DeltaInput, type Doer, type ElementInput, type GateResult, type Layer, type LinkRef, type Checks, type OrgRole, type Role, type Visibility } from '@konjir/types';
-import { Kolab } from './kolab.js';
+import { APP_REDIRECT_URI, Kolab } from './kolab.js';
 
 /**
  * Kolab as tests drive it. Kolab itself makes every write name who made it, with no default
@@ -110,10 +110,12 @@ async function onServer(sql: string) {
  * With `queued: true` it doesn't, for tests of the asynchrony itself, which drain the outbox
  * (drainOutbox) or start the worker as they need.
  */
-export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { queued?: boolean } = {}): Promise<TestKolab> {
-  const { queued, ...rest } = options;
+export async function openKolab(options: Parameters<typeof Kolab.open>[0] & { queued?: boolean; appDevSchemes?: boolean } = {}): Promise<TestKolab> {
+  const { queued, appDevSchemes, ...rest } = options;
   const store = rest.dataDir || rest.databaseUrl ? {} : await testStore();
   const kolab = await TestKolab.open({ ...rest, ...store });
+  // konnect's development builds' schemes are redirect URIs in tests, as in local-kolab (KONJIR_APP_DEV_SCHEMES=on); never in production.
+  kolab.appRedirects.devSchemes = appDevSchemes ?? true;
   opened.push(kolab);
   if (!queued) drainAfterWrites(kolab);
   return kolab;
@@ -198,13 +200,13 @@ export async function closeOpened(since: OpenedMark = NOTHING_OPENED) {
 
 /**
  * Signs `person` in through konnect's own app, straight through the engine, as its phone does over
- * HTTP: a client whose one redirect URI is the app's (a new one each time, as each install
+ * HTTP: a client whose one redirect URI is the app's production one, APP_REDIRECT_URI (a new one each time, as each install
  * registers its own, unless `client` names one), a `choose:kolab` sign-in, the person identified,
  * consent to `kolab`, and the code exchanged. Its grant is the app's, which the app-only verbs
  * (switchTeam, registerPushDevice and the like) take.
  */
 export async function appSignIn(kolab: Kolab, person: string, k: string, opts: { client?: string } = {}) {
-  const redirectUri = 'com.konjir.konnect:/oauth';
+  const redirectUri = APP_REDIRECT_URI;
   const client = opts.client ?? (await kolab.registerClient({ name: 'konnect', redirectUris: [redirectUri] })).id;
   const verifier = randomBytes(32).toString('base64url');
   const { binding, state } = await kolab.beginAuthorization({ provider: 'github', clientId: client, redirectUri, codeChallenge: createHash('sha256').update(verifier).digest('base64url'), scope: 'konjir choose:kolab' });
