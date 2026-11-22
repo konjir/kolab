@@ -31,13 +31,14 @@
     "submit-production": "node scripts/eas.mjs submit --non-interactive --profile production",
     "native-check": "node scripts/native.mjs check",
     "native-tag": "node scripts/native.mjs tag",
-    "update-preview": "node scripts/eas.mjs update --channel preview --environment preview",
-    "update-production": "node scripts/eas.mjs update --channel production --environment production",
+    "update-preview": "APP_VARIANT=preview node scripts/eas.mjs update --channel preview --environment preview",
+    "update-production": "APP_VARIANT=production node scripts/eas.mjs update --channel production --environment production",
     "version": "node scripts/eas.mjs build:version:get",
     "credentials": "node scripts/eas.mjs credentials",
     "eas-whoami": "node scripts/eas.mjs whoami",
     "env-pull": "node scripts/eas.mjs env:pull",
-    "local-kolab": "TSX_TSCONFIG_PATH=../../tsconfig.json tsx --conditions=@konjir/source scripts/local-kolab.mts"
+    "local-kolab": "TSX_TSCONFIG_PATH=../../tsconfig.json tsx --conditions=@konjir/source scripts/local-kolab.mts",
+    "native-verify": "node scripts/native.mjs verify"
   },
   "dependencies": {
     "@expo-google-fonts/fraunces": "^0.4.1",
@@ -93,6 +94,7 @@
     "@testing-library/react-native": "^14.1.0",
     "@types/react": "~19.3.0",
     "eas-cli": "27.11.0",
+    "eas-cli-local-build-plugin": "27.11.0",
     "eslint": "^9.39.5",
     "eslint-config-expo": "~58.0.4",
     "expo-doctor": "1.21.8",
@@ -237,6 +239,9 @@
         "cache": false
       },
       "native-tag": {
+        "cache": false
+      },
+      "native-verify": {
         "cache": false
       }
     }

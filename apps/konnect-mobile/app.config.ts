@@ -76,10 +76,22 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...(EAS_OWNER ? { owner: EAS_OWNER } : {}),
     // An update reaches only the builds whose native code it was made for.
     runtimeVersion: { policy: 'fingerprint' },
-    ...(EAS_PROJECT_ID ? { updates: { url: `https://u.expo.dev/${EAS_PROJECT_ID}` } } : {}),
+    // Updates are signed (expo-updates code signing): a build applies only an update signed with the
+    // key whose certificate it carries, certs/certificate.pem. The private key is a secret, never in
+    // the repo (README, Release setup).
+    ...(EAS_PROJECT_ID ? {
+      updates: {
+        url: `https://u.expo.dev/${EAS_PROJECT_ID}`,
+        codeSigningCertificate: './certs/certificate.pem',
+        codeSigningMetadata: { keyid: 'main', alg: 'rsa-v1_5-sha256' },
+      },
+    } : {}),
     ios: {
       bundleIdentifier: id,
       supportsTablet: false,
+      // Production signs in through a verified https link on www.konjir.com (a Universal Link):
+      // the site serves the apple-app-site-association that names this app.
+      ...(variant === 'production' ? { associatedDomains: ['applinks:www.konjir.com'] } : {}),
       infoPlist: { ITSAppUsesNonExemptEncryption: false },
       // What the App Store's privacy details and Apple's required-reason APIs ask: no tracking; the
       // data konnect keeps is the person's own messages and identifiers, for the app's function;
@@ -102,6 +114,13 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     android: {
       package: id,
+      // Production's sign-in link, verified (autoVerify) against www.konjir.com's assetlinks.json.
+      ...(variant === 'production' ? {
+        intentFilters: [{
+          action: 'VIEW', autoVerify: true, category: ['BROWSABLE', 'DEFAULT'],
+          data: [{ scheme: 'https', host: 'www.konjir.com', pathPrefix: '/konnect/app/oauth' }],
+        }],
+      } : {}),
       adaptiveIcon: { foregroundImage: '../../brand/konjir-avatar.png', backgroundColor: PREDAWN_SURFACE },
     },
     plugins: [
@@ -134,8 +153,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     experiments: { typedRoutes: true },
     extra: {
       variant,
-      // Kolab's MCP endpoint. A dev build can be pointed at a Kolab on this machine or the LAN.
-      konnectUrl: process.env.KONNECT_URL ?? 'https://kolab.konjir.com/mcp',
+      // Kolab's MCP endpoint. Only a development build can be pointed elsewhere (KONNECT_URL), at a
+      // Kolab on this machine or the LAN; preview and production always talk to Kolab itself.
+      konnectUrl: (variant === 'development' ? process.env.KONNECT_URL : undefined) ?? 'https://kolab.konjir.com/mcp',
       ...(EAS_PROJECT_ID ? { eas: { projectId: EAS_PROJECT_ID } } : {}),
     },
   };

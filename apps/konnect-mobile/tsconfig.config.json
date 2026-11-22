@@ -1,6 +1,6 @@
 {
-  // app.config.ts, which Expo runs in Node: Node's types, and none of the app's.
+  // What runs in Node: app.config.ts, and the tests of the Node scripts. Node's types, and none of the app's.
   "extends": "expo/tsconfig.base",
   "compilerOptions": { "strict": true, "types": ["node"] },
-  "include": ["app.config.ts"]
+  "include": ["app.config.ts", "test/eas.test.ts"]
 }

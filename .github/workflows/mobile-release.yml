@@ -2,25 +2,27 @@ name: Mobile release
 
 # Ships konnect for iOS and Android through EAS on Expo's free plan (docs/plans/konnect-mobile.md,
 # "Distribution and builds"): binaries are built with `eas build --local` on GitHub's runners, free
-# for a public repo, rather than on EAS's 15 + 15 cloud builds a month, and an over-the-air update
-# (free) ships whenever the native code hasn't changed.
+# for a public repo, and an over-the-air update (free) ships whenever the native code hasn't changed.
 #
 # - Preview, on each merge to main that touches the app or its libraries:
 #   1. "Fingerprint": each platform's native fingerprint for the preview profile, against the
 #      konnect-native/preview/<platform>/<fingerprint> tags that record which binaries exist (EAS
 #      records no local build).
 #   2. "Build iOS" / "Build Android", only for a fingerprint with no binary: a local preview build,
-#      submitted (TestFlight internal testing; Play's internal track), then tagged.
-#   3. "Update": eas update on the preview channel, which every preview binary of the same
-#      fingerprint picks up.
-# - Production, by hand (workflow_dispatch), behind the app-stores environment (Lee approves): local
-#   production builds submitted to TestFlight and Play's internal track, or with update-only, an
-#   update on the production channel. Promoting to the stores is done in their consoles.
+#      checked to embed that fingerprint, then submitted (TestFlight internal testing; Play's
+#      internal track).
+#   3. "Record": the tag, pushed by a job that can write to the repo and holds no Expo secret.
+#   4. "Update": a signed eas update on the preview channel, built as the preview variant.
+# - Production, by hand (workflow_dispatch), behind the app-stores environment (main only, Lee
+#   approves): local production builds submitted to TestFlight and Play's internal track, or with
+#   update-only, a signed update on the production channel. Promoting to the stores is done in their
+#   consoles.
 #
-# Every step is an Nx target of @konjir/konnect-mobile. EXPO_TOKEN lives only in the app-preview
-# (main only) and app-stores environments, used only on push to main or workflow_dispatch, never on
-# a pull request, so a fork's run gets nothing. Actions are pinned to commit SHAs, dependencies are
-# installed without install scripts, and each job holds only the permissions it needs.
+# Every step is an Nx target of @konjir/konnect-mobile. EXPO_TOKEN and the update signing key live
+# only in the app-preview and app-stores environments, both limited to main, and are read only on
+# push to main or workflow_dispatch, never on a pull request. Checkouts keep no credentials; the one
+# job that pushes (the tag) holds no Expo secret. Actions are pinned to commit SHAs, dependencies
+# are installed without install scripts, and the local build plugin is the locked devDependency.
 
 on:
   push:
@@ -51,7 +53,6 @@ permissions: {}
 env:
   NX_DAEMON: 'false'
   NX_NO_CLOUD: 'true'
-  NODE_VERSION: '22.23.3' # eas.json's, which mobile.yml checks against production's
 
 jobs:
   fingerprint:
@@ -62,80 +63,116 @@ jobs:
     permissions:
       contents: read
     outputs:
+      node: ${{ steps.node.outputs.version }}
       ios: ${{ steps.check.outputs.ios_build }}
       android: ${{ steps.check.outputs.android_build }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read eas.json's Node version
+        id: node
+        run: echo "version=$(jq -r .build.base.node apps/konnect-mobile/eas.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - id: check
         run: npx nx run @konjir/konnect-mobile:native-check --output-style=stream -- --profile preview --github-output
 
-  build-ios:
-    name: Build iOS
+  build:
+    name: Build ${{ matrix.platform }}
     needs: fingerprint
-    if: needs.fingerprint.outputs.ios == 'true'
-    runs-on: macos-15
+    if: needs.fingerprint.outputs.ios == 'true' || needs.fingerprint.outputs.android == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: ios, runner: macos-15, artifact: konnect-preview.ipa }
+          - { platform: android, runner: ubuntu-24.04, artifact: konnect-preview.aab }
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     environment: app-preview
     permissions:
-      contents: write # the konnect-native tag
+      contents: read
+    outputs:
+      ios: ${{ steps.done.outputs.ios }}
+      android: ${{ steps.done.outputs.android }}
     steps:
+      - name: Needed?
+        id: needed
+        env:
+          WANT: ${{ matrix.platform == 'ios' && needs.fingerprint.outputs.ios || needs.fingerprint.outputs.android }}
+        run: echo "build=$WANT" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.needed.outputs.build == 'true'
+        with:
+          persist-credentials: false
       # The Xcode expo-modules-jsi's patch is made for (scripts/patch-expo-modules-jsi.mjs).
       - name: Select Xcode 26.2
+        if: steps.needed.outputs.build == 'true' && matrix.platform == 'ios'
         run: |
           if [ ! -d /Applications/Xcode_26.2.app ]; then ls -d /Applications/Xcode*.app; echo "::error::Xcode 26.2 isn't on this runner image"; exit 1; fi
           sudo xcode-select -s /Applications/Xcode_26.2.app
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build (local), submit to TestFlight, record
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          npx nx run @konjir/konnect-mobile:build-preview-local --output-style=stream -- --platform ios --output "$RUNNER_TEMP/konnect-preview.ipa"
-          npx nx run @konjir/konnect-mobile:submit-preview --output-style=stream -- --platform ios --path "$RUNNER_TEMP/konnect-preview.ipa"
-          npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile preview --platform ios
-
-  build-android:
-    name: Build Android
-    needs: fingerprint
-    if: needs.fingerprint.outputs.android == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    environment: app-preview
-    permissions:
-      contents: write # the konnect-native tag
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        if: steps.needed.outputs.build == 'true' && matrix.platform == 'android'
         with:
           distribution: temurin
           java-version: '17'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.needed.outputs.build == 'true'
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ needs.fingerprint.outputs.node }}
           cache: npm
-      - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build (local), submit to Play's internal track, record
+      - if: steps.needed.outputs.build == 'true'
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build (local), check, submit
+        if: steps.needed.outputs.build == 'true'
+        id: build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          PLATFORM: ${{ matrix.platform }}
+          ARTIFACT: ${{ runner.temp }}/${{ matrix.artifact }}
         run: |
-          npx nx run @konjir/konnect-mobile:build-preview-local --output-style=stream -- --platform android --output "$RUNNER_TEMP/konnect-preview.aab"
-          npx nx run @konjir/konnect-mobile:submit-preview --output-style=stream -- --platform android --path "$RUNNER_TEMP/konnect-preview.aab"
-          npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile preview --platform android
+          export EAS_LOCAL_BUILD_PLUGIN_PATH="$GITHUB_WORKSPACE/node_modules/eas-cli-local-build-plugin/bin/run"
+          npx nx run @konjir/konnect-mobile:build-preview-local --output-style=stream -- --platform "$PLATFORM" --output "$ARTIFACT"
+          npx nx run @konjir/konnect-mobile:native-verify --output-style=stream -- --profile preview --platform "$PLATFORM" --artifact "$ARTIFACT" --github-output
+          npx nx run @konjir/konnect-mobile:submit-preview --output-style=stream -- --platform "$PLATFORM" --path "$ARTIFACT"
+      - name: Built
+        id: done
+        if: steps.needed.outputs.build == 'true'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          FINGERPRINT: ${{ steps.build.outputs.fingerprint }}
+        run: echo "$PLATFORM=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+
+  record:
+    name: Record
+    needs: [fingerprint, build]
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # the konnect-native tags, and nothing else: no Expo secret here
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ needs.fingerprint.outputs.node }}
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Tag what was built
+        env:
+          IOS: ${{ needs.build.outputs.ios }}
+          ANDROID: ${{ needs.build.outputs.android }}
+        run: |
+          if [ -n "$IOS" ]; then npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile preview --platform ios --fingerprint "$IOS"; fi
+          if [ -n "$ANDROID" ]; then npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile preview --platform android --fingerprint "$ANDROID"; fi
 
   update:
     name: Update
-    needs: [fingerprint, build-ios, build-android]
+    needs: [fingerprint, build, record]
     # After the builds that were needed; an update is free, and a new binary picks it up too.
     if: always() && needs.fingerprint.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     runs-on: ubuntu-24.04
@@ -149,38 +186,49 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ needs.fingerprint.outputs.node }}
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Update the preview channel
+      - name: Update the preview channel (signed)
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          KONNECT_UPDATES_PRIVATE_KEY: ${{ secrets.KONNECT_UPDATES_PRIVATE_KEY }}
           COMMIT: ${{ github.sha }}
-        run: npx nx run @konjir/konnect-mobile:update-preview --output-style=stream -- --message "main at $COMMIT" --non-interactive
+        run: |
+          export KONNECT_UPDATES_PRIVATE_KEY_PATH="$RUNNER_TEMP/updates-private-key.pem"
+          (umask 077; printf '%s\n' "$KONNECT_UPDATES_PRIVATE_KEY" > "$KONNECT_UPDATES_PRIVATE_KEY_PATH")
+          npx nx run @konjir/konnect-mobile:update-preview --output-style=stream -- --message "main at $COMMIT" --non-interactive
+          rm -f "$KONNECT_UPDATES_PRIVATE_KEY_PATH"
 
   production:
     name: Production (${{ matrix.platform }})
     if: github.event_name == 'workflow_dispatch'
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
-          - platform: ios
-            runner: macos-15
-            artifact: konnect.ipa
-          - platform: android
-            runner: ubuntu-24.04
-            artifact: konnect.aab
+          - { platform: ios, runner: macos-15, artifact: konnect.ipa }
+          - { platform: android, runner: ubuntu-24.04, artifact: konnect.aab }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     environment: app-stores
     permissions:
-      contents: write # the konnect-native tag
+      contents: read
+    outputs:
+      ios: ${{ steps.done.outputs.ios }}
+      android: ${{ steps.done.outputs.android }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read eas.json's Node version
+        id: node
+        run: echo "version=$(jq -r .build.base.node apps/konnect-mobile/eas.json)" >> "$GITHUB_OUTPUT"
       - name: Select Xcode 26.2
         if: matrix.platform == 'ios' && !inputs.update-only
-        run: sudo xcode-select -s /Applications/Xcode_26.2.app
+        run: |
+          if [ ! -d /Applications/Xcode_26.2.app ]; then ls -d /Applications/Xcode*.app; echo "::error::Xcode 26.2 isn't on this runner image"; exit 1; fi
+          sudo xcode-select -s /Applications/Xcode_26.2.app
       - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         if: matrix.platform == 'android' && !inputs.update-only
         with:
@@ -188,23 +236,63 @@ jobs:
           java-version: '17'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ steps.node.outputs.version }}
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build (local), submit to TestFlight or Play's internal track, record
+      - name: Build (local), check, submit to TestFlight or Play's internal track
         if: ${{ !inputs.update-only }}
+        id: build
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           PLATFORM: ${{ matrix.platform }}
-          ARTIFACT: ${{ matrix.artifact }}
+          ARTIFACT: ${{ runner.temp }}/${{ matrix.artifact }}
         run: |
-          npx nx run @konjir/konnect-mobile:build-production-local --output-style=stream -- --platform "$PLATFORM" --output "$RUNNER_TEMP/$ARTIFACT"
-          npx nx run @konjir/konnect-mobile:submit-production --output-style=stream -- --platform "$PLATFORM" --path "$RUNNER_TEMP/$ARTIFACT"
-          npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile production --platform "$PLATFORM"
-      - name: Update the production channel
+          export EAS_LOCAL_BUILD_PLUGIN_PATH="$GITHUB_WORKSPACE/node_modules/eas-cli-local-build-plugin/bin/run"
+          npx nx run @konjir/konnect-mobile:build-production-local --output-style=stream -- --platform "$PLATFORM" --output "$ARTIFACT"
+          npx nx run @konjir/konnect-mobile:native-verify --output-style=stream -- --profile production --platform "$PLATFORM" --artifact "$ARTIFACT" --github-output
+          npx nx run @konjir/konnect-mobile:submit-production --output-style=stream -- --platform "$PLATFORM" --path "$ARTIFACT"
+      - name: Built
+        id: done
+        if: ${{ !inputs.update-only }}
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          FINGERPRINT: ${{ steps.build.outputs.fingerprint }}
+        run: echo "$PLATFORM=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+      - name: Update the production channel (signed)
         # Once, from the Android leg: an update carries both platforms' bundles.
         if: inputs.update-only && matrix.platform == 'android'
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          KONNECT_UPDATES_PRIVATE_KEY: ${{ secrets.KONNECT_UPDATES_PRIVATE_KEY }}
           MESSAGE: ${{ inputs.message }}
-        run: npx nx run @konjir/konnect-mobile:update-production --output-style=stream -- --message "$MESSAGE" --non-interactive
+        run: |
+          export KONNECT_UPDATES_PRIVATE_KEY_PATH="$RUNNER_TEMP/updates-private-key.pem"
+          (umask 077; printf '%s\n' "$KONNECT_UPDATES_PRIVATE_KEY" > "$KONNECT_UPDATES_PRIVATE_KEY_PATH")
+          npx nx run @konjir/konnect-mobile:update-production --output-style=stream -- --message "$MESSAGE" --non-interactive
+          rm -f "$KONNECT_UPDATES_PRIVATE_KEY_PATH"
+
+  record-production:
+    name: Record production
+    needs: production
+    if: always() && github.event_name == 'workflow_dispatch' && !inputs.update-only && needs.production.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # the konnect-native tags, and nothing else: no Expo secret here
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read eas.json's Node version
+        id: node
+        run: echo "version=$(jq -r .build.base.node apps/konnect-mobile/eas.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Tag what was built
+        env:
+          IOS: ${{ needs.production.outputs.ios }}
+          ANDROID: ${{ needs.production.outputs.android }}
+        run: |
+          if [ -n "$IOS" ]; then npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile production --platform ios --fingerprint "$IOS"; fi
+          if [ -n "$ANDROID" ]; then npx nx run @konjir/konnect-mobile:native-tag --output-style=stream -- --profile production --platform android --fingerprint "$ANDROID"; fi
