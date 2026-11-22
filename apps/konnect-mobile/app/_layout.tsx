@@ -1,9 +1,10 @@
 import * as Linking from 'expo-linking';
-import { Stack } from 'expo-router';
+import { router, Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { Alert } from 'react-native';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { remember } from '@/auth/pending-link';
 import { KolabCache } from '@/kolab/live';
@@ -36,6 +37,24 @@ function Gate() {
   useEffect(() => { void SystemUI.setBackgroundColorAsync(colors.surface); }, [colors.surface]);
   useEffect(() => { if (auth.ready) void SplashScreen.hideAsync().catch(() => undefined); }, [auth.ready]);
   useEffect(() => { if (auth.ready && !signedIn) remember(url); }, [auth.ready, signedIn, url]);
+  // A new team (switched to, from the switcher or a notification, or moved to by Kolab): back to its
+  // Home, every screen of the team before closed, with what was being written in them.
+  const team = auth.current?.team;
+  const shown = useRef(team);
+  useEffect(() => {
+    if (shown.current && team && shown.current !== team) {
+      if (router.canDismiss()) router.dismissAll();
+      router.replace('/');
+    }
+    shown.current = team;
+  }, [team]);
+  // Kolab moved the sign-in because the person lost the team: say so.
+  const { moved, clearMoved } = auth;
+  useEffect(() => {
+    if (!moved) return;
+    Alert.alert(`You're no longer in ${moved.from}`, moved.to ? `konnect moved you to ${moved.to}.` : undefined);
+    clearMoved();
+  }, [moved, clearMoved]);
   if (!auth.ready) return null;
   return (
     <>

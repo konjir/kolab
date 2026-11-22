@@ -42,6 +42,7 @@ export default function Conversation() {
   const [pending, setPending] = useState<Msg[]>([]);
   const [replyTo, setReplyTo] = useState<Msg>();
   const marking = useRef(false);
+  const stalled = useRef<string[] | undefined>(undefined);
 
   const loaded = useMemo(() => convo.data?.pages.flatMap((p) => p.messages) ?? [], [convo.data]);
   const unread = useMemo(() => (kind === 'channel'
@@ -52,13 +53,14 @@ export default function Conversation() {
   const byId = useMemo(() => new Map(all.map((m) => [m.id, m])), [all]);
 
   const send = async (text: string, retryOf?: Msg) => {
-    const local: Msg = retryOf ?? { id: `local-${Date.now()}`, from: me, message: text, sent_at: new Date().toISOString(), reply_to: replyTo?.id, pending: 'sending' };
+    // Its id is its nonce: a Retry sends the same one, so Kolab keeps the message once.
+    const local: Msg = retryOf ?? { id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`, from: me, message: text, sent_at: new Date().toISOString(), reply_to: replyTo?.id, pending: 'sending' };
     setPending((p) => [{ ...local, pending: 'sending' }, ...p.filter((x) => x.id !== local.id)]);
     setReplyTo(undefined);
     try {
       const k = await api(team);
-      if (kind === 'channel') await k.sendChannelMessage(name, local.message, mentionsIn(local.message, members ?? []), local.reply_to ?? undefined);
-      else await k.sendMessage(name, local.message, local.reply_to ?? undefined);
+      if (kind === 'channel') await k.sendChannelMessage(name, local.message, mentionsIn(local.message, members ?? []), local.reply_to ?? undefined, local.id);
+      else await k.sendMessage(name, local.message, local.reply_to ?? undefined, local.id);
       await qc.invalidateQueries({ queryKey: [team, kind, name] });
       setPending((p) => p.filter((x) => x.id !== local.id));
     } catch {
@@ -73,9 +75,14 @@ export default function Conversation() {
     try {
       // Read up to the newest unread message seen (S2).
       await markReadUpTo(await auth.client(team), kind, name, unread[through - 1]!);
+      stalled.current = undefined;
       await qc.invalidateQueries({ queryKey: [team, 'answers'] });
       await qc.invalidateQueries({ queryKey: [team, 'channels'] });
-    } catch { /* tried again on the next scroll */ } finally { marking.current = false; }
+    } catch {
+      // Tried again soon with what was last on screen, even if nothing scrolls.
+      stalled.current = visible;
+      setTimeout(() => { if (stalled.current === visible) void markRead(visible); }, 5_000);
+    } finally { marking.current = false; }
   };
 
   const actions = (m: Msg) => {

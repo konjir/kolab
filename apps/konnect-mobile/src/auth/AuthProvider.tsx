@@ -13,15 +13,19 @@ import { appExtra } from '@/config';
 import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
-import { discover, signIn as signInWith, SignInStopped, type KolabOAuth, type SignInAsk } from './sign-in';
+import { discover, InvalidClient, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type Who } from './store';
 import { Tokens } from './tokens';
 
-/** expo-secure-store, readable after the phone's first unlock (so a refresh can run in the background later). */
+/**
+ * expo-secure-store, readable after the phone's first unlock (so a refresh can run in the
+ * background later), and on this device only: never in a backup, never restored to another phone.
+ */
+const ACCESS = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY };
 const secureKV: SecureKV = {
-  get: (k) => SecureStore.getItemAsync(k, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
-  set: (k, v) => SecureStore.setItemAsync(k, v, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
-  remove: (k) => SecureStore.deleteItemAsync(k, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
+  get: (k) => SecureStore.getItemAsync(k, ACCESS),
+  set: (k, v) => SecureStore.setItemAsync(k, v, ACCESS),
+  remove: (k) => SecureStore.deleteItemAsync(k, ACCESS),
 };
 
 export interface Auth {
@@ -38,8 +42,13 @@ export interface Auth {
   signOut(): Promise<{ revoked: boolean }>;
   /** Moves the sign-in to another of the person's teams. */
   switchTeam(team: string): Promise<void>;
-  /** The MCP client, connected once and shared; it follows the sign-in from team to team. */
+  /** The MCP client for the team shown, connected once and shared; a new one for each team. */
   client(team?: string): Promise<Client>;
+  /** A sign-in Kolab moved because the person lost the team (removed, left, archived, erased). */
+  moved?: { from: string; to?: string };
+  clearMoved(): void;
+  /** Counts sign-ins on this phone, so what follows one (registering for push) runs again after each. */
+  signIns: number;
 }
 
 const AuthContext = createContext<Auth | null>(null);
@@ -55,13 +64,17 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   const scheme = [Constants.expoConfig?.scheme].flat()[0] ?? 'com.konjir.konnect';
   // Kolab ended the sign-in: a count, so the same thing twice is seen twice.
   const [ended, setEnded] = useState(0);
+  const [moved, setMoved] = useState<{ from: string; to?: string }>();
+  const [signIns, setSignIns] = useState(0);
   const { store, tokens } = useMemo(() => {
     const store = new LoginStore(kv, url);
     let oauth: Promise<KolabOAuth> | undefined;
     const endpoints = () => (oauth ??= discover(url).catch((e) => { oauth = undefined; throw e; }));
-    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: () => setEnded((n) => n + 1) }) };
+    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: () => setEnded((n) => n + 1), onTeamMoved: (from, to) => setMoved({ from, to }) }) };
   }, [kv, url]);
-  const client = useRef<Promise<Client> | undefined>(undefined);
+  // One MCP client per team: its token source is bound to that team, so a request in flight when
+  // the sign-in moves never reaches the new team (Tokens' TeamChanged).
+  const client = useRef<{ team: string; client: Promise<Client> } | undefined>(undefined);
   const [state, setState] = useState<{ ready: boolean; who?: Who }>({ ready: false });
 
   const read = useCallback(async () => ({ ready: true, who: await store.who() }), [store]);
@@ -77,12 +90,15 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   const dropClient = useCallback(() => {
     const c = client.current;
     client.current = undefined;
-    void c?.then((x) => x.close()).catch(() => undefined);
+    void c?.client.then((x) => x.close()).catch(() => undefined);
   }, []);
   useEffect(() => { if (ended) { dropClient(); void read().then(setState); } }, [ended, dropClient, read]);
+  // Kolab moved the sign-in (the team was lost): a new client for the new team, and the team shown.
+  useEffect(() => { if (moved) { dropClient(); void read().then(setState); } }, [moved, dropClient, read]);
 
   const auth: Auth = {
-    ready: state.ready, url, adapter,
+    ready: state.ready, url, adapter, moved, signIns,
+    clearMoved: () => setMoved(undefined),
     current: state.who,
     teams: state.who ? [state.who] : [],
     signIn: async (ask) => {
@@ -90,23 +106,20 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
       const kept = await store.client();
       let login;
       try {
-        login = await signInWith({ url, scheme, ask, clientName, clientId: kept });
+        login = await signInWith({ url, scheme, variant: appExtra().variant, ask, clientName, clientId: kept });
       } catch (e) {
-        // A registration Kolab no longer knows (a Kolab started afresh, say): register again, once.
-        // Kolab's page can't send an unknown client back, so a sign-in closed on it also forgets
-        // the registration, and the next try registers anew.
-        if (kept && e instanceof SignInStopped) await store.forgetClient();
-        if (!kept || !/client/i.test((e as Error).message)) throw e;
+        // A registration Kolab no longer knows (invalid_client): register again, once. Cancelling
+        // the sheet, or any other failure, keeps the registration.
+        if (!kept || !(e instanceof InvalidClient)) throw e;
         await store.forgetClient();
-        login = await signInWith({ url, scheme, ask, clientName });
+        login = await signInWith({ url, scheme, variant: appExtra().variant, ask, clientName });
       }
       await store.keepClient(login.clientId);
-      const before = await store.get();
-      await store.put(login);
+      // The sign-in this one replaces is ended at Kolab, not left to lapse; nothing refreshes meanwhile.
+      await tokens.replace(login);
       dropClient();
-      // The sign-in this one replaces is ended at Kolab, not left to lapse.
-      if (before) void tokens.revoke(before);
       await reload();
+      setSignIns((n) => n + 1);
       return login.team;
     },
     signOut: async () => {
@@ -128,12 +141,15 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
       await reload();
     },
     client: () => {
-      if (!client.current) {
-        const c = teamClient(url, { token: () => tokens.accessToken(), renew: (refused) => tokens.renew(refused) });
-        c.catch(() => { if (client.current === c) client.current = undefined; });
-        client.current = c;
+      const team = state.who?.team ?? '';
+      if (!client.current || client.current.team !== team) {
+        dropClient();
+        const c = teamClient(url, { token: () => tokens.accessToken(team), renew: (refused) => tokens.renew(refused, team) });
+        const entry = { team, client: c };
+        c.catch(() => { if (client.current === entry) client.current = undefined; });
+        client.current = entry;
       }
-      return client.current;
+      return client.current.client;
     },
   };
   return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>;

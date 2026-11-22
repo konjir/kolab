@@ -1,4 +1,4 @@
-# Make a team from the team switcher, through Kolab's page, land in it, and sign out. Against the
+# Make a team from the team switcher, land in it, and sign out. Against the
 # local Kolab, signed out, as sign-in.yaml. TEAM names the new team; a second run against the same
 # Kolab needs another name, since Kolab refuses one that's taken.
 appId: ${APP_ID}
@@ -15,15 +15,9 @@ env:
 - hideKeyboard
 - tapOn:
     id: "create-team"
+# Made in the app (konjir_make_team), then switched to.
 - extendedWaitUntil:
-    visible: "Make ${TEAM}"
-    timeout: 30000
-- scrollUntilVisible:
-    element:
-      text: "Make ${TEAM} and sign in"
-- tapOn: "Make ${TEAM} and sign in"
-- extendedWaitUntil:
-    visible: "${TEAM}"
+    visible: "Teams: ${TEAM}.*"
     timeout: 30000
 - tapOn: "You"
 - assertVisible: "${TEAM}.*"

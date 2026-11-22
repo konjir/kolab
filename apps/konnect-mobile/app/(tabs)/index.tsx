@@ -10,6 +10,7 @@ import { handleOf } from '@/kolab/names';
 import { unreadOf, type Unread } from '@/kolab/unread';
 import { setBadge } from '@/push';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
+import { badgeOf } from '@/kolab/teams';
 import { TeamSwitcher, useMyTeams } from '@/TeamSwitcher';
 import { Hint, Problem, Screen, Section } from '@/ui';
 
@@ -33,7 +34,7 @@ export default function Home() {
   const conversations = useConversations(team);
   const myTeams = useMyTeams().data?.teams;
   // The app's badge: what is unread across the person's teams, as a push sets it.
-  const unreadTotal = myTeams ? myTeams.reduce((n, t) => n + t.unread, 0) : unreadOf(answers.data).total;
+  const unreadTotal = myTeams ? badgeOf(myTeams) : unreadOf(answers.data).total;
   useEffect(() => { void setBadge(unreadTotal); }, [unreadTotal]);
   const [jump, setJump] = useState('');
   const [switching, setSwitching] = useState(false);
