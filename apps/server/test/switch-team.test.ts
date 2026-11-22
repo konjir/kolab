@@ -418,23 +418,24 @@ test('konjir_list_my_teams: every kolab the person is a member of, with their ow
   const listed = await tool(mcp, t.access_token, 'konjir_list_my_teams');
   expect(listed.ok).toStrictEqual({
     teams: [
-      { kolab: 'anns', role: 'product', owner: false, current: false, unread: 5, unread_more: false, mentions: 2, mentions_more: false },
-      { kolab: 'bobs', role: 'product', owner: true, current: true, unread: 0, unread_more: false, mentions: 0, mentions_more: false },
+      { kolab: 'anns', role: 'product', owner: false, current: false, unread: 5, unread_more: false, mentions: 2, mentions_more: false, badge: 6 },
+      { kolab: 'bobs', role: 'product', owner: true, current: true, unread: 0, unread_more: false, mentions: 0, mentions_more: false, badge: 0 },
     ],
     invitations: [],
   });
   // The same numbers as Bob's answers in each kolab, read by a session of his there.
   const inAnns = await kolab.openSession('bob', 'product', { kolab: 'anns' });
   const teams = listed.ok!.teams as { kolab: string }[];
-  const { kolab: _k, role: _r, owner: _o, current: _c, ...annsCounts } = teams[0] as Record<string, unknown>;
+  const { kolab: _k, role: _r, owner: _o, current: _c, badge: _b, ...annsCounts } = teams[0] as Record<string, unknown>;
   expect(annsCounts).toStrictEqual(fromAnswers(await answers(mcp, inAnns, 'anns', 'bob')));
-  const { kolab: _k2, role: _r2, owner: _o2, current: _c2, ...bobsCounts } = teams[1] as Record<string, unknown>;
+  const { kolab: _k2, role: _r2, owner: _o2, current: _c2, badge: _b2, ...bobsCounts } = teams[1] as Record<string, unknown>;
   expect(bobsCounts).toStrictEqual(fromAnswers(await answers(mcp, t.access_token, 'bobs', 'bob')));
+  // The badge is what a push counts: his unread messages and followed channels' unread, and an unfollowed channel's mentions (6 = 2 + 3 + 1).
   // Neither the kolab he left, written to while he was there, nor a public one, nor Carol's, is among them.
   expect(teams.map((x) => x.kolab)).toStrictEqual(['anns', 'bobs']);
   // Dave's are his own: his message and his mention, never Bob's.
   const daves = await tool(mcp, (await appTokens(base, idp, app, DAVE)).access_token, 'konjir_list_my_teams');
-  expect(daves.ok!.teams).toStrictEqual([{ kolab: 'anns', role: 'product', owner: false, current: true, unread: 4, unread_more: false, mentions: 1, mentions_more: false }]);
+  expect(daves.ok!.teams).toStrictEqual([{ kolab: 'anns', role: 'product', owner: false, current: true, unread: 4, unread_more: false, mentions: 1, mentions_more: false, badge: 4 }]);
 
   // Reading counts marks nothing: the answers still hold the same.
   expect((await answers(mcp, inAnns, 'anns', 'bob')).messages.unread).toBe(2);

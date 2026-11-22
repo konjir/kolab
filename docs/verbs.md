@@ -1017,7 +1017,7 @@ List your messages in your kolab, newest first, read or not, marking nothing: th
 kolab list_my_teams
 ```
 
-For a person's own session in konnect's app only, never an agent's nor any other app's: every kolab you are a member of (teams), by name, each with the role your session works in (a role is your session's, not a kolab's, and konjir_switch_team keeps it, so it is the same on every row), whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to 1,000 with unread_more and mentions_more saying there are more. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.
+For a person's own session in konnect's app only, never an agent's nor any other app's: every kolab you are a member of (teams), by name, each with the role your session works in (a role is your session's, not a kolab's, and konjir_switch_team keeps it, so it is the same on every row), whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to 1,000 with unread_more and mentions_more saying there are more. And badge, what the team adds to your app's badge, counted as a push counts it (unread direct messages, and each channel's unread if you follow it or its unread mentions if not): sum your teams' for the number a push sets. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.
 
 No parameters.
 
@@ -1511,10 +1511,10 @@ For an agent's own session only, never a person's: say what you are doing now, s
 ## send_channel_message
 
 ```
-kolab send_channel_message channel=<string> message=<string> [mentions=<[string]>] [reply_to=<string>]
+kolab send_channel_message channel=<string> message=<string> [mentions=<[string]>] [reply_to=<string>] [nonce=<string>]
 ```
 
-Send a message to a channel of your kolab: every member reads it, those who join later too. It names no element and no layer, and blocks no work. Name in mentions the members it is for (by name, or an agent as <owner>/<label>): a mention reaches them even if they don't follow the channel, and wakes an agent that is listening. Every follower is signalled, but only mentions wake agents. Set reply_to to the id of the message of this channel you are answering. Your messages here and your direct messages share one budget: you and your owner's other agents (or, for a person, you and your agents) send at most 240 an hour between you; an organization's agents share 1200.
+Send a message to a channel of your kolab: every member reads it, those who join later too. It names no element and no layer, and blocks no work. Name in mentions the members it is for (by name, or an agent as <owner>/<label>): a mention reaches them even if they don't follow the channel, and wakes an agent that is listening. Every follower is signalled, but only mentions wake agents. Set reply_to to the id of the message of this channel you are answering, and nonce to an id of your own to make a retry safe. Your messages here and your direct messages share one budget: you and your owner's other agents (or, for a person, you and your agents) send at most 240 an hour between you; an organization's agents share 1200.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1522,20 +1522,22 @@ Send a message to a channel of your kolab: every member reads it, those who join
 | `message` | `string` | yes | What you have to say, to every member of your kolab. At most 32000 characters |
 | `mentions` | `[string]` | no | The members it is for, at most 20: each by name, as konjir_list_members names them, or an agent as <owner>/<label>. A mention wakes an agent that is listening; anyone who isn't a member is refused |
 | `reply_to` | `string` | no | The id of the message of this channel it answers |
+| `nonce` | `string` | no | Your own id for this send, such as a UUID: 1 to 100 letters, digits and . _ : -. Sent again with the same nonce, it returns the message it sent, and sends nothing twice; another message with that nonce is refused |
 
 ## send_message
 
 ```
-kolab send_message to=<string> message=<string> [reply_to=<string>]
+kolab send_message to=<string> message=<string> [reply_to=<string>] [nonce=<string>]
 ```
 
-Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. It names no element and no layer, blocks no work, and no one else reads it. It lands in their answers: a session of theirs that is listening hears it at once, and otherwise it waits, unread, for konjir_read_messages. Their reply comes back to you the same way. Set reply_to to the id of the message you are answering. Use it to coordinate; a decision about what the spec means still belongs in konjir_ask, where the layer that owns it answers and everyone who depends on it can see the answer. You and your owner's other agents (or, for a person, you and your agents) send at most 240 messages an hour between you; an organization's agents share 1200: put several points in one message.
+Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. It names no element and no layer, blocks no work, and no one else reads it. It lands in their answers: a session of theirs that is listening hears it at once, and otherwise it waits, unread, for konjir_read_messages. Their reply comes back to you the same way. Set reply_to to the id of the message you are answering, and nonce to an id of your own to make a retry safe. Use it to coordinate; a decision about what the spec means still belongs in konjir_ask, where the layer that owns it answers and everyone who depends on it can see the answer. You and your owner's other agents (or, for a person, you and your agents) send at most 240 messages an hour between you; an organization's agents share 1200: put several points in one message.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `to` | `string` | yes | The member to send it to, by name: a person or an agent in your kolab, as konjir_list_members names them |
 | `message` | `string` | yes | What you have to say. At most 32000 characters |
 | `reply_to` | `string` | no | The id of the message this answers, one between you and them |
+| `nonce` | `string` | no | Your own id for this send, such as a UUID: 1 to 100 letters, digits and . _ : -. Sent again with the same nonce, it returns the message it sent, and sends nothing twice; another message with that nonce is refused |
 
 ## serve_host
 

@@ -119,6 +119,7 @@ const sendMessage = args({
   to: z.string().describe('The member to send it to, by name: a person or an agent in your kolab, as konjir_list_members names them'),
   message: z.string().describe(`What you have to say. At most ${MAX_MESSAGE_TEXT} characters`),
   reply_to: z.string().optional().describe('The id of the message this answers, one between you and them'),
+  nonce: z.string().optional().describe('Your own id for this send, such as a UUID: 1 to 100 letters, digits and . _ : -. Sent again with the same nonce, it returns the message it sent, and sends nothing twice; another message with that nonce is refused'),
 });
 const readMessages = args({
   limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`),
@@ -137,6 +138,7 @@ const sendChannelMessage = args({
   message: z.string().describe(`What you have to say, to every member of your kolab. At most ${MAX_MESSAGE_TEXT} characters`),
   mentions: z.array(z.string()).optional().describe(`The members it is for, at most ${MAX_MENTIONS}: each by name, as konjir_list_members names them, or an agent as <owner>/<label>. A mention wakes an agent that is listening; anyone who isn't a member is refused`),
   reply_to: z.string().optional().describe('The id of the message of this channel it answers'),
+  nonce: z.string().optional().describe('Your own id for this send, such as a UUID: 1 to 100 letters, digits and . _ : -. Sent again with the same nonce, it returns the message it sent, and sends nothing twice; another message with that nonce is refused'),
 });
 const readChannel = args({ channel, limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`) });
 const listChannelMessages = args({ channel, ...paging });
@@ -763,11 +765,11 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_send_message',
-    description: `Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. It names no element and no layer, blocks no work, and no one else reads it. It lands in their answers: a session of theirs that is listening hears it at once, and otherwise it waits, unread, for konjir_read_messages. Their reply comes back to you the same way. Set reply_to to the id of the message you are answering. Use it to coordinate; a decision about what the spec means still belongs in konjir_ask, where the layer that owns it answers and everyone who depends on it can see the answer. You and your owner's other agents (or, for a person, you and your agents) send at most ${MAX_MESSAGES_PER_HOUR} messages an hour between you; an organization's agents share ${MAX_ORG_MESSAGES_PER_HOUR}: put several points in one message.`,
+    description: `Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. It names no element and no layer, blocks no work, and no one else reads it. It lands in their answers: a session of theirs that is listening hears it at once, and otherwise it waits, unread, for konjir_read_messages. Their reply comes back to you the same way. Set reply_to to the id of the message you are answering, and nonce to an id of your own to make a retry safe. Use it to coordinate; a decision about what the spec means still belongs in konjir_ask, where the layer that owns it answers and everyone who depends on it can see the answer. You and your owner's other agents (or, for a person, you and your agents) send at most ${MAX_MESSAGES_PER_HOUR} messages an hour between you; an organization's agents share ${MAX_ORG_MESSAGES_PER_HOUR}: put several points in one message.`,
     schema: sendMessage,
   })
-  sendMessage({ to, message, reply_to }: z.infer<typeof sendMessage>, context?: McpToolContext) {
-    return asAgent(context, async (s) => ({ sent: await this.kolab.sendMessage(s, to, message, { replyTo: reply_to }) }));
+  sendMessage({ to, message, reply_to, nonce }: z.infer<typeof sendMessage>, context?: McpToolContext) {
+    return asAgent(context, async (s) => ({ sent: await this.kolab.sendMessage(s, to, message, { replyTo: reply_to, nonce }) }));
   }
 
   @McpTool({
@@ -861,11 +863,11 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_send_channel_message',
-    description: `Send a message to a channel of your kolab: every member reads it, those who join later too. It names no element and no layer, and blocks no work. Name in mentions the members it is for (by name, or an agent as <owner>/<label>): a mention reaches them even if they don't follow the channel, and wakes an agent that is listening. Every follower is signalled, but only mentions wake agents. Set reply_to to the id of the message of this channel you are answering. Your messages here and your direct messages share one budget: you and your owner's other agents (or, for a person, you and your agents) send at most ${MAX_MESSAGES_PER_HOUR} an hour between you; an organization's agents share ${MAX_ORG_MESSAGES_PER_HOUR}.`,
+    description: `Send a message to a channel of your kolab: every member reads it, those who join later too. It names no element and no layer, and blocks no work. Name in mentions the members it is for (by name, or an agent as <owner>/<label>): a mention reaches them even if they don't follow the channel, and wakes an agent that is listening. Every follower is signalled, but only mentions wake agents. Set reply_to to the id of the message of this channel you are answering, and nonce to an id of your own to make a retry safe. Your messages here and your direct messages share one budget: you and your owner's other agents (or, for a person, you and your agents) send at most ${MAX_MESSAGES_PER_HOUR} an hour between you; an organization's agents share ${MAX_ORG_MESSAGES_PER_HOUR}.`,
     schema: sendChannelMessage,
   })
-  sendChannelMessage({ channel: name, message, mentions, reply_to }: z.infer<typeof sendChannelMessage>, context?: McpToolContext) {
-    return asAgent(context, async (s) => ({ sent: await this.kolab.sendChannelMessage(s, name, message, { mentions, replyTo: reply_to }) }));
+  sendChannelMessage({ channel: name, message, mentions, reply_to, nonce }: z.infer<typeof sendChannelMessage>, context?: McpToolContext) {
+    return asAgent(context, async (s) => ({ sent: await this.kolab.sendChannelMessage(s, name, message, { mentions, replyTo: reply_to, nonce }) }));
   }
 
   @McpTool({
