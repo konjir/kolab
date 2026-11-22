@@ -75,6 +75,9 @@ const app = (children: ReactNode) => (
 );
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 200)); });
 
+// Whole screens render slowly on a busy CI runner; past Jest's 5 s a timed-out test's work runs on into the next.
+jest.setTimeout(30_000);
+
 afterEach(async () => { await cleanup(); qc?.clear(); });
 beforeEach(() => {
   mockKept.clear();
