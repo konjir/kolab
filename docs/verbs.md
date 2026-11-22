@@ -70,6 +70,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`list_leases`](#list_leases) | Every lease held in your kolab now, soonest to expire first: each with its name, holder, when it was claimed and expires, and its note. |
 | [`list_members`](#list_members) | Who you can send a message to: the members of your kolab, people and agents, by name, each with its kind, an agent's owner (when the owner is a member too) and its label (so it can be named <owner>/<label>), login: the GitHub username behind them (a person's own, an agent's owner's; null without a GitHub identity), for showing https://github.com/<login>.png, here: whether a session of theirs is open in the kolab now, and, for an agent, state: idle (its harness waits, and a message starts a turn at once), working (it is in a turn, and sees a message when the turn ends), running (its harness runs, and can't tell which), or null (nothing running as it has said so in the last 90 seconds, and none of its sessions is listening for messages: a message waits, unread, until something runs as it). |
 | [`list_messages`](#list_messages) | List your messages in your kolab, newest first, read or not, marking nothing: the ones sent to you, or with sent=true the ones you sent, or with with=<member> (by name, or an agent as <owner>/<label>) the whole exchange between you and them, both ways: your direct conversation's history. |
+| [`list_my_teams`](#list_my_teams) | For a person's own session only: every kolab you are a member of (teams), by name, each with the role your session works in, whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to 1,000 with unread_more and mentions_more saying there are more. |
 | [`list_nodes`](#list_nodes) | List the nodes in your kolab: its spec, its prototypes and its bindings (parent: the spec each binds), and any plan made before D104 retired the kind (parent: the binding its work moved to), with their latest committed version number. |
 | [`list_queries`](#list_queries) | List questions and notes. |
 | [`list_repositories`](#list_repositories) | Your kolab's registered repositories, by URL: each with its root commit, the binding it implements, who registered it, and whether it is confirmed (by whom, and by which work package's approval). |
@@ -114,6 +115,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`set_work_lease`](#set_work_lease) | With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from 1 to 1440 (30 by default). |
 | [`submit_for_review`](#submit_for_review) | Submit a draft. |
 | [`submit_work`](#submit_work) | Submit the work package you hold In progress, kj:<binding>#<id>, for review, once it meets its done-when: it needs at least one commit or pull request among its evidence (give them here, as konjir_add_evidence takes them, or before); test runs are optional. |
+| [`switch_team`](#switch_team) | For a person's own session in konnect's app only: move this sign-in to another kolab you are a member of, as konjir_list_my_teams lists them, in the same role. |
 | [`take_job`](#take_job) | For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `kolab work` runs as one headless agent and which stops after that item. |
 | [`unfollow_channel`](#unfollow_channel) | Stop following a channel of your kolab, general too: its messages no longer wait in your answers, but one that mentions you still does. |
 | [`unlink`](#unlink) | Remove links in a draft of yours, so its commit doesn't carry them forward: a link you no longer rely on, or an orphaned one whose target is gone (re-point it by linking the replacement, then remove the old one). |
@@ -982,6 +984,16 @@ List your messages in your kolab, newest first, read or not, marking nothing: th
 | `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
 | `limit` | `int` | no | How many to return: 50 by default, at most 200. |
 
+## list_my_teams
+
+```
+kolab list_my_teams
+```
+
+For a person's own session only: every kolab you are a member of (teams), by name, each with the role your session works in, whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to 1,000 with unread_more and mentions_more saying there are more. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.
+
+No parameters.
+
 ## list_nodes
 
 ```
@@ -1586,6 +1598,18 @@ Submit the work package you hold In progress, kj:<binding>#<id>, for review, onc
 | `evidence` | `[{kind,sha?,pr?,url?,title?,summary?,files?,repo?,checks?}]` | no | Evidence to record with the submission, as konjir_add_evidence takes it |
 | `note` | `string` | no | What you did, for the reviewer. At most 4000 characters |
 | `found_built` | `boolean` | no | true when you built nothing because the product already met its done-when: evidence names the commit you checked it at, and note, which it then needs, says where each part is met. A forecast leaves such a run out |
+
+## switch_team
+
+```
+kolab switch_team kolab=<string>
+```
+
+For a person's own session in konnect's app only: move this sign-in to another kolab you are a member of, as konjir_list_my_teams lists them, in the same role. This session ends, its streams close, and this access token works no more; your refresh token now signs you in there: get the next access token from the token endpoint (grant_type=refresh_token) with the refresh token you hold, then read konjir_whoami and subscribe again. All of it happens, or none of it does. A kolab you aren't a member of is refused, and so is any other app's sign-in, which signs in to each kolab by itself. Returns the kolab and the role you work in there.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kolab` | `string` | yes | The kolab to work in now: one of yours, as konjir_list_my_teams lists them |
 
 ## take_job
 

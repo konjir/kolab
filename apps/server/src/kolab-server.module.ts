@@ -4,6 +4,7 @@ import type { Kolab } from '@konjir/engine';
 import { AdminTools, BreakGlassAudit, TenancyTools } from './admin-tools.js';
 import { AgentTools } from './agent-tools.js';
 import { MemberTools } from './member-tools.js';
+import { TeamTools } from './team-tools.js';
 import { KonjirAuth } from './auth.js';
 import { HealthController } from './health.controller.js';
 import { Inboxes } from './inboxes.js';
@@ -118,6 +119,7 @@ export class KolabServerModule implements NestModule {
         MemberTools,
         PushTools,
         PushNotifications,
+        TeamTools,
         AdminTools,
         BreakGlassAudit,
         TenancyTools,
