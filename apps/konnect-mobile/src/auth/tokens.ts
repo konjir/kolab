@@ -1,18 +1,16 @@
 /**
- * Access tokens for each team, refreshed as they run out: access lasts 15 minutes, and each refresh
- * rotates the refresh token (a grant lasts 30 days from its last refresh). One refresh per team at a
- * time: every caller that needs a token while one is in flight waits for that one, since a second
- * refresh with the same refresh token would be refused, and could end the grant. The new tokens are
- * saved (LoginStore.put) before any caller gets them, so the rotated refresh token is never only in
- * memory.
+ * The access token, refreshed as it runs out (access lasts 15 minutes; each refresh rotates the
+ * refresh token, and a grant lasts 30 days from its last refresh), and moved between teams.
+ *
+ * Refreshing and switching teams take turns, one at a time: a second refresh with the same refresh
+ * token would be refused (and could end the grant), and a switch changes which team the next refresh
+ * is for. Every caller that needs a token while one is under way waits for it. New tokens are saved
+ * (LoginStore.put) before any caller gets them, so the rotated refresh token is never only in memory.
  */
-import type { LoginStore, TeamLogin } from './store';
+import type { Login, LoginStore } from './store';
 
-/** The team has no sign-in, or Kolab ended it (a refused refresh): sign in again. */
-export class SignedOut extends Error {
-  name = 'SignedOut';
-  constructor(readonly team: string, why: string) { super(`${team}: ${why}`); }
-}
+/** No sign-in, or Kolab ended it (a refused refresh): sign in again. */
+export class SignedOut extends Error { name = 'SignedOut'; }
 
 export interface Endpoints { tokenEndpoint: string; revocationEndpoint?: string }
 
@@ -26,15 +24,17 @@ export interface TokensOptions {
   now?: () => number;
   /** How long before its end an access token is renewed. */
   earlyMs?: number;
-  /** Told when Kolab ends a team's sign-in (a refused refresh), after it is forgotten. */
-  onSignedOut?: (team: string) => void;
+  /** Told when Kolab ends the sign-in (a refused refresh), after it is forgotten. */
+  onSignedOut?: () => void;
 }
 
 const form = (fields: Record<string, string>) => new URLSearchParams(fields).toString();
 const FORM = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
 
 export class Tokens {
-  private readonly inFlight = new Map<string, Promise<TeamLogin>>();
+  /** The refresh or switch under way; the next one starts after it. */
+  private turn: Promise<unknown> = Promise.resolve();
+  private refreshing?: Promise<Login>;
   private readonly now: () => number;
   private readonly earlyMs: number;
 
@@ -43,37 +43,58 @@ export class Tokens {
     this.earlyMs = o.earlyMs ?? 60_000;
   }
 
-  /** A working access token for `team`, refreshed first if it is about to end. */
-  async accessToken(team: string): Promise<string> {
-    const login = await this.o.store.get(team);
-    if (!login) throw new SignedOut(team, 'not signed in');
-    if (login.expiresAt - this.earlyMs > this.now()) return login.accessToken;
-    return (await this.refresh(team)).accessToken;
+  private exclusive<T>(f: () => Promise<T>): Promise<T> {
+    const next = this.turn.then(f, f);
+    this.turn = next.catch(() => undefined);
+    return next;
+  }
+
+  private fresh = (l: Login) => l.expiresAt - this.earlyMs > this.now();
+
+  /** A working access token, refreshed first if it is about to end; after any switch under way. */
+  async accessToken(): Promise<string> {
+    await this.turn;
+    const login = await this.o.store.get();
+    if (!login) throw new SignedOut('not signed in');
+    if (this.fresh(login)) return login.accessToken;
+    return (await this.refresh()).accessToken;
+  }
+
+  /** Kolab refused `stale`: a fresh token, refreshed unless a newer one is kept already. */
+  async renew(stale: string): Promise<string> {
+    await this.turn;
+    const login = await this.o.store.get();
+    if (!login) throw new SignedOut('not signed in');
+    if (login.accessToken !== stale && this.fresh(login)) return login.accessToken;
+    return (await this.refresh()).accessToken;
+  }
+
+  /** Refreshes the sign-in, or joins the refresh already under way. */
+  refresh(): Promise<Login> {
+    this.refreshing ??= this.exclusive(() => this.exchange()).finally(() => { this.refreshing = undefined; });
+    return this.refreshing;
   }
 
   /**
-   * Kolab refused `stale`: a fresh token, refreshed unless one newer than `stale` is kept already
-   * (another request refreshed meanwhile).
+   * Moves the sign-in to `team`: `ask` tells Kolab (konjir_switch_team, with the access token in
+   * use, which Kolab ends), then the same refresh token gets an access token for the new team.
+   * Nothing else refreshes or switches meanwhile.
    */
-  async renew(team: string, stale: string): Promise<string> {
-    const login = await this.o.store.get(team);
-    if (!login) throw new SignedOut(team, 'not signed in');
-    if (login.accessToken !== stale && login.expiresAt - this.earlyMs > this.now()) return login.accessToken;
-    return (await this.refresh(team)).accessToken;
+  switchTeam(team: string, ask: (accessToken: string) => Promise<{ kolab: string; role: string }>): Promise<Login> {
+    return this.exclusive(async () => {
+      let login = await this.o.store.get();
+      if (!login) throw new SignedOut('not signed in');
+      if (!this.fresh(login)) login = await this.exchange();
+      const moved = await ask(login.accessToken);
+      await this.o.store.put({ ...login, team: moved.kolab, role: moved.role, expiresAt: 0 });
+      return this.exchange();
+    });
   }
 
-  /** Refreshes `team`'s sign-in, or joins the refresh already under way. */
-  refresh(team: string): Promise<TeamLogin> {
-    const running = this.inFlight.get(team);
-    if (running) return running;
-    const p = this.doRefresh(team).finally(() => this.inFlight.delete(team));
-    this.inFlight.set(team, p);
-    return p;
-  }
-
-  private async doRefresh(team: string): Promise<TeamLogin> {
-    const login = await this.o.store.get(team);
-    if (!login) throw new SignedOut(team, 'not signed in');
+  /** One refresh at Kolab's token endpoint; the caller holds the turn. */
+  private async exchange(): Promise<Login> {
+    const login = await this.o.store.get();
+    if (!login) throw new SignedOut('not signed in');
     const { tokenEndpoint } = await this.o.endpoints();
     const res = await this.o.fetch(tokenEndpoint, {
       method: 'POST', headers: FORM,
@@ -83,38 +104,34 @@ export class Tokens {
     if (!res.ok) {
       // The grant is over (revoked, expired, or the token already used): only a new sign-in helps.
       if (body.error === 'invalid_grant' || body.error === 'invalid_client') {
-        await this.o.store.remove(team);
-        this.o.onSignedOut?.(team);
-        throw new SignedOut(team, `Kolab ended the sign-in (${body.error_description ?? body.error})`);
+        await this.o.store.remove();
+        this.o.onSignedOut?.();
+        throw new SignedOut(`Kolab ended the sign-in (${body.error_description ?? body.error})`);
       }
-      throw new Error(`Kolab didn't refresh ${team}'s sign-in: ${res.status} ${body.error ?? ''}`.trim());
+      throw new Error(`Kolab didn't refresh the sign-in: ${res.status} ${body.error ?? ''}`.trim());
     }
-    if (!body.access_token || !body.expires_in) throw new Error(`Kolab's refresh for ${team} had no access token`);
-    const next: TeamLogin = {
-      ...login,
-      accessToken: body.access_token,
-      refreshToken: body.refresh_token ?? login.refreshToken,
-      expiresAt: this.now() + body.expires_in * 1000,
-    };
+    if (!body.access_token || !body.expires_in) throw new Error('Kolab\'s refresh had no access token');
+    const next: Login = { ...login, accessToken: body.access_token, refreshToken: body.refresh_token ?? login.refreshToken, expiresAt: this.now() + body.expires_in * 1000 };
     await this.o.store.put(next);
     return next;
   }
 
   /**
-   * Signs `team` out: revokes its refresh token at Kolab (RFC 7009), which ends the grant, then
-   * forgets the sign-in. It is forgotten even when Kolab can't be reached; `revoked` says whether
-   * Kolab heard, since an unrevoked grant lapses only after 30 days unused.
+   * Signs out: revokes the refresh token at Kolab (RFC 7009), which ends the grant, then forgets the
+   * sign-in. It is forgotten even when Kolab can't be reached; `revoked` says whether Kolab heard.
    */
-  async signOut(team: string): Promise<{ revoked: boolean }> {
-    const login = await this.o.store.get(team);
-    if (!login) return { revoked: false };
-    const revoked = await this.revoke(login);
-    await this.o.store.remove(team);
-    return { revoked };
+  signOut(): Promise<{ revoked: boolean }> {
+    return this.exclusive(async () => {
+      const login = await this.o.store.get();
+      if (!login) return { revoked: false };
+      const revoked = await this.revoke(login);
+      await this.o.store.remove();
+      return { revoked };
+    });
   }
 
-  /** Revokes a sign-in's refresh token at Kolab, ending its grant; whether Kolab heard. */
-  async revoke(login: Pick<TeamLogin, 'refreshToken' | 'clientId'>): Promise<boolean> {
+  /** Revokes a refresh token at Kolab, ending its grant; whether Kolab heard. */
+  async revoke(login: Pick<Login, 'refreshToken' | 'clientId'>): Promise<boolean> {
     try {
       const { revocationEndpoint } = await this.o.endpoints();
       if (!revocationEndpoint) return false;

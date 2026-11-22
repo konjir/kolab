@@ -37,12 +37,11 @@ describe('the brand theme', () => {
 });
 
 describe('the tabs', () => {
-  test('You offers another sign-in and making a team, names the theme, and reads @konjir/types\' limits from their TypeScript source', async () => {
+  test('You names the theme, reads @konjir/types\' limits from their TypeScript source, and offers no per-team sign-in', async () => {
     scheme.mockReturnValue('light');
     await signedOut(<You />);
-    expect(await screen.findByText('Not signed in to any team.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Sign in to a team' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Create' })).toBeTruthy();
+    expect(await screen.findByText('Not signed in.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Sign in to a team|Create/ })).toBeNull();
     expect(screen.getByText('Daybreak')).toBeTruthy();
     expect(screen.getByText(new RegExp(`up to ${MAX_MESSAGE_TEXT.toLocaleString()} characters`))).toBeTruthy();
   });

@@ -37,7 +37,13 @@ export default function TeamSettings() {
     try { const s = await f(); if (s) setSaid(s); await qc.invalidateQueries({ queryKey: [team] }); } catch (e) { setProblem((e as Error).message); } finally { setBusy(undefined); }
   };
   const ask = (title: string, message: string, yes: string, f: () => void) => Alert.alert(title, message, [{ text: 'Cancel', style: 'cancel' }, { text: yes, style: 'destructive', onPress: f }]);
-  const leaveAfter = async (f: () => Promise<unknown>) => { await f(); await auth.signOut(team); };
+  // Out of this team: on to another of the person's teams, or signed out when there is none.
+  const leaveAfter = async (f: () => Promise<unknown>) => {
+    await f();
+    const mine = await auth.adapter.list(await auth.client(), { team, role: auth.current?.role ?? '' }).catch(() => undefined);
+    const next = mine?.switching ? mine.teams.find((t) => t.kolab !== team) : undefined;
+    if (next) await auth.switchTeam(next.kolab); else await auth.signOut();
+  };
 
   return (
     <Screen title={team} testID="team">

@@ -1,6 +1,6 @@
-# Make a second team from the You tab, switch between the two on Home, and sign out of both back to
-# the sign-in screen. Against the local Kolab, signed out, as sign-in.yaml. TEAM names the new team;
-# a second run against the same Kolab needs another name, since Kolab refuses one that's taken.
+# Make a team from the team switcher, through Kolab's page, land in it, and sign out. Against the
+# local Kolab, signed out, as sign-in.yaml. TEAM names the new team; a second run against the same
+# Kolab needs another name, since Kolab refuses one that's taken.
 appId: ${APP_ID}
 tags: [local-kolab]
 env:
@@ -12,14 +12,16 @@ env:
     timeout: 30000
 - tapOn: "Sign in to hub"
 - extendedWaitUntil:
-    visible: "general"
+    visible: "general.*"
     timeout: 30000
-- tapOn: "You"
+- tapOn:
+    id: "team-switcher"
 - tapOn:
     id: "new-team"
 - inputText: ${TEAM}
 - hideKeyboard
-- tapOn: "Create"
+- tapOn:
+    id: "create-team"
 - extendedWaitUntil:
     visible: "Make ${TEAM}"
     timeout: 30000
@@ -28,21 +30,12 @@ env:
       text: "Make ${TEAM} and sign in"
 - tapOn: "Make ${TEAM} and sign in"
 - extendedWaitUntil:
-    visible: "Made ${TEAM}, and signed in."
+    visible: "${TEAM}"
     timeout: 30000
-- tapOn: "Home"
+- tapOn: "You"
 - assertVisible: "${TEAM}.*"
 - tapOn:
-    id: "team-switcher"
-- tapOn:
-    id: "switch-hub"
-- assertVisible: "hub.*"
-- tapOn: "You"
-- tapOn: "Sign out of hub"
-- extendedWaitUntil:
-    visible: "Signed out of hub."
-    timeout: 20000
-- tapOn: "Sign out of ${TEAM}"
+    id: "sign-out"
 - extendedWaitUntil:
     visible: "Sign in with GitHub"
     timeout: 20000

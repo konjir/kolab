@@ -11,6 +11,7 @@ import { handleOf } from '@/kolab/names';
 import { unreadOf, type Unread } from '@/kolab/unread';
 import { setBadge } from '@/push';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
+import { TeamSwitcher, useMyTeams } from '@/TeamSwitcher';
 import { Hint, Problem, Screen, Section } from '@/ui';
 
 const STATE_ICON: Record<string, IconName> = { working: 'stateWorking', running: 'stateRunning', idle: 'stateIdle' };
@@ -35,6 +36,8 @@ export default function Home() {
   useEffect(() => { void setBadge(unreadTotal); }, [unreadTotal]);
   const [jump, setJump] = useState('');
   const [switching, setSwitching] = useState(false);
+  // Something unread in a team other than the one shown: a dot on the switcher.
+  const elsewhere = (useMyTeams().data?.teams ?? []).some((t) => !t.current && t.unread > 0);
   if (!team) return null; // The root layout's gate shows the sign-in screen while no team is signed in.
 
   const all = members.data?.members ?? [];
@@ -55,21 +58,13 @@ export default function Home() {
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
       <Screen title={team} testID="home" refreshControl={<RefreshControl refreshing={channels.isRefetching} onRefresh={() => void qc.invalidateQueries({ queryKey: [team] })} />}>
         <View style={styles.top}>
-          <Pressable testID="team-switcher" accessibilityRole="button" accessibilityLabel={`Teams: ${team}`} onPress={() => setSwitching((s) => !s)} style={[styles.switcher, { backgroundColor: colors.accent }]}>
+          <Pressable testID="team-switcher" accessibilityRole="button" accessibilityLabel={`Teams: ${team}${elsewhere ? ', unread in another team' : ''}`} onPress={() => setSwitching(true)} style={[styles.switcher, { backgroundColor: colors.accent }]}>
             <Text style={[styles.switcherText, { color: colors['on-accent'] }]}>{team.slice(0, 2).toUpperCase()}</Text>
+            {elsewhere && <View style={[styles.elsewhere, { backgroundColor: colors.boundary, borderColor: colors.surface }]} />}
           </Pressable>
           <TextInput testID="jump" value={jump} onChangeText={setJump} placeholder="Jump to…" placeholderTextColor={colors['ink-muted']} autoCapitalize="none" autoCorrect={false}
             style={[styles.jump, { color: colors.ink, backgroundColor: colors['surface-raised'], borderColor: colors.line }]} />
         </View>
-        {switching && (
-          <Section title="Teams">
-            {auth.teams.map((t) => (
-              <Item key={t.team} testID={`switch-${t.team}`} icon={t.team === team ? 'following' : 'team'} label={t.team} detail={t.actor}
-                onPress={() => { setSwitching(false); void auth.switchTeam(t.team); }} />
-            ))}
-            <Item icon="signIn" label="Add a team" onPress={() => { setSwitching(false); router.navigate('/you'); }} />
-          </Section>
-        )}
         {problem && <Problem>{problem.message}</Problem>}
         {unreadRows.length > 0 && (
           <Section title="Unreads">
@@ -92,6 +87,7 @@ export default function Home() {
         </Section>
         <View style={{ height: 72 }} />
       </Screen>
+      <TeamSwitcher open={switching} onClose={() => setSwitching(false)} />
       <Pressable testID="new-message" accessibilityRole="button" accessibilityLabel="New message" onPress={() => router.push('/new')} style={[styles.fab, { backgroundColor: colors.accent, bottom: insets.bottom + 72 }]}>
         <Icon name="newMessage" size={24} tintColor={colors['on-accent']} />
       </Pressable>
@@ -121,6 +117,7 @@ function Item({ icon, label, detail, unread, onPress, testID }: { icon: IconName
 const styles = StyleSheet.create({
   top: { flexDirection: 'row', gap: 10, alignItems: 'center' },
   switcher: { width: 40, height: 40, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
+  elsewhere: { position: 'absolute', right: -3, top: -3, width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
   switcherText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 15 },
   jump: { flex: 1, height: 40, borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, fontFamily: FAMILIES.sans, fontSize: 15 },
   item: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 11 },

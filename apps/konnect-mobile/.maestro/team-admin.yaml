@@ -1,5 +1,5 @@
 # Team settings: invite Cy (a GitHub account the local Kolab's stub knows), see the invitation, and
-# withdraw it. Signed in to hub as Ann, its owner, against the local Kolab.
+# withdraw it, then sign out. Signed in to hub as Ann, its owner, against the local Kolab.
 appId: ${APP_ID}
 tags: [local-kolab]
 ---
@@ -21,3 +21,9 @@ tags: [local-kolab]
     visible: "Withdrew cy's invitation."
     timeout: 20000
 - assertVisible: "None waiting."
+- tapOn: "You"
+- tapOn:
+    id: "sign-out"
+- extendedWaitUntil:
+    visible: "Sign in with GitHub"
+    timeout: 20000
