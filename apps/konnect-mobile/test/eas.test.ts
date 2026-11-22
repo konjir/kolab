@@ -1,5 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /** scripts/eas.mjs, as the Nx targets run it, with `env` added to (or taken from) this process's. */
@@ -34,5 +36,31 @@ describe('eas update', () => {
     const r = eas(['update', '--channel=production', '--message', 'x'], { APP_VARIANT: 'preview' });
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('must be built with APP_VARIANT=production');
+  });
+});
+
+/** scripts/credentials.mjs, as its Nx targets run it, with HOME at an empty folder unless `env` says otherwise. */
+const credentials = (args: string[], env: Record<string, string | undefined> = {}) => {
+  const merged: Record<string, string> = {};
+  for (const [k, v] of Object.entries({ ...process.env, HOME: mkdtempSync(join(tmpdir(), 'creds-')), EXPO_ASC_API_KEY_PATH: undefined, EXPO_ASC_KEY_ID: undefined, EXPO_ASC_ISSUER_ID: undefined, ...env })) if (v !== undefined) merged[k] = v;
+  return spawnSync('node', [join(__dirname, '..', 'scripts', 'credentials.mjs'), ...args], { encoding: 'utf8', env: merged });
+};
+
+describe('eas credentials', () => {
+  test('names one app and one platform, or does nothing', () => {
+    for (const args of [[], ['production'], ['development', 'ios'], ['production', 'web'], ['production', 'ios', '--extra']]) {
+      const r = credentials(args);
+      expect([args, r.status]).toStrictEqual([args, 2]);
+      expect(r.stderr).toContain('usage: node scripts/credentials.mjs <production|preview> <ios|android>');
+    }
+  });
+
+  test('on iOS, signs in with the App Store Connect key in ~/.config/konnect-mobile, and stops before EAS or Apple when it is not there', () => {
+    const home = mkdtempSync(join(tmpdir(), 'creds-'));
+    const r = credentials(['preview', 'ios'], { HOME: home });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`isn't at ${join(home, '.config', 'konnect-mobile', 'AuthKey_V455KTM3J2.p8')}. Nothing was sent to EAS or Apple.`);
+    const elsewhere = credentials(['production', 'ios'], { EXPO_ASC_API_KEY_PATH: '/nonexistent/AuthKey_X.p8' });
+    expect(elsewhere.stderr).toContain("isn't at /nonexistent/AuthKey_X.p8");
   });
 });

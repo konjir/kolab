@@ -35,6 +35,10 @@
     "update-production": "APP_VARIANT=production node scripts/eas.mjs update --channel production --environment production",
     "version": "node scripts/eas.mjs build:version:get",
     "credentials": "node scripts/eas.mjs credentials",
+    "credentials-production-ios": "node scripts/credentials.mjs production ios",
+    "credentials-preview-ios": "node scripts/credentials.mjs preview ios",
+    "credentials-production-android": "node scripts/credentials.mjs production android",
+    "credentials-preview-android": "node scripts/credentials.mjs preview android",
     "eas-whoami": "node scripts/eas.mjs whoami",
     "env-pull": "node scripts/eas.mjs env:pull",
     "local-kolab": "TSX_TSCONFIG_PATH=../../tsconfig.json tsx --conditions=@konjir/source scripts/local-kolab.mts",
@@ -207,6 +211,18 @@
         "cache": false
       },
       "credentials": {
+        "cache": false
+      },
+      "credentials-production-ios": {
+        "cache": false
+      },
+      "credentials-production-android": {
+        "cache": false
+      },
+      "credentials-preview-ios": {
+        "cache": false
+      },
+      "credentials-preview-android": {
         "cache": false
       },
       "eas-whoami": {
