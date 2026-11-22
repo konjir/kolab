@@ -37,11 +37,11 @@
   },
   "submit": {
     "preview": {
-      "ios": { "ascAppId": "REPLACE_WITH_PREVIEW_APP_STORE_CONNECT_APP_ID" },
+      "ios": { "ascAppId": "6838010869" },
       "android": { "track": "internal", "releaseStatus": "completed" }
     },
     "production": {
-      "ios": { "ascAppId": "REPLACE_WITH_APP_STORE_CONNECT_APP_ID", "metadataPath": "./store.config.json" },
+      "ios": { "ascAppId": "6838005396", "metadataPath": "./store.config.json" },
       "android": { "track": "internal", "releaseStatus": "completed" }
     }
   }
