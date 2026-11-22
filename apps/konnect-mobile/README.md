@@ -90,6 +90,7 @@ The app type-checks and lints with its own TypeScript 6.0 (SDK 58's), not the re
 | `update-preview`, `update-production` | `eas update --channel <channel>`, with `-- --message "…"` |
 | `version` | `eas build:version:get` |
 | `credentials` | `eas credentials` (interactive) |
+| `credentials-production-ios`, `credentials-preview-ios`, `credentials-production-android`, `credentials-preview-android` | `eas credentials` for that app and platform, built as its `APP_VARIANT`. On iOS it signs in to Apple with the App Store Connect team key (`scripts/credentials.mjs`), whose `.p8` stays at `~/.config/konnect-mobile/AuthKey_<key id>.p8`, not the Apple ID sign-in that eas-cli 27.11.0 fails. Choose the same build profile when asked. |
 | `eas-whoami` | `eas whoami` |
 | `env-pull` | `eas env:pull`, with `-- --environment <env>` |
 
@@ -122,14 +123,14 @@ What Lee does, in order, before the release workflows can ship anything. Until t
 
 1. **Apple.** Enrol in the Apple Developer Program.
 2. **App Store Connect.** Make two apps: `com.konjir.konnect` (konnect), and `com.konjir.konnect.preview` (konnect preview, for TestFlight internal testing only and never released). Put each app's Apple ID in `eas.json`'s `submit.production.ios.ascAppId` and `submit.preview.ios.ascAppId`. The submit targets refuse while those say `REPLACE_WITH_…`.
-3. **iOS credentials.** In this folder run `npx eas credentials`, which is interactive and signs in with Lee's Apple account:
+3. **iOS credentials.** Run `npx nx run @konjir/konnect-mobile:credentials-production-ios`, then `credentials-preview-ios`. Each is interactive, and signs in to Apple with Lee's App Store Connect team API key ("EAS", Admin), whose `.p8` is kept at `~/.config/konnect-mobile/AuthKey_V455KTM3J2.p8` (mode 600), outside the repo. eas-cli's Apple ID sign-in fails with eas-cli 27.11.0. In each, set up:
    - a distribution certificate and provisioning profile for each bundle ID
    - the APNs key, for push
    - an App Store Connect API key, for `eas submit`
 4. **Google Play.**
    - A developer account, and the two apps `com.konjir.konnect` and `com.konjir.konnect.preview`.
    - Each app's first AAB must be uploaded by hand in Play Console; Google allows nothing else for a new app. Build it with `build-preview-local` or `build-production-local`.
-   - Then a Google Cloud service account with release rights, its JSON key uploaded to EAS (`npx eas credentials`, Android, Google Service Account) rather than kept in the repo.
+   - Then a Google Cloud service account with release rights, its JSON key uploaded to EAS (`credentials-production-android` and `credentials-preview-android`, Google Service Account) rather than kept in the repo.
 5. **Android push.** FCM v1 credentials, uploaded to EAS the same way.
 6. **The Expo access token for CI.** Make one on expo.dev and store it as the `EXPO_TOKEN` secret in both GitHub environments below. A personal Expo account has no robot users, so this is Lee's own token, acting as Lee.
 7. **The update signing key.** Updates are signed (expo-updates code signing). A build applies only an update signed with the key whose certificate it carries, `certs/certificate.pem`, which is in the repo. The private key was made with the certificate and is kept outside the repo, on Lee's machine, at `~/.config/konnect-mobile/updates-signing/private-key.pem` (mode 600). Store its contents as the `KONNECT_UPDATES_PRIVATE_KEY` secret in both environments below. Never commit it. To publish an update by hand, set `KONNECT_UPDATES_PRIVATE_KEY_PATH` to that file and `APP_VARIANT` to the channel's variant; `scripts/eas.mjs` refuses otherwise.
