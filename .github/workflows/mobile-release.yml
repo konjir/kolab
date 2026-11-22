@@ -26,6 +26,11 @@ name: Mobile release
 # which push the tag: they hold no Expo secret, install nothing and run native.mjs, which uses only
 # Node's own modules, on the runner's Node. Actions are pinned to commit SHAs, dependencies are
 # installed without install scripts, and the local build plugin is the locked devDependency.
+#
+# Android ships only once the repository variable KONNECT_ANDROID is `on` (Settings, Secrets and
+# variables, Actions, Variables), set when Play's apps, the upload keystore and the FCM key exist
+# (apps/konnect-mobile/README.md, Release setup). Until then iOS ships alone: no Android binary is
+# built, and an Android leg that would fail never holds back the iOS update.
 
 on:
   push:
@@ -68,7 +73,7 @@ jobs:
     outputs:
       node: ${{ steps.node.outputs.version }}
       ios: ${{ steps.check.outputs.ios_build }}
-      android: ${{ steps.check.outputs.android_build }}
+      android: ${{ vars.KONNECT_ANDROID == 'on' && steps.check.outputs.android_build || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -212,10 +217,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { platform: ios, runner: macos-15, artifact: konnect.ipa }
-          - { platform: android, runner: ubuntu-24.04, artifact: konnect.aab }
-    runs-on: ${{ matrix.runner }}
+        platform: ${{ fromJSON(vars.KONNECT_ANDROID == 'on' && '["ios","android"]' || '["ios"]') }}
+    runs-on: ${{ matrix.platform == 'ios' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 90
     environment: app-stores
     permissions:
@@ -251,7 +254,7 @@ jobs:
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           PLATFORM: ${{ matrix.platform }}
-          ARTIFACT: ${{ runner.temp }}/${{ matrix.artifact }}
+          ARTIFACT: ${{ runner.temp }}/konnect.${{ matrix.platform == 'ios' && 'ipa' || 'aab' }}
         run: |
           export EAS_LOCAL_BUILD_PLUGIN_PATH="$GITHUB_WORKSPACE/node_modules/eas-cli-local-build-plugin/bin/run"
           npx nx run @konjir/konnect-mobile:build-production-local --output-style=stream -- --platform "$PLATFORM" --output "$ARTIFACT"
@@ -265,8 +268,9 @@ jobs:
           FINGERPRINT: ${{ steps.build.outputs.fingerprint }}
         run: echo "$PLATFORM=$FINGERPRINT" >> "$GITHUB_OUTPUT"
       - name: Update the production channel (signed)
-        # Once, from the Android leg: an update carries both platforms' bundles.
-        if: inputs.update-only && matrix.platform == 'android'
+        # Once, from one leg (Android's, on the cheaper runner, once it ships): an update carries
+        # both platforms' bundles.
+        if: inputs.update-only && matrix.platform == (vars.KONNECT_ANDROID == 'on' && 'android' || 'ios')
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           KONNECT_UPDATES_PRIVATE_KEY: ${{ secrets.KONNECT_UPDATES_PRIVATE_KEY }}
