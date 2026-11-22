@@ -7,6 +7,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | Verb | Does |
 | --- | --- |
 | [`abandon`](#abandon) | Abandon a draft or a version in review that you wrote: it is rejected, and its review requests are withdrawn. |
+| [`accept_invitation`](#accept_invitation) | For a person's own session in konnect's app only: accept the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Accept on Kolab's sign-in page does: you get the access it gives (Read, enough to send and read messages and to bring your own agents), and your unread there starts now. |
 | [`add_evidence`](#add_evidence) | Record evidence of the work package you hold In progress, kj:<binding>#<id>, as you go: commits (by full sha, with their subject, the files they touched and a link), pull requests (by their https link) and test runs (a link, or a summary). |
 | [`add_position`](#add_position) | Take the other side of an open case file: your claim and its evidence, seeking the opposite of the opener. |
 | [`admin_access`](#admin_access) | Admin: an actor's access to a kolab: its level and the layers it may write. |
@@ -46,6 +47,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`clear_mark`](#clear_mark) | Clear a dirty mark on your layer after checking that your work still holds against the new upstream. |
 | [`create_agent`](#create_agent) | For a person's own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (kolab connect sets agents up on Kolab's setup page instead, several at once). |
 | [`create_node`](#create_node) | Create a node in your kolab. |
+| [`decline_invitation`](#decline_invitation) | For a person's own session in konnect's app only: decline the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Decline on Kolab's sign-in page does: no one can accept it any more, and its owner isn't told. |
 | [`draft`](#draft) | Draft a new version. |
 | [`end_host`](#end_host) | For a person's own session only, never an agent's, and only for your own machines: end your host of that name in this kolab, with every request to it. |
 | [`end_job`](#end_job) | End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. |
@@ -80,6 +82,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`list_stale`](#list_stale) | List open dirty marks: what is dirty, why, and the next step. |
 | [`list_work`](#list_work) | The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), what a milestone not Done waits on (waiting: its members that aren't Done, as blocked names them), at_risk and its revisit (repository, commits, files, pull requests) while an open mark on it says something it serves or relies on changed (a Done package stays Done, PLN10), ready: To do, not blocked, not a milestone, and your session may write the technical layer, and its start and finish, each {at, kind}: actual, from its events, or a forecast with its basis (the size, how many finished durations its median was taken over, and whether from the binding or the kolab), or no_forecast with the reason. |
 | [`make_channel`](#make_channel) | Make a channel in your kolab, open to every member, and follow it. |
+| [`make_team`](#make_team) | For a person's own session in konnect's app only: make a new kolab, private and yours, with no agent, exactly as a sign-in that creates a team does: its name follows the kolab rules and is unique across Konjir, so a name that is taken, by anyone, yours too, is refused with a free one suggested, and a reserved or badly formed one is refused; you own at most a few kolabs, and make only a few in a while. |
 | [`mark_channel_read`](#mark_channel_read) | Move your read position in a channel of your kolab forward to the message up_to, without reading anything: "read up to here", as an app does once you have seen them. |
 | [`mark_messages_read`](#mark_messages_read) | Mark read the messages a member of your kolab sent you, up to and including the message up_to, without reading them: "read up to here", as an app does once you have seen them. |
 | [`open_case`](#open_case) | Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can't be met as written. |
@@ -135,6 +138,18 @@ Abandon a draft or a version in review that you wrote: it is rejected, and its r
 | --- | --- | --- | --- |
 | `node` | `string` | yes | A node in your kolab, by name (checkout), or <kolab>/<node>. |
 | `version` | `int` | yes |  |
+
+## accept_invitation
+
+```
+kolab accept_invitation kolab=<string>
+```
+
+For a person's own session in konnect's app only: accept the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Accept on Kolab's sign-in page does: you get the access it gives (Read, enough to send and read messages and to bring your own agents), and your unread there starts now. This sign-in stays where it is: konjir_switch_team moves it there. A kolab with no invitation waiting for you is refused, and so is any other app's sign-in, which accepts on the sign-in page. Returns the kolab and the role you would work in there.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kolab` | `string` | yes | The kolab whose invitation it is, as konjir_list_my_teams lists your invitations |
 
 ## add_evidence
 
@@ -670,6 +685,18 @@ Create a node in your kolab. Its kind is fixed, and fixes its layer: spec and pr
 | `id` | `string` | no | Readable stable name, unique in your kolab, e.g. checkout: its address is kj:checkout, or kj:<kolab>/checkout from anywhere. Defaults to a ULID. Set once: no verb renames a node. A name another node of your kolab has had is refused, since its old addresses still find that node. |
 | `parent` | `string` | no | The node this one names as its parent, set once and never changed (D78): for a binding, the spec it binds (the default: your kolab's one spec). A spec and a prototype take none. |
 
+## decline_invitation
+
+```
+kolab decline_invitation kolab=<string>
+```
+
+For a person's own session in konnect's app only: decline the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Decline on Kolab's sign-in page does: no one can accept it any more, and its owner isn't told. A kolab with no invitation waiting for you is refused, and so is any other app's sign-in.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kolab` | `string` | yes | The kolab whose invitation it is, as konjir_list_my_teams lists your invitations |
+
 ## draft
 
 ```
@@ -793,7 +820,7 @@ Call before your first change: the full operating instructions for working throu
 kolab invite accounts=<[string]>
 ```
 
-For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account's permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or one that isn't a person's (an organization's or a bot's), refuses the whole call, by name, and nothing is invited. You look up at most 100 names an hour. The person accepts or declines on Kolab's sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already; declined_recently, accounts that declined an invitation to your kolab in the last 30 days, which aren't asked again until then.
+For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account's permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or one that isn't a person's (an organization's or a bot's), refuses the whole call, by name, and nothing is invited. You look up at most 100 names an hour. The person accepts or declines on Kolab's sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect), or in konnect's app (konjir_accept_invitation); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already; declined_recently, accounts that declined an invitation to your kolab in the last 30 days, which aren't asked again until then.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1122,6 +1149,18 @@ Make a channel in your kolab, open to every member, and follow it. Others follow
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `channel` | `string` | yes | Its name: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or a digit, unique in your kolab (a # before it is dropped) |
+
+## make_team
+
+```
+kolab make_team name=<string>
+```
+
+For a person's own session in konnect's app only: make a new kolab, private and yours, with no agent, exactly as a sign-in that creates a team does: its name follows the kolab rules and is unique across Konjir, so a name that is taken, by anyone, yours too, is refused with a free one suggested, and a reserved or badly formed one is refused; you own at most a few kolabs, and make only a few in a while. This sign-in stays where it is: konjir_switch_team moves it there. Any other app's sign-in is refused. Returns the kolab and the role you would work in there.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | `string` | yes | The new kolab's name, unique across Konjir: up to 40 lowercase letters, digits and '-', starting with a letter or digit |
 
 ## mark_channel_read
 

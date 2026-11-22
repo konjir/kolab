@@ -12,9 +12,17 @@ export interface IdentityProvider {
   /**
    * Where to send the browser to sign in. Kolab is the provider's OAuth client: `redirectUri` is
    * Kolab's callback, `state` binds the answer to this sign-in (CSRF), and `codeChallenge` is the
-   * S256 PKCE challenge of the verifier `identify` will be given.
+   * S256 PKCE challenge of the verifier `identify` will be given. `prompt: 'select_account'` asks
+   * the provider to let the person choose which of their accounts signs in, rather than going on
+   * with the one their browser is signed in to there.
    */
-  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string;
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; prompt?: 'select_account' }): string;
+  /**
+   * The origin `authorizationUrl` sends the browser to, when it is not Kolab's own: a form whose
+   * answer is a redirect there must name it in the page's form-action (CSP3). Undefined for a
+   * provider that answers on Kolab's own origin, as the stub does.
+   */
+  readonly authorizationOrigin?: string;
   /**
    * Who signed in, from the code the provider sent to Kolab's callback. `subject` is the
    * provider's own id for the person, which never changes hands (GitHub's numeric user id);
@@ -61,7 +69,9 @@ export class GitHubIdentity implements IdentityProvider {
   private get fetch(): Fetch { return this.config.fetch ?? fetch; }
   private signal() { return AbortSignal.timeout(this.config.timeoutMs ?? 10_000); }
 
-  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string {
+  get authorizationOrigin() { return new URL(this.web).origin; }
+
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; prompt?: 'select_account' }): string {
     const u = new URL('/login/oauth/authorize', this.web);
     u.searchParams.set('client_id', this.config.clientId);
     u.searchParams.set('redirect_uri', p.redirectUri);
@@ -69,6 +79,8 @@ export class GitHubIdentity implements IdentityProvider {
     u.searchParams.set('code_challenge', p.codeChallenge);
     u.searchParams.set('code_challenge_method', 'S256');
     u.searchParams.set('allow_signup', 'true');
+    // GitHub shows its account picker for it, so a person signed in there as one account can choose another.
+    if (p.prompt) u.searchParams.set('prompt', p.prompt);
     return u.toString();
   }
 
@@ -152,7 +164,11 @@ export class StubIdentity implements IdentityProvider {
   lookups = 0;
   async lookup(login: string) { this.lookups++; return this.accounts.get(login.toLowerCase()); }
 
-  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string }): string {
+  /** The prompt each authorizationUrl was asked with, in order: what GitHub would have been asked. */
+  readonly prompts: (string | undefined)[] = [];
+
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; prompt?: 'select_account' }): string {
+    this.prompts.push(p.prompt);
     const who = this.queue.shift() ?? this.as;
     const u = new URL(p.redirectUri);
     u.searchParams.set('state', p.state);
