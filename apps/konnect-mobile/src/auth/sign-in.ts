@@ -32,18 +32,19 @@ export async function discover(url: string): Promise<KolabOAuth> {
 }
 
 /**
- * Production's redirect: a verified https link on Konjir's own site (a Universal Link on iOS, an
- * App Link on Android), which only konnect's app, signed by Konjir's team, can be sent. Kolab
- * accepts the private schemes only on servers that enable them (local-kolab, tests).
+ * Preview's and production's redirect: a verified https link on Konjir's own site (a Universal Link
+ * on iOS, an App Link on Android), which only konnect's apps, signed by Konjir's team, can be sent.
+ * Kolab accepts the development scheme only on servers that enable it (KONJIR_APP_DEV_SCHEMES:
+ * local-kolab, tests), and the production scheme nowhere.
  */
 export const PRODUCTION_REDIRECT = 'https://www.konjir.com/konnect/app/oauth';
 
 /**
- * The one redirect a variant registers and is sent back to: production's https link, and for
- * development and preview their own private scheme, `<bundle ID>:/oauth`.
+ * The one redirect a variant registers and is sent back to: the https link for preview and
+ * production, and for development its own private scheme, `com.konjir.konnect.dev:/oauth`.
  */
 export function redirectFor(variant: string, scheme: string): string {
-  return variant === 'production' ? PRODUCTION_REDIRECT : `${scheme}:/oauth`;
+  return variant === 'development' ? `${scheme}:/oauth` : PRODUCTION_REDIRECT;
 }
 
 /** What the person asks Kolab's page for. */
