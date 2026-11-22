@@ -298,6 +298,49 @@ test('a send repeated with its nonce returns the message it sent, once, for a di
   expect((await kolab.sendMessage(ann, 'bo', 'again')).id).not.toBe((await kolab.sendMessage(ann, 'bo', 'again')).id);
 });
 
+test('the same nonce sent at once to two conversations, or two channels, sends one message and refuses the other as naming it, never a raw duplicate-key error', async () => {
+  const { kolab, ann } = await hub();
+  await kolab.makeChannel(ann, 'deploys');
+  // At once, each under its own conversation's or channel's lock: on Postgres both may pass the repeat check.
+  const dms = await Promise.allSettled([kolab.sendMessage(ann, 'bo', 'Lunch?', { nonce: 'race-1' }), kolab.sendMessage(ann, 'bo-claude', 'Lunch?', { nonce: 'race-1' })]);
+  const chans = await Promise.allSettled([kolab.sendChannelMessage(ann, 'general', 'Ship it', { nonce: 'race-2' }), kolab.sendChannelMessage(ann, 'deploys', 'Ship it', { nonce: 'race-2' })]);
+  for (const r of [dms, chans]) {
+    expect(r.filter((x) => x.status === 'fulfilled').length).toBe(1);
+    const refused = r.find((x): x is PromiseRejectedResult => x.status === 'rejected')!;
+    expect(String(refused.reason)).toMatch(/LimitError: nonce race-\d names another message you sent in kolab hub/);
+  }
+  // The index's refusal itself, made certain: the checks before and under the lock see nothing (as a
+  // send racing under another lock would), so the insert meets the earlier message's nonce. Then the
+  // check runs again: the earlier message when it is this one, the LimitError when it is another.
+  const transaction = kolab.db.transaction.bind(kolab.db);
+  const query = kolab.db.query.bind(kolab.db);
+  let blind = 0;
+  const blinded = (q: typeof query) => ((sql: string, params?: unknown[]) => (blind > 0 && /m\.nonce = \$3/.test(sql) ? (blind--, Promise.resolve({ rows: [] })) : q(sql, params))) as typeof query;
+  kolab.db.query = blinded(query);
+  kolab.db.transaction = (<T>(fn: (tx: typeof kolab.db) => Promise<T>) => transaction((tx) => {
+    tx.query = blinded(tx.query.bind(tx));
+    return fn(tx);
+  })) as typeof kolab.db.transaction;
+  const dm = await kolab.sendMessage(ann, 'bo', 'Tea?', { nonce: 'blind-1' });
+  const ch = await kolab.sendChannelMessage(ann, 'general', 'Tea?', { nonce: 'blind-2' });
+  blind = 2;
+  expect(await kolab.sendMessage(ann, 'bo', 'Tea?', { nonce: 'blind-1' })).toStrictEqual(dm);
+  expect(blind).toBe(0);
+  blind = 2;
+  expect(await rejection(kolab.sendMessage(ann, 'bo-claude', 'Tea?', { nonce: 'blind-1' }))).toMatch(/LimitError: nonce blind-1 names another message/);
+  expect(blind).toBe(0);
+  blind = 2;
+  expect(await kolab.sendChannelMessage(ann, 'general', 'Tea?', { nonce: 'blind-2' })).toStrictEqual(ch);
+  expect(blind).toBe(0);
+  blind = 2;
+  expect(await rejection(kolab.sendChannelMessage(ann, 'deploys', 'Tea?', { nonce: 'blind-2' }))).toMatch(/LimitError: nonce blind-2 names another message/);
+  expect(blind).toBe(0);
+  kolab.db.transaction = transaction;
+  kolab.db.query = query;
+  expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from message where nonce is not null`)).rows[0].n).toBe(2);
+  expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from channel_message where nonce is not null`)).rows[0].n).toBe(2);
+});
+
 test('a conversation\'s messages are numbered in the order they commit: each later than any already there, whichever of the two sent it', async () => {
   const { kolab, ann, bo } = await hub();
   const a = await kolab.sendMessage(ann, 'bo', 'one');

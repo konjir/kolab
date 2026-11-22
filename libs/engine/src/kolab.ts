@@ -10728,8 +10728,14 @@ export class Kolab {
       await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
       queued = await this.enqueuePush(tx, { kind: 'dm', kolab: s.kolab, id, recipients: [to] });
       return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
-    }, undefined, { access: true })).catch((e: unknown) => {
+    }, undefined, { access: true })).catch(async (e: unknown) => {
       if (e instanceof Repeated) return e.message as Message;
+      // The same nonce sent at once to another conversation, under another lock: the index refuses
+      // the later one, which is the earlier's repeat or, naming another message, refused for it.
+      if (isUniqueViolation(e, 'message_nonce')) {
+        const first = await repeat(this.db);
+        if (first) return first;
+      }
       throw e;
     });
     if (sent.id !== id) return sent;
@@ -11199,8 +11205,13 @@ export class Kolab {
         sent: { id, channel: c.name, from: s.actor_id, message: body, reply_to: opts.replyTo ?? null, mentions, sent_at: iso(sent.sent_at)! },
         channelId: c.id, recipients: signalled,
       };
-    }, undefined, { access: true })).catch((e: unknown) => {
+    }, undefined, { access: true })).catch(async (e: unknown) => {
       if (e instanceof Repeated) return { repeated: e.message as ChannelMessage };
+      // The same nonce sent at once to another channel, under another lock: as for sendMessage.
+      if (isUniqueViolation(e, 'channel_message_nonce')) {
+        const first = await repeat(this.db);
+        if (first) return { repeated: first };
+      }
       throw e;
     });
     if ('repeated' in done) return done.repeated;
