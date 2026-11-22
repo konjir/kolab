@@ -9,7 +9,8 @@
 // `verify` takes the fingerprint from the build itself: the runtime version embedded in the
 // artifact (EXUpdates.bundle/fingerprint in an .ipa, the asset `fingerprint` in an .aab; see
 // embedded-fingerprint.mjs) must be exactly the fingerprint this checkout computes, or it fails. `tag` records only a fingerprint `verify` gave. Only GitHub
-// Actions may create konnect-native/* tags (a tag ruleset; README, Release setup).
+// Actions creates konnect-native/* tags; nothing else restricts them beyond write access (README,
+// Release setup, step 9).
 //
 // A binary built for a fingerprint is recorded as the git tag
 // konnect-native/<profile>/<platform>/<fingerprint>, pushed by the workflow that built it. EAS
