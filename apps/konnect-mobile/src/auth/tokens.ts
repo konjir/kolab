@@ -12,6 +12,17 @@ import type { Login, LoginStore } from './store';
 /** No sign-in, or Kolab ended it (a refused refresh): sign in again. */
 export class SignedOut extends Error { name = 'SignedOut'; }
 
+/** A request made for one team after the sign-in moved to another: never sent to the new team. */
+export class TeamChanged extends Error { name = 'TeamChanged'; }
+
+/** The team and role a token's scope names (`konjir kolab:<team> role:<role>`), if it names them. */
+export function scopeTeam(scope: string | undefined): { team: string; role?: string } | undefined {
+  const team = /(?:^|\s)kolab:([a-z0-9][a-z0-9-]*)(?:\s|$)/.exec(scope ?? '')?.[1];
+  if (!team) return undefined;
+  const role = /(?:^|\s)role:([a-z]+)(?:\s|$)/.exec(scope ?? '')?.[1];
+  return { team, ...(role ? { role } : {}) };
+}
+
 export interface Endpoints { tokenEndpoint: string; revocationEndpoint?: string }
 
 type Fetch = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
@@ -26,6 +37,11 @@ export interface TokensOptions {
   earlyMs?: number;
   /** Told when Kolab ends the sign-in (a refused refresh), after it is forgotten. */
   onSignedOut?: () => void;
+  /**
+   * Told when a refresh lands in another team than the one kept: Kolab moved the sign-in, because
+   * the person lost the team (removed, left, archived, erased). `from` is the team they lost.
+   */
+  onTeamMoved?: (from: string, to: string) => void;
 }
 
 const form = (fields: Record<string, string>) => new URLSearchParams(fields).toString();
@@ -35,6 +51,8 @@ export class Tokens {
   /** The refresh or switch under way; the next one starts after it. */
   private turn: Promise<unknown> = Promise.resolve();
   private refreshing?: Promise<Login>;
+  /** A switch asked for is under way: its refresh's new team is no news. */
+  private switching = false;
   private readonly now: () => number;
   private readonly earlyMs: number;
 
@@ -51,22 +69,40 @@ export class Tokens {
 
   private fresh = (l: Login) => l.expiresAt - this.earlyMs > this.now();
 
-  /** A working access token, refreshed first if it is about to end; after any switch under way. */
-  async accessToken(): Promise<string> {
+  /**
+   * A working access token, refreshed first if it is about to end; after any switch under way.
+   * With `team`, only one for that team: a request made for a team the sign-in has left throws
+   * TeamChanged rather than reach the new team.
+   */
+  async accessToken(team?: string): Promise<string> {
     await this.turn;
-    const login = await this.o.store.get();
+    let login = await this.o.store.get();
     if (!login) throw new SignedOut('not signed in');
-    if (this.fresh(login)) return login.accessToken;
-    return (await this.refresh()).accessToken;
+    if (!this.fresh(login)) login = await this.refresh();
+    if (team !== undefined && login.team !== team) throw new TeamChanged(`the sign-in moved from ${team} to ${login.team}`);
+    return login.accessToken;
   }
 
-  /** Kolab refused `stale`: a fresh token, refreshed unless a newer one is kept already. */
-  async renew(stale: string): Promise<string> {
+  /** Kolab refused `stale`: a fresh token, refreshed unless a newer one is kept already; for `team` alone, as accessToken. */
+  async renew(stale: string, team?: string): Promise<string> {
     await this.turn;
-    const login = await this.o.store.get();
+    let login = await this.o.store.get();
     if (!login) throw new SignedOut('not signed in');
-    if (login.accessToken !== stale && this.fresh(login)) return login.accessToken;
-    return (await this.refresh()).accessToken;
+    if (login.accessToken === stale || !this.fresh(login)) login = await this.refresh();
+    if (team !== undefined && login.team !== team) throw new TeamChanged(`the sign-in moved from ${team} to ${login.team}`);
+    return login.accessToken;
+  }
+
+  /**
+   * Keeps a new sign-in in place of the one kept (signing in again, or as another account), and
+   * revokes the old one at Kolab, with no refresh or switch in between.
+   */
+  replace(next: Login): Promise<void> {
+    return this.exclusive(async () => {
+      const before = await this.o.store.get();
+      await this.o.store.put(next);
+      if (before && before.refreshToken !== next.refreshToken) void this.revoke(before);
+    });
   }
 
   /** Refreshes the sign-in, or joins the refresh already under way. */
@@ -82,13 +118,20 @@ export class Tokens {
    */
   switchTeam(team: string, ask: (accessToken: string) => Promise<{ kolab: string; role: string }>): Promise<Login> {
     return this.exclusive(async () => {
+      this.switching = true;
+      try { return await this.move(team, ask); } finally { this.switching = false; }
+    });
+  }
+
+  private async move(team: string, ask: (accessToken: string) => Promise<{ kolab: string; role: string }>): Promise<Login> {
+    {
       let login = await this.o.store.get();
       if (!login) throw new SignedOut('not signed in');
       if (!this.fresh(login)) login = await this.exchange();
       const moved = await ask(login.accessToken);
       await this.o.store.put({ ...login, team: moved.kolab, role: moved.role, expiresAt: 0 });
       return this.exchange();
-    });
+    }
   }
 
   /** One refresh at Kolab's token endpoint; the caller holds the turn. */
@@ -96,11 +139,15 @@ export class Tokens {
     const login = await this.o.store.get();
     if (!login) throw new SignedOut('not signed in');
     const { tokenEndpoint } = await this.o.endpoints();
-    const res = await this.o.fetch(tokenEndpoint, {
+    const send = () => this.o.fetch(tokenEndpoint, {
       method: 'POST', headers: FORM,
       body: form({ grant_type: 'refresh_token', refresh_token: login.refreshToken, client_id: login.clientId }),
     });
-    const body = await res.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; error?: string; error_description?: string };
+    // A refresh whose answer was lost on the way is sent again at once: within its grace window
+    // Kolab gives the same successor tokens, rather than refusing a refresh token already used.
+    let res;
+    try { res = await send(); } catch { res = await send(); }
+    const body = await res.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error?: string; error_description?: string };
     if (!res.ok) {
       // The grant is over (revoked, expired, or the token already used): only a new sign-in helps.
       if (body.error === 'invalid_grant' || body.error === 'invalid_client') {
@@ -111,8 +158,14 @@ export class Tokens {
       throw new Error(`Kolab didn't refresh the sign-in: ${res.status} ${body.error ?? ''}`.trim());
     }
     if (!body.access_token || !body.expires_in) throw new Error('Kolab\'s refresh had no access token');
-    const next: Login = { ...login, accessToken: body.access_token, refreshToken: body.refresh_token ?? login.refreshToken, expiresAt: this.now() + body.expires_in * 1000 };
+    // The token's own scope says which team it is for: the one kept, unless Kolab moved the sign-in.
+    const scoped = scopeTeam(body.scope);
+    const next: Login = {
+      ...login, accessToken: body.access_token, refreshToken: body.refresh_token ?? login.refreshToken, expiresAt: this.now() + body.expires_in * 1000,
+      ...(scoped ? { team: scoped.team, role: scoped.role ?? login.role } : {}),
+    };
     await this.o.store.put(next);
+    if (scoped && scoped.team !== login.team && !this.switching) this.o.onTeamMoved?.(login.team, scoped.team);
     return next;
   }
 

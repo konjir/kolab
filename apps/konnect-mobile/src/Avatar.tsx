@@ -9,14 +9,19 @@ import { StyleSheet, Text, View } from 'react-native';
 import { Icon } from './icons';
 import { FAMILIES, useAppTheme } from './theme';
 
-type WithLogin = Member & { login?: string | null };
+type WithLogin = Member & { login?: string | null; github_id?: number | string | null };
 
-export const avatarUrl = (login: string | null | undefined, size: number) => (login ? `https://github.com/${encodeURIComponent(login)}.png?size=${Math.round(size * 3)}` : undefined);
+/** The GitHub avatar: by account id when Kolab gives it (stable across renames), else by login. */
+export const avatarUrl = (m: Pick<WithLogin, 'login' | 'github_id'> | undefined, size: number) => {
+  const px = Math.round(size * 3);
+  if (m?.github_id) return `https://avatars.githubusercontent.com/u/${encodeURIComponent(String(m.github_id))}?s=${px}`;
+  return m?.login ? `https://github.com/${encodeURIComponent(m.login)}.png?size=${px}` : undefined;
+};
 
 export function Avatar({ member, owner, size = 36 }: { member: WithLogin; owner?: WithLogin; size?: number }) {
   const { colors } = useAppTheme();
-  const login = member.kind === 'agent' ? owner?.login : member.login;
-  const url = avatarUrl(login, size);
+  // An agent's own entry carries its owner's login (S5); its owner's entry, when there is one, too.
+  const url = avatarUrl(member.kind === 'agent' ? owner ?? member : member, size);
   const r = size / 2;
   return (
     <View style={{ width: size, height: size }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">

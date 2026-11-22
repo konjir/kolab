@@ -1,5 +1,5 @@
 # One sign-in, every team: Ann signs in to hub, sees side's unread in the switcher, switches to side
-# with no second sign-in and back, accepts Bo's invitation to ops on Kolab's page, and signs out.
+# with no second sign-in and back, accepts Bo's invitation to ops in the app, and signs out.
 # Against a freshly started local-kolab (Ann in hub and side, a mention and a DM for her in side,
 # an invitation to ops), signed out.
 appId: ${APP_ID}
@@ -37,18 +37,11 @@ tags: [local-kolab]
 - extendedWaitUntil:
     visible: "Teams: hub.*"
     timeout: 30000
-# Bo's invitation: accepted on Kolab's page, which signs Ann in to ops.
+# Bo's invitation: accepted in the app (konjir_accept_invitation), then switched to.
 - tapOn:
     id: "team-switcher"
 - tapOn:
     id: "accept-ops"
-- extendedWaitUntil:
-    visible: "Choose where to sign in"
-    timeout: 30000
-- scrollUntilVisible:
-    element:
-      text: "Accept and sign in"
-- tapOn: "Accept and sign in"
 - extendedWaitUntil:
     visible: "Teams: ops.*"
     timeout: 30000

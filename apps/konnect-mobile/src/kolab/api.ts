@@ -46,9 +46,18 @@ export const kolab = (client: Client) => ({
   /** Each DM partner's conversation, newest first, with its last message and unread count (S3). */
   conversations: () => callNew<Page<'conversations', Conversation>>(client, 'konjir_list_conversations', { limit: 200 }),
   directMessages: (other: string, cursor?: string) => call<Page<'messages', Message>>(client, 'konjir_list_messages', { with: other, limit: 50, ...(cursor ? { cursor } : {}) }),
-  sendMessage: (to: string, message: string, replyTo?: string) => call<{ sent: Message }>(client, 'konjir_send_message', { to, message, ...(replyTo ? { reply_to: replyTo } : {}) }),
-  sendChannelMessage: (channel: string, message: string, mentions: string[], replyTo?: string) =>
-    call<{ sent: ChannelMessage & { capped?: boolean } }>(client, 'konjir_send_channel_message', { channel, message, ...(mentions.length ? { mentions } : {}), ...(replyTo ? { reply_to: replyTo } : {}) }),
+  /**
+   * Sends a DM. `nonce` names this one message: sent again (Retry after a lost answer), Kolab keeps
+   * it once. Sent only to a Kolab that takes it.
+   */
+  sendMessage: async (to: string, message: string, replyTo?: string, nonce?: string) => call<{ sent: Message }>(client, 'konjir_send_message', {
+    to, message, ...(replyTo ? { reply_to: replyTo } : {}), ...(nonce && await takesArg(client, 'konjir_send_message', 'nonce') ? { nonce } : {}),
+  }),
+  sendChannelMessage: async (channel: string, message: string, mentions: string[], replyTo?: string, nonce?: string) =>
+    call<{ sent: ChannelMessage & { capped?: boolean } }>(client, 'konjir_send_channel_message', {
+      channel, message, ...(mentions.length ? { mentions } : {}), ...(replyTo ? { reply_to: replyTo } : {}),
+      ...(nonce && await takesArg(client, 'konjir_send_channel_message', 'nonce') ? { nonce } : {}),
+    }),
   /** Consumes up to `limit` unread messages of a channel, oldest first, marking them read. */
   readChannel: (channel: string, limit = 20) => call<{ messages?: unknown[]; more?: number }>(client, 'konjir_read_channel', { channel, limit }),
   /** Consumes up to `limit` unread DMs from `from`, oldest first, marking them read. */
@@ -69,13 +78,19 @@ export const kolab = (client: Client) => ({
 });
 export type KolabApi = ReturnType<typeof kolab>;
 
-const toolNames = new WeakMap<Client, Promise<Set<string>>>();
+const toolArgs = new WeakMap<Client, Promise<Map<string, Set<string>>>>();
+const toolsOf = (client: Client) => {
+  let tools = toolArgs.get(client);
+  if (!tools) {
+    tools = client.listTools().then((r) => new Map(r.tools.map((t) => [t.name, new Set(Object.keys((t.inputSchema as { properties?: object }).properties ?? {}))])));
+    toolArgs.set(client, tools);
+  }
+  return tools;
+};
 /** The tools this Kolab has, asked once per connection: an older Kolab lacks the newer ones. */
-export function hasTool(client: Client, name: string): Promise<boolean> {
-  let names = toolNames.get(client);
-  if (!names) { names = client.listTools().then((r) => new Set(r.tools.map((t) => t.name))); toolNames.set(client, names); }
-  return names.then((n) => n.has(name));
-}
+export const hasTool = (client: Client, name: string) => toolsOf(client).then((t) => t.has(name));
+/** Whether this Kolab's `tool` takes `arg` (a newer argument an older Kolab would refuse). */
+export const takesArg = (client: Client, tool: string, arg: string) => toolsOf(client).then((t) => t.get(tool)?.has(arg) ?? false);
 
 /** A tool this Kolab hasn't: said as what it is, rather than as a failed call. */
 export class KolabLacks extends Error { name = 'KolabLacks'; }

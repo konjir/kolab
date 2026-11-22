@@ -12,7 +12,7 @@
  *   invitations waiting for them; `konjir team:<name> intent:create` makes a team.
  * - The code exchanged with its PKCE verifier, and konjir_whoami asked which team and who.
  */
-import { AuthRequest, CodeChallengeMethod, exchangeCodeAsync, makeRedirectUri, ResponseType, type DiscoveryDocument } from 'expo-auth-session';
+import { AuthRequest, CodeChallengeMethod, exchangeCodeAsync, ResponseType, type DiscoveryDocument } from 'expo-auth-session';
 import { teamClient } from './mcp';
 import type { Login } from './store';
 import type { Endpoints } from './tokens';
@@ -31,8 +31,20 @@ export async function discover(url: string): Promise<KolabOAuth> {
   };
 }
 
-/** The one redirect this variant registers and is sent back to: `<scheme>:/oauth`. */
-export const redirectFor = (scheme: string) => makeRedirectUri({ native: `${scheme}:/oauth` });
+/**
+ * Production's redirect: a verified https link on Konjir's own site (a Universal Link on iOS, an
+ * App Link on Android), which only konnect's app, signed by Konjir's team, can be sent. Kolab
+ * accepts the private schemes only on servers that enable them (local-kolab, tests).
+ */
+export const PRODUCTION_REDIRECT = 'https://www.konjir.com/konnect/app/oauth';
+
+/**
+ * The one redirect a variant registers and is sent back to: production's https link, and for
+ * development and preview their own private scheme, `<bundle ID>:/oauth`.
+ */
+export function redirectFor(variant: string, scheme: string): string {
+  return variant === 'production' ? PRODUCTION_REDIRECT : `${scheme}:/oauth`;
+}
 
 /** What the person asks Kolab's page for. */
 export type SignInAsk = { kind: 'choose' } | { kind: 'create'; team: string };
@@ -47,9 +59,12 @@ export const scopeFor = (ask: SignInAsk) => {
 /** The person closed the sign-in, or Kolab's page refused it: `message` says which, as Kolab did. */
 export class SignInStopped extends Error { name = 'SignInStopped'; }
 
-export async function signIn(opts: { url: string; scheme: string; ask: SignInAsk; clientName: string; clientId?: string | null }): Promise<Login> {
+/** Kolab doesn't know the client registration used (invalid_client): register again. */
+export class InvalidClient extends Error { name = 'InvalidClient'; }
+
+export async function signIn(opts: { url: string; scheme: string; variant: string; ask: SignInAsk; clientName: string; clientId?: string | null }): Promise<Login> {
   const kolab = await discover(opts.url);
-  const redirectUri = redirectFor(opts.scheme);
+  const redirectUri = redirectFor(opts.variant, opts.scheme);
   // The registration kept from an earlier sign-in, or a new one.
   let client: { client_id?: string; error_description?: string } = { client_id: opts.clientId ?? undefined };
   if (!client.client_id) {
@@ -67,14 +82,18 @@ export async function signIn(opts: { url: string; scheme: string; ask: SignInAsk
     scopes: scopeFor(opts.ask), extraParams: { resource: opts.url },
   });
   // Ephemeral: no cookies shared with Safari, and no system prompt before the page opens.
-  const result = await request.promptAsync(kolab.discovery, { preferEphemeralSession: true });
+  // An https redirect completes in the auth session as a Universal Link (iOS 17.4 and later).
+  const result = await request.promptAsync(kolab.discovery, { preferEphemeralSession: true, preferUniversalLinks: redirectUri.startsWith('https:') });
+  if (result.type === 'error' && result.params.error === 'invalid_client') throw new InvalidClient(result.params.error_description ?? 'Kolab doesn\'t know this app\'s registration');
   if (result.type === 'error') throw new SignInStopped(result.params.error_description ?? result.error?.message ?? 'Kolab refused the sign-in');
   if (result.type !== 'success') throw new SignInStopped('The sign-in was closed before it finished');
 
   const tokens = await exchangeCodeAsync({
     clientId: client.client_id, code: result.params.code!, redirectUri,
     extraParams: { code_verifier: request.codeVerifier!, resource: opts.url },
-  }, kolab.discovery);
+  }, kolab.discovery).catch((e: Error & { code?: string }) => {
+    throw e.code === 'invalid_client' ? new InvalidClient(e.message) : e;
+  });
   if (!tokens.refreshToken) throw new Error('Kolab issued no refresh token');
 
   // Which team the person picked or made on Kolab's page, and who they are there.

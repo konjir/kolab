@@ -1,21 +1,30 @@
-# From the sign-in screen to hub's Home, as Ann. Kolab's page is either the one tap ("Continue as
-# @ann", naming the team she used last), where "Choose another team" leads to the chooser, or the
-# chooser itself (an invitation waits, as local-kolab's seed has one to ops). Either way Ann picks hub.
+# From the sign-in screen to hub's Home, as Ann. Kolab's page for the app is about the GitHub
+# identity alone ("Continue as @ann"); the sign-in lands in the team Ann used last, or her first,
+# and the switcher takes her to hub when that is another.
 appId: ${APP_ID}
 ---
 - tapOn: "Sign in with GitHub"
 - extendedWaitUntil:
-    visible: "Sign in to hub|Choose another team"
+    visible: "Continue as @ann"
+    timeout: 30000
+# The button, below the page's words, not the heading that says the same.
+- tapOn:
+    text: "Continue as @ann"
+    below: ".*renews itself.*"
+- extendedWaitUntil:
+    visible: "Teams: .*"
     timeout: 30000
 - runFlow:
     when:
-      visible: "Choose another team"
+      notVisible: "Teams: hub.*"
     commands:
-      - tapOn: "Choose another team"
-      - extendedWaitUntil:
-          visible: "Sign in to hub"
-          timeout: 20000
-- tapOn: "Sign in to hub"
+      - tapOn:
+          id: "team-switcher"
+      - tapOn:
+          id: "team-hub"
+- extendedWaitUntil:
+    visible: "Teams: hub.*"
+    timeout: 30000
 - extendedWaitUntil:
     visible: "general.*"
     timeout: 30000

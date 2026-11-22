@@ -8,7 +8,6 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { AppState, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from './auth/AuthProvider';
-import { SignInStopped } from './auth/sign-in';
 import { Icon } from './icons';
 import { switcherOrder, type MyTeams } from './kolab/teams';
 import { FAMILIES, RADII, useAppTheme } from './theme';
@@ -45,7 +44,7 @@ export function TeamSwitcher({ open, onClose }: { open: boolean; onClose: () => 
   const run = async (what: string, f: () => Promise<unknown>) => {
     setBusy(what); setProblem(undefined);
     try { await f(); onClose(); router.navigate('/'); void mine.refetch(); }
-    catch (e) { setProblem(e instanceof SignInStopped ? `Not done: ${e.message}.` : (e as Error).message); }
+    catch (e) { setProblem((e as Error).message); }
     finally { setBusy(undefined); }
   };
   const teams = switcherOrder(mine.data?.teams ?? []);
@@ -84,10 +83,12 @@ export function TeamSwitcher({ open, onClose }: { open: boolean; onClose: () => 
               <View key={i.kolab} style={styles.team}>
                 <Icon name="invite" size={20} tintColor={colors.accent} />
                 <Text style={[styles.name, { color: colors.ink }]}>{i.kolab}<Text style={{ color: colors['ink-muted'] }}>{`  from ${i.invited_by}`}</Text></Text>
-                <Button testID={`accept-${i.kolab}`} quiet label="Accept" busy={busy === `accept-${i.kolab}`} onPress={() => void run(`accept-${i.kolab}`, () => auth.signIn({ kind: 'choose' }))} />
+                <Button testID={`accept-${i.kolab}`} quiet label="Accept" busy={busy === `accept-${i.kolab}`}
+                  onPress={() => void run(`accept-${i.kolab}`, async () => { await auth.adapter.accept(await auth.client(), i.kolab); await auth.switchTeam(i.kolab); })} />
+                <Button testID={`decline-${i.kolab}`} quiet label="Decline" busy={busy === `decline-${i.kolab}`}
+                  onPress={() => { setBusy(`decline-${i.kolab}`); setProblem(undefined); void auth.client().then((c) => auth.adapter.decline(c, i.kolab)).then(() => mine.refetch(), (e: Error) => setProblem(e.message)).finally(() => setBusy(undefined)); }} />
               </View>
             ))}
-            <Hint>Accepting opens Kolab&apos;s page, where you accept it.</Hint>
           </Section>
         )}
         <Section title="Make a team">
@@ -96,7 +97,7 @@ export function TeamSwitcher({ open, onClose }: { open: boolean; onClose: () => 
               placeholderTextColor={colors['ink-muted']} style={[styles.input, { color: colors.ink, borderColor: colors.line, backgroundColor: colors['surface-raised'] }]} />
             <Button testID="create-team" quiet label="Make" busy={busy === 'create'} onPress={() => {
               if (!NAME.test(name)) { setProblem('A team\'s name is up to 40 lowercase letters, digits and \'-\', starting with a letter or digit.'); return; }
-              void run('create', async () => { await auth.signIn({ kind: 'create', team: name }); setName(''); });
+              void run('create', async () => { const made = await auth.adapter.make(await auth.client(), name); await auth.switchTeam(made.kolab); setName(''); });
             }} />
           </View>
         </Section>
