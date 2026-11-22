@@ -1,0 +1,3 @@
+{
+  "applinks": { "details": [{ "appIDs": ["ABCDE12345.com.konjir.konnect"], "components": [{ "/": "/konnect/app/oauth" }] }] }
+}

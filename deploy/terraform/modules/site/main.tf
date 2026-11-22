@@ -9,6 +9,9 @@
 #    301 loops on that URL until it drops it (the function's comment says more)
 #  - an ACM certificate in us-east-1, validated through the konjir.com zone
 #  - security headers on every response, a strict CSP among them
+#  - konnect's app links, /.well-known/apple-app-site-association (as JSON, though it has no
+#    extension) and /.well-known/assetlinks.json, when the build wrote them, served as they are,
+#    with konnect's app's sign-in page at /konnect/app/oauth (the function serves both unredirected)
 #  - every file in site/ (README.md, dotfiles and the source in site/src/ aside) uploaded with its
 #    content type and cache policy: content-hashed files cached a year as immutable, everything
 #    else a minute, so a deploy shows within a minute and needs no invalidation. The build keeps the
@@ -73,6 +76,12 @@ locals {
     webp  = "image/webp"
     woff2 = "font/woff2"
     xml   = "application/xml"
+  }
+
+  # Files whose name says nothing of their type: Apple reads apple-app-site-association, which has
+  # no extension, only as JSON.
+  content_type_of = {
+    ".well-known/apple-app-site-association" = "application/json"
   }
 }
 
@@ -170,7 +179,7 @@ resource "aws_s3_object" "site" {
   key          = each.value
   source       = "${var.site_dir}/${each.value}"
   etag         = filemd5("${var.site_dir}/${each.value}")
-  content_type = lookup(local.content_types, lower(reverse(split(".", each.value))[0]), "application/octet-stream")
+  content_type = lookup(local.content_type_of, each.value, lookup(local.content_types, lower(reverse(split(".", basename(each.value)))[0]), "application/octet-stream"))
   # A content-hashed name (name.0123456789.ext) never changes content; anything else may.
   cache_control = can(regex("\\.[0-9a-f]{10}\\.[a-z0-9]+$", each.value)) ? "public, max-age=31536000, immutable" : "public, max-age=60"
 

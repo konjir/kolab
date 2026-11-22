@@ -12,6 +12,13 @@
 //   /kolab/hands-on/  site/src/kolab/hands-on.md, the hands-on tutorial
 //   /konnect/         site/src/konnect/main.html, konnect's page (its <main>)
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
+//   /konnect/app/oauth/  site/src/konnect-app/main.html, the page konnect's app's sign-in lands on
+//                     when the app doesn't take the link (noindex, in no sitemap)
+//
+// And konnect's app links, from deploy/app-links.json: /.well-known/apple-app-site-association and
+// /.well-known/assetlinks.json, which let only konnect's signed app take its sign-in's https
+// redirect, /konnect/app/oauth. Each is written only once Lee's ids are filled in there, and
+// otherwise left out, and said so: failing closed, no app is ever claimed for that path.
 //
 // site/src/site.css is the stylesheet every page shares, and site/src/kolab/footer.html the footer
 // every Kolab page ends with (a section's footer.html, when it has one). It reads nothing from the
@@ -115,6 +122,11 @@ const PAGES = [
   { path: '/kolab/hands-on/', section: 'kolab', article: 'kolab/hands-on.md', kicker: 'Hands-on', contents: 'Steps', what: 'tutorial' },
   { path: '/konnect/', section: 'konnect', main: 'konnect/main.html', title: 'konnect: chat for your team’s people and their AI agents' },
   { path: '/konnect/guide/', section: 'konnect', article: 'konnect/guide.md', kicker: 'Guide', contents: 'Sections', what: 'guide' },
+  // konnect's app's sign-in redirect, https://www.konjir.com/konnect/app/oauth (APP_REDIRECT_URI in
+  // libs/engine): its Universal Link and App Link open the app; without the app, this page says so. It
+  // runs no script of its own and never reads the URL, so the code a sign-in sends there is never shown
+  // or used; the CloudFront Function serves /konnect/app/oauth from it without a redirect.
+  { path: '/konnect/app/oauth/', section: 'konnect', main: 'konnect-app/main.html', title: 'Open konnect to finish signing in', noindex: true },
 ];
 for (const p of PAGES) {
   if (!/^\/(?:[a-z0-9-]+\/)*$/.test(p.path)) fail(`a page path must be /, or /<folder>/…/: ${p.path}`);
@@ -130,7 +142,7 @@ const design = { lang: 'en', root: ROOT, baseCss: readFileSync(join(sourceDir, '
 if (/url\(|@import/i.test(design.baseCss)) fail('site/src/site.css loads something (url() or @import); the fonts are vendored in deploy/site/fonts/');
 
 // The build writes only these in site/; site/src/ (the source) and site/README.md are never its.
-const outputs = new Set(['404.html', 'robots.txt', 'sitemap.xml', 'favicon.svg', 'assets', 'og', ...PAGES.map((p) => p.file.split('/')[0])]);
+const outputs = new Set(['404.html', 'robots.txt', 'sitemap.xml', 'favicon.svg', 'assets', 'og', '.well-known', ...PAGES.map((p) => p.file.split('/')[0])]);
 const outPath = (rel) => {
   const parts = rel.split(/[\\/]/);
   if (isAbsolute(rel) || parts.includes('..') || parts[0] === 'src' || !outputs.has(parts[0])) fail(`refusing to write site/${rel}, which the build doesn't own`);
@@ -370,7 +382,7 @@ const page = (p) => {
   const title = p.title;
   const description = attr(p.description);
   let seo;
-  if (p.url) {
+  if (p.url && !p.noindex) {
     const og = ogImage(p.section);
     seo = `<link rel="canonical" href="${p.url}">
 <meta property="og:type" content="website">
@@ -453,9 +465,55 @@ for (const og of ogImages.values()) copyFileSync(og.src, outPath(og.file));
 writeFileSync(outPath('robots.txt'), `User-agent: *\nAllow: /\nSitemap: ${ORIGIN}/sitemap.xml\n`);
 writeFileSync(
   outPath('sitemap.xml'),
-  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${PAGES.map((p) => `<url><loc>${p.url}</loc></url>\n`).join('')}</urlset>\n`,
+  `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${PAGES.filter((p) => !p.noindex).map((p) => `<url><loc>${p.url}</loc></url>\n`).join('')}</urlset>\n`,
 );
 copyFileSync(join(repo, 'brand', 'konjir-mark-tile.svg'), outPath('favicon.svg'));
+
+// --- konnect's app links (deploy/site/app-links.json) ---
+// Apple's and Google's association files for the app's sign-in redirect. Each is written only from
+// ids Lee filled in, each checked for its form; one not filled in is left out, an old copy removed,
+// and the build says so on stdout. So until then no app is claimed for the path, and the sign-in's
+// redirect opens the page above.
+const links = JSON.parse(readFileSync(join(here, 'app-links.json'), 'utf8'));
+if (links.path !== '/konnect/app/oauth' || !PAGES.some((p) => p.path === `${links.path}/`)) fail('deploy/site/app-links.json names a path that is not /konnect/app/oauth, the page above');
+const BUNDLE = /^com\.konjir\.konnect(\.preview)?$/;
+const said = [];
+const wellKnown = (name, body) => {
+  const rel = `.well-known/${name}`;
+  if (body === null) {
+    if (existsSync(outPath(rel))) rmSync(outPath(rel));
+    return;
+  }
+  mkdirSync(outPath('.well-known'), { recursive: true });
+  writeFileSync(outPath(rel), `${JSON.stringify(body, null, 2)}\n`);
+};
+if (!Array.isArray(links.ios_bundle_ids) || !links.ios_bundle_ids.length || !links.ios_bundle_ids.every((b) => BUNDLE.test(b))) fail('deploy/site/app-links.json: ios_bundle_ids are konnect\'s own, com.konjir.konnect and com.konjir.konnect.preview');
+if (links.apple_team_id === null) {
+  wellKnown('apple-app-site-association', null);
+  said.push('no apple-app-site-association: apple_team_id is not filled in, in deploy/site/app-links.json');
+} else {
+  if (typeof links.apple_team_id !== 'string' || !/^[A-Z0-9]{10}$/.test(links.apple_team_id)) fail('deploy/site/app-links.json: apple_team_id is the Apple Developer team\'s id, 10 capital letters and digits, or null');
+  const apps = links.ios_bundle_ids.map((b) => `${links.apple_team_id}.${b}`);
+  wellKnown('apple-app-site-association', {
+    applinks: { details: [{ appIDs: apps, components: [{ '/': links.path, comment: 'konnect\'s sign-in redirect, and nothing else on this site' }] }] },
+    webcredentials: { apps },
+  });
+}
+if (!Array.isArray(links.android) || links.android.some((a) => !BUNDLE.test(a?.package) || !Array.isArray(a.sha256_cert_fingerprints))) fail('deploy/site/app-links.json: android names konnect\'s own packages, each with its sha256_cert_fingerprints');
+for (const a of links.android) {
+  for (const f of a.sha256_cert_fingerprints) if (typeof f !== 'string' || !/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(f)) fail(`deploy/site/app-links.json: ${a.package} has a fingerprint that isn't one (32 bytes as AA:BB:…, upper case)`);
+}
+const signed = links.android.filter((a) => a.sha256_cert_fingerprints.length);
+if (!signed.length) {
+  wellKnown('assetlinks.json', null);
+  said.push('no assetlinks.json: no Android package has a fingerprint filled in, in deploy/site/app-links.json');
+} else {
+  wellKnown('assetlinks.json', signed.map((a) => ({
+    relation: ['delegate_permission/common.handle_all_urls'],
+    target: { namespace: 'android_app', package_name: a.package, sha256_cert_fingerprints: a.sha256_cert_fingerprints },
+  })));
+}
+if (existsSync(outPath('.well-known')) && !readdirSync(outPath('.well-known')).length) rmSync(outPath('.well-known'), { recursive: true });
 
 // Open Graph images and hashed assets neither this build nor the one before uses go; licences and
 // other files stay.
@@ -474,5 +532,6 @@ const kept = [...previous].filter((p) => !current.has(p) && existsSync(join(out,
 
 console.log(
   `site/: ${[...PAGES.map((p) => p.file), '404.html'].join(', ')}, robots.txt, sitemap.xml, favicon.svg, ${ogImages.size} Open Graph image(s), ` +
-    `${classes.size} style classes; kept ${kept.length} previous asset(s), pruned ${pruned.length}`,
+    `${classes.size} style classes; kept ${kept.length} previous asset(s), pruned ${pruned.length}` +
+    (said.length ? `; ${said.join('; ')}` : ''),
 );

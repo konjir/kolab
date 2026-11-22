@@ -196,3 +196,18 @@ test('without rawQueryString() the redirect drops the query rather than failing'
   delete folder.rawQueryString;
   expect(handler({ request: folder })).toStrictEqual(moved('/kolab/'));
 });
+
+test("konnect's app links and its sign-in redirect are served as they are on www, never redirected: /.well-known/ passes, and /konnect/app/oauth is its page in place, query and all", () => {
+  for (const uri of ['/.well-known/apple-app-site-association', '/.well-known/assetlinks.json']) {
+    const r = request('www.konjir.com', uri, '');
+    expect(handler({ request: r })).toBe(r);
+    expect(r.uri).toBe(uri);
+  }
+  const r = request('www.konjir.com', '/konnect/app/oauth', 'code=kjc_secret&state=st&iss=https%3A%2F%2Fkolab.konjir.com');
+  expect(handler({ request: r })).toBe(r);
+  expect(r.uri).toBe('/konnect/app/oauth/index.html');
+  // Only that path: a look-alike is a folder like any other.
+  expect(handler({ request: request('www.konjir.com', '/konnect/app/oauth2', '') })).toStrictEqual(moved('/konnect/app/oauth2/'));
+  // From the apex, to www as every request goes, the code's query kept as sent.
+  expect(handler({ request: request('konjir.com', '/konnect/app/oauth', 'code=c&state=s') })).toStrictEqual(toWww('/konnect/app/oauth', 'code=c&state=s'));
+});
