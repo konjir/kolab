@@ -1,6 +1,6 @@
 import { describe, expect, test } from '@jest/globals';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,6 +35,24 @@ describe('eas update', () => {
     const empty = eas(['update', '--channel', 'preview'], { ...signed, KONNECT_UPDATE_MESSAGE: ' ' });
     expect(empty.status).toBe(2);
     expect(empty.stderr).toContain('KONNECT_UPDATE_MESSAGE is empty');
+  });
+
+  test('passes KONNECT_UPDATE_MESSAGE to eas-cli as one argument, however it is worded', () => {
+    // A stand-in npx, first on PATH: `expo config` answers as a linked project, and `eas` writes its argv.
+    const bin = mkdtempSync(join(tmpdir(), 'npx-'));
+    const argv = join(bin, 'argv.json');
+    writeFileSync(join(bin, 'npx'), [
+      '#!/usr/bin/env node',
+      "const a = process.argv.slice(2);",
+      "if (a[0] === 'expo') process.stdout.write(JSON.stringify({ owner: 'icedlee337', extra: { eas: { projectId: 'p' } } }));",
+      `else require('node:fs').writeFileSync(${JSON.stringify(argv)}, JSON.stringify(a));`,
+    ].join('\n'), { mode: 0o755 });
+    const message = 'main at abc $(touch pwned) `id`; echo "q" \'s\' & | > *';
+    const r = eas(['update', '--channel', 'preview', '--non-interactive'], { APP_VARIANT: 'preview', KONNECT_UPDATES_PRIVATE_KEY_PATH: __filename, KONNECT_UPDATE_MESSAGE: message, PATH: `${bin}:${process.env.PATH}` });
+    expect([r.status, r.stderr]).toStrictEqual([0, '']);
+    const sent = JSON.parse(readFileSync(argv, 'utf8')) as string[];
+    expect(sent.slice(sent.indexOf('--message'), sent.indexOf('--message') + 2)).toStrictEqual(['--message', message]);
+    expect(sent.filter((a) => a === '--message')).toHaveLength(1);
   });
 
   test('is refused with the channel named more than once, however it is written', () => {

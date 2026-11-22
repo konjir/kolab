@@ -86,7 +86,7 @@ Like konnect itself, this runs outside the kolab's planning process: no spec or 
 - `jest-expo` and `@testing-library/react-native` for tests, and Maestro for end-to-end tests
 
 ### Nx targets
-The targets are `package.json` scripts plus an `nx` block of `nx:run-commands`, as the other projects here have, with no `@nx/expo`, `@nx/react-native` or other plugin. `eas-cli` is a pinned devDependency, run with `npx eas`, never a global install. Targets that build or publish forward `--platform` and `--message`.
+The targets are `package.json` scripts plus an `nx` block of `nx:run-commands`, as the other projects here have, with no `@nx/expo`, `@nx/react-native` or other plugin. `eas-cli` is a pinned devDependency, run with `npx eas`, never a global install. Targets that build or publish forward `--platform`; an update's message goes in `KONNECT_UPDATE_MESSAGE`, since Nx joins forwarded arguments into one shell command line.
 
 **Develop:**
 
@@ -117,7 +117,7 @@ The targets are `package.json` scripts plus an `nx` block of `nx:run-commands`, 
 | `build-preview` | `eas build --profile preview` (internal distribution) |
 | `build-production` | `eas build --profile production --auto-submit` |
 | `submit` | `eas submit --profile production --latest` |
-| `update-preview`, `update-production` | `eas update --channel <channel> --message …` |
+| `update-preview`, `update-production` | `eas update --channel <channel>`, its message from `KONNECT_UPDATE_MESSAGE` |
 | `version` | `eas build:version:get` |
 | `credentials` | `eas credentials` (interactive) |
 | `eas-whoami` | `eas whoami` |
