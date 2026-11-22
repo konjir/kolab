@@ -216,7 +216,7 @@ test('an access token is a session token that expires; refreshing rotates both t
   expect(await kolab.liveSessions([t.session])).toStrictEqual(new Set([t.session]));
 });
 
-test('a refresh token is used once: again at once is a race, refused; again later is a replay, which revokes the grant and ends its session', async () => {
+test('a refresh token is used once: again within the grace window it gets the same answer while that is still the grant\'s, refused otherwise; again later is a replay, which revokes the grant and ends its session', async () => {
   const kolab = await openKolab();
   await people(kolab, 'alice');
   const { actor } = await kolab.signInWith(github('8', 'ann'));
@@ -228,16 +228,31 @@ test('a refresh token is used once: again at once is a race, refused; again late
   const r1 = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
   // Another client can't use it.
   expect(await rejection(kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: 'kjcl_someoneelse0000000000' }))).toMatch(/invalid|unknown/);
-  // At once: a concurrent request, refused, nothing revoked.
-  const race = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }).catch((e: OAuthGrantError) => e.code);
-  expect(race).toBe('invalid_grant');
+  // Again within the grace window (its answer lost on the way, or a concurrent request): the same answer, nothing revoked and nothing new.
+  const again = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
+  expect([again.accessToken, again.refreshToken, again.session, again.scope]).toStrictEqual([r1.accessToken, r1.refreshToken, r1.session, r1.scope]);
+  expect(again.expiresIn).toBeGreaterThan(0);
+  expect(again.expiresIn).toBeLessThanOrEqual(900);
   expect(await kolab.sessionOpen(r1.accessToken)).toBe(true);
-  // Later: a replay.
+  // What it keeps to answer the same is sealed: no token is in the database as written.
+  const rows = JSON.stringify((await kolab.db.query(`select * from oauth_refresh_token`)).rows);
+  for (const secret of [r1.accessToken, r1.refreshToken]) expect(rows).not.toContain(secret);
+  expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from oauth_refresh_token where successor is not null`)).rows[0].n).toBe(1);
+  // Once its successor is used in turn, the first token gets nothing again: refused, still nothing revoked.
+  const r2 = await kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: a.client });
+  expect(await rejection(kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }))).toMatch(/invalid_grant|refresh token is unknown/);
+  expect(await kolab.sessionOpen(r2.accessToken)).toBe(true);
+  // And a successor no longer the grant's live answer (its access token replaced) is never given out again.
+  await kolab.db.query(`update session set token_key = $2 where id = $1`, [r2.session, sessionKey('kjs_replaced')]);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: a.client }))).toMatch(/invalid_grant|refresh token is unknown/);
+  await kolab.db.query(`update session set token_key = $2 where id = $1`, [r2.session, sessionKey(r2.accessToken)]);
+  expect(await kolab.sessionOpen(r1.accessToken)).toBe(false);
+  // Later: a replay, which revokes the grant.
   await kolab.db.query(`update oauth_refresh_token set used_at = now() - interval '1 minute' where key = $1`, [sessionKey(t.refreshToken)]);
   expect(await rejection(kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }))).toMatch(/OAuthGrantError/);
-  expect(await kolab.sessionOpen(r1.accessToken)).toBe(false);
+  expect(await kolab.sessionOpen(r2.accessToken)).toBe(false);
   expect(ended).toStrictEqual([t.session]);
-  expect(await rejection(kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: a.client }))).toMatch(/revoked|unknown/);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: r2.refreshToken, clientId: a.client }))).toMatch(/revoked|unknown/);
 });
 
 test('a code is used once, by its client, at its redirect URI, with its PKCE verifier; used again, it revokes what it opened', async () => {
