@@ -12,9 +12,12 @@
 #   Terraform state) is refused, should one ever be committed.
 # - The release id is the commit's tree id, so it changes only when tracked content does: two
 #   commits with the same tree are one release.
-# - site/, konjir.com's files (D81), is no part of Kolab: .gitattributes marks it export-ignore, so
-#   it isn't in the zip, and the release id is the tree id without it, so a change to the site
-#   alone is the same release and doesn't reinstall Kolab. Without a site/ the id is the tree id.
+# - site/, konjir.com's files (D81), is no part of Kolab, and nor is konnect's phone app,
+#   apps/konnect-mobile, which EAS builds: .gitattributes marks both export-ignore, so neither is in
+#   the zip, and the release id is the tree id without them and the app's own workflows
+#   (.github/workflows/mobile*.yml), so a change to the site or the app alone is the same release
+#   and doesn't reinstall Kolab. Without any of them the id is the tree id. A change to the app's
+#   dependencies changes package-lock.json, which the release installs from, and so is a release.
 set -euo pipefail
 fail() { echo "pack.sh: $*" >&2; exit 1; }
 [ $# -eq 2 ] || fail "usage: pack.sh <checkout> <zip>"
@@ -34,8 +37,13 @@ $dirty"
 forbidden=$(git ls-tree -r --name-only HEAD | grep -E '(^|/)(\.env(\.[^/]*)?|\.claude|\.playwright-mcp|\.konjir|\.konjir-demo)(/|$)|\.tfvars(\.json)?$|(^|/)terraform\.tfstate(\.backup)?$' || true)
 [ -z "$forbidden" ] || fail "these tracked files must never ship; remove them from git:
 $forbidden"
-# The commit's top-level entries without site/, as a tree: with no site/, HEAD^{tree} itself.
-tree=$(git ls-tree HEAD | awk -F '\t' '$2 != "site"' | git mktree)
+# The commit's tree without site/, the app and its workflows, through an index of its own: with
+# none of them, HEAD^{tree} itself.
+index=$(mktemp "${TMPDIR:-/tmp}/konjir-pack-index.XXXXXX")
+trap 'rm -f "$index"' EXIT
+GIT_INDEX_FILE=$index git read-tree HEAD
+GIT_INDEX_FILE=$index git rm -r -q -f --cached --ignore-unmatch -- site apps/konnect-mobile ':(glob).github/workflows/mobile*.yml' >/dev/null
+tree=$(GIT_INDEX_FILE=$index git write-tree)
 mkdir -p "$(dirname "$out")"
 git archive --format=zip -o "$out.tmp" HEAD
 mv -f "$out.tmp" "$out"

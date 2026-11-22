@@ -5,7 +5,8 @@ name: Deploy
 # deploy path. There is no staging for now (D83).
 #
 # 1. "Build release" packs the commit with deploy/release/pack.sh (git archive of the commit; its id
-#    is the commit's tree id without site/) and uploads the zip with its checksum. Terraform
+#    is the commit's tree id without site/, apps/konnect-mobile and the app's workflows) and uploads
+#    the zip with its checksum. Terraform
 #    installs exactly these bytes and packs nothing itself in CI.
 # 2. "Plan production" runs in the production GitHub environment, so it waits for its first
 #    approval: to plan. It assumes konjir-deploy-production and plans (deploy/plan.sh). The run's
@@ -82,16 +83,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release"
           packed=$(deploy/release/pack.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/release/konjir-release.zip" < /dev/null)
           release=$(jq -r .release <<< "$packed")
-          # The commit's tree without site/, as pack.sh makes it (the marketing site isn't Kolab's).
-          tree=$(git ls-tree "$GITHUB_SHA" | awk -F '\t' '$2 != "site"' | git mktree)
+          # The commit's tree without site/, konnect's phone app and its workflows, as pack.sh makes
+          # it (neither the marketing site nor the app is Kolab's), worked out here on its own.
+          index="$RUNNER_TEMP/release-index"
+          GIT_INDEX_FILE=$index git read-tree "$GITHUB_SHA"
+          GIT_INDEX_FILE=$index git rm -r -q -f --cached --ignore-unmatch -- site apps/konnect-mobile ':(glob).github/workflows/mobile*.yml' > /dev/null
+          tree=$(GIT_INDEX_FILE=$index git write-tree)
+          rm -f "$index"
           if [ "$release" != "$tree" ]; then
-            echo "::error::pack.sh packed $release, not the tree of $GITHUB_SHA without site/ ($tree)"
+            echo "::error::pack.sh packed $release, not the tree of $GITHUB_SHA without site/ and the app ($tree)"
             exit 1
           fi
           echo "$release" > "$RUNNER_TEMP/release/release-id"
           cd "$RUNNER_TEMP/release" && sha256sum konjir-release.zip > SHA256SUMS && cat SHA256SUMS
           echo "release=$release" >> "$GITHUB_OUTPUT"
-          echo "Release $release, the tree of $GITHUB_SHA without site/" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release $release, the tree of $GITHUB_SHA without site/ and konnect's phone app" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

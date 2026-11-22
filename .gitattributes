@@ -1,3 +1,7 @@
 # konjir.com's files (D81) aren't Kolab's: deploy/release/pack.sh's `git archive` leaves them out
 # of the release, and its release id leaves them out too.
 /site export-ignore
+# Nor is konnect's phone app (apps/konnect-mobile): EAS builds it, never a Kolab release, so the
+# release neither carries it nor installs its React Native and Expo packages, and pack.sh's release
+# id leaves it out, with its workflows, so a change to the app alone doesn't reinstall Kolab.
+/apps/konnect-mobile export-ignore
