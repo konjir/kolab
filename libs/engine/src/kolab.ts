@@ -493,6 +493,8 @@ const ERASED_WITH_KOLAB = [
   'kolab_policy', 'node_name', 'outbox',
 ] as const;
 
+/** The identity provider whose login is a member's `login` (Member): GitHub's, as GitHubIdentity names it. */
+const GITHUB_PROVIDER = 'github';
 /** An actor id: letters, digits, '.', '_', '-' and '@', starting with a letter or digit (actor_id_check). */
 const ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
 /** The author of Kolab's own work, in the role 'system'. Never an actor. */
@@ -10164,8 +10166,11 @@ export class Kolab {
   /**
    * The members of the session's kolab, for a member (konjir_list_members): who a message can go
    * to, by name, each with its kind, an agent's owner when the owner is a member too, and whether a
-   * session of theirs is open in the kolab now. Not what each holds: that is for the kolab's Admins
-   * (listAccess). A page at a time, by name (W2.21).
+   * session of theirs is open in the kolab now, and `login`, the GitHub username behind them, so an
+   * app can show their avatar: a person's own, as their GitHub identity has it (the login they last
+   * signed in with, which their actor id was made from, D55), an agent's its owner's; null for one
+   * with no GitHub identity (an organization's agent, or a person an admin made and never linked).
+   * Not what each holds: that is for the kolab's Admins (listAccess). A page at a time, by name (W2.21).
    */
   async membersPage(sessionId: string, page: PageOpts = {}): Promise<{ kolab: string; items: Member[]; next: string | null }> {
     const s = await this.session(sessionId);
@@ -10180,11 +10185,17 @@ export class Kolab {
     const names = new Set(members.map((h) => h.id));
     const sorted = members.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).filter((h) => after === undefined || h.id > after);
     const { rows, next } = pageOf(sorted.slice(0, size + 1), size, list, (h) => [h.id]);
+    // The person behind each shown: an agent's owner, whether or not the owner is a member here.
+    const behind = (h: { id: string; kind: ActorKind; owner_id: string | null }) => (h.kind === 'agent' ? h.owner_id : h.id);
+    const logins = new Map((await this.db.query<{ actor_id: string; login: string }>(
+      `select actor_id, login from identity where provider = $1 and actor_id = any($2::text[])`,
+      [GITHUB_PROVIDER, [...new Set(rows.map(behind).filter((x): x is string => x !== null))]])).rows.map((r) => [r.actor_id, r.login]));
     return {
       kolab: s.kolab, next,
       items: rows.map((h) => ({
         actor: h.id, kind: h.kind, owner: h.owner_id !== null && names.has(h.owner_id) ? h.owner_id : null,
         ...(h.kind === 'agent' ? { label: agentLabel(h) } : {}),
+        login: logins.get(behind(h) ?? '') ?? null,
         here: here.has(h.id),
         ...(h.id === s.actor_id ? { you: true as const } : {}),
       })),

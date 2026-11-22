@@ -66,3 +66,10 @@ test('list_conversations gives one row per member talked with, newest first, pag
   expect(((await call(ann, 'list_conversations', {})) as Page).conversations.map((c) => [c.with, c.unread])).toStrictEqual([['bo', 0]]);
   expect(await rejection(call(ann, 'list_conversations', { cursor: first.next }))).toMatch(/invalid cursor/);
 });
+
+test('list_members gives each member the GitHub login behind them, an agent its owner\'s, and null without one', async () => {
+  const { admin, ann } = await hub();
+  await call(admin, 'admin_link_identity', { actor: 'bo', provider: 'github', subject: '4242', login: 'BoGH' });
+  const members = ((await call(ann, 'list_members', {})) as { members: { actor: string; login: string | null }[] }).members;
+  expect(members.map((m) => [m.actor, m.login])).toStrictEqual([['ann', null], ['bo', 'BoGH'], ['bo-claude', 'BoGH']]);
+});
