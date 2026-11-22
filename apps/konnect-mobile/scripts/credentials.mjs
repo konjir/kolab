@@ -30,7 +30,9 @@ if (!APPS.includes(app) || !PLATFORMS.includes(platform) || rest.length) {
   process.exit(2);
 }
 
-const env = { ...process.env, APP_VARIANT: app };
+// eas-cli falls back to an Apple ID sign-in for what an API key can't do (making a push key), and
+// would keep that password in the login Keychain: never here, so it is asked for each time.
+const env = { ...process.env, APP_VARIANT: app, EXPO_NO_KEYCHAIN: '1' };
 if (platform === 'ios') {
   env.EXPO_ASC_KEY_ID ??= ASC_KEY_ID;
   env.EXPO_ASC_ISSUER_ID ??= ASC_ISSUER_ID;
