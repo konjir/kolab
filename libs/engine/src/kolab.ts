@@ -22,7 +22,7 @@ import {
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Channel, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Conversation, type Channel, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
@@ -10300,6 +10300,61 @@ export class Kolab {
       if (ids.length && !archived) await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
       return { messages: rows.map(messageOf), more: archived ? Math.max(0, left - ids.length) : left };
     });
+  }
+
+  /**
+   * One page of the session's actor's direct conversations in its kolab (konjir_list_conversations):
+   * one row per member it has exchanged a message with, either way, a member now or not, with the
+   * newest message between them, how many of theirs it hasn't read (up to UNREAD_COUNT_CEILING,
+   * unread_more past it) and when the newest was sent, the most recent conversation first. Paged by
+   * that newest message's id, so a conversation that gets a new message while a client pages moves
+   * to the top, ahead of the page it is on. Only the caller's own: the query names it as one end of
+   * every message, as messagesPage does. It finds the members it talks with a member at a time
+   * through the indexes 0057 adds, one entry per member rather than per message, and marks nothing.
+   */
+  async conversationsPage(sessionId: string, page: PageOpts = {}): Promise<{ items: Conversation[]; next: string | null }> {
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('conversations', { kolab: s.kolab, actor: s.actor_id });
+    const [before] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
+    const rows = (await this.db.query<MessageRow & { other: string; unread: number }>(
+      `with recursive senders(other) as (
+         (select sent_by from message where kolab_id = $1 and sent_to = $2 order by sent_by limit 1)
+         union all
+         select (select m.sent_by from message m where m.kolab_id = $1 and m.sent_to = $2 and m.sent_by > t.other order by m.sent_by limit 1)
+           from senders t where t.other is not null
+       ), recipients(other) as (
+         (select sent_to from message where kolab_id = $1 and sent_by = $2 order by sent_to limit 1)
+         union all
+         select (select m.sent_to from message m where m.kolab_id = $1 and m.sent_by = $2 and m.sent_to > t.other order by m.sent_to limit 1)
+           from recipients t where t.other is not null
+       ), partners as (
+         select other from senders where other is not null union select other from recipients where other is not null
+       ), newest as (
+         select p.other, l.id from partners p cross join lateral (
+           select z.id from (
+             (select id from message where kolab_id = $1 and sent_to = $2 and sent_by = p.other order by id desc limit 1)
+             union all
+             (select id from message where kolab_id = $1 and sent_by = $2 and sent_to = p.other order by id desc limit 1)
+           ) z order by z.id desc limit 1) l
+         where $3::text is null or l.id < $3
+         order by l.id desc limit $4
+       )
+       select n.other, ${MESSAGE_COLUMNS},
+              (select count(*)::int from (select 1 from message u where u.kolab_id = $1 and u.sent_to = $2 and u.sent_by = n.other
+                  and not exists (select 1 from message_receipt ur where ur.message_id = u.id) limit $5) c) as unread
+         from newest n join message m on m.id = n.id left join message_receipt r on r.message_id = m.id
+        order by m.id desc`,
+      [s.kolab, s.actor_id, before ?? null, size + 1, UNREAD_COUNT_CEILING + 1])).rows;
+    const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
+    return {
+      next,
+      items: shown.map((r) => ({
+        with: r.other, last: messageOf(r),
+        unread: Math.min(r.unread, UNREAD_COUNT_CEILING), unread_more: r.unread > UNREAD_COUNT_CEILING,
+        last_at: iso(r.sent_at)!,
+      })),
+    };
   }
 
   /**

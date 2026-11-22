@@ -51,3 +51,18 @@ test('mark_channel_read and mark_messages_read move the caller\'s own read state
   expect(await rejection(call(bo, 'mark_messages_read', { with: 'ann', up_to: d2, from: 'x' }))).toMatch(/unknown argument from/);
   expect(((await call(bo, 'read_messages', {})) as { messages: { id: string }[] }).messages.map((m) => m.id)).toStrictEqual([d2]);
 });
+
+test('list_conversations gives one row per member talked with, newest first, paged, each with its last message and unread', async () => {
+  const { ann, bo, agent } = await hub();
+  const a = (await call(ann, 'send_message', { to: 'bo', message: 'one' }) as Sent).sent.id;
+  const b = (await call(agent, 'send_message', { to: 'bo', message: 'two' }) as Sent).sent.id;
+  type Page = { conversations: { with: string; last: { id: string; from: string; to: string; message: string }; unread: number; unread_more: boolean; last_at: string }[]; next: string | null };
+  const first = await call(bo, 'list_conversations', { limit: 1 }) as Page;
+  expect(first.conversations).toStrictEqual([{ with: 'bo-claude', last: expect.objectContaining({ id: b, from: 'bo-claude', to: 'bo', message: 'two', read_at: null }), unread: 1, unread_more: false, last_at: expect.any(String) }]);
+  expect(first.next).toEqual(expect.any(String));
+  const second = await call(bo, 'list_conversations', { limit: 1, cursor: first.next }) as Page;
+  expect(second).toStrictEqual({ conversations: [expect.objectContaining({ with: 'ann', last: expect.objectContaining({ id: a }), unread: 1 })], next: null });
+  // Ann's is her own: Bo, and nothing of Bo's with his agent.
+  expect(((await call(ann, 'list_conversations', {})) as Page).conversations.map((c) => [c.with, c.unread])).toStrictEqual([['bo', 0]]);
+  expect(await rejection(call(ann, 'list_conversations', { cursor: first.next }))).toMatch(/invalid cursor/);
+});

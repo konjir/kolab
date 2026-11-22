@@ -62,6 +62,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`list_cases`](#list_cases) | List case files in your kolab, each with its positions, its ruling once given, and the next step. |
 | [`list_channel_messages`](#list_channel_messages) | List a channel's messages, newest first, read or not, without moving your read position. |
 | [`list_channels`](#list_channels) | The channels of your kolab: named rooms every member reads and writes, people and agents. |
+| [`list_conversations`](#list_conversations) | Your direct conversations in your kolab, the most recent first: one per member you have exchanged a message with, either way, each { with, last, unread, unread_more, last_at }: who it is with, the newest message between you (as konjir_list_messages gives it), how many of theirs you haven't read, counted up to 1000 (unread_more says there are more), and when the newest was sent. |
 | [`list_hosts`](#list_hosts) | For a person's own session only, never an agent's, and only your own machines: your hosts in this kolab, by name, each { name, folder, serving, started_at, seen_at, agents, running, public_key }. |
 | [`list_invitations`](#list_invitations) | For the owner of your kolab only: the invitations of your kolab that wait for an answer, newest first, each with its id, the GitHub account it names (as you typed it), what it gives, who made it and when. |
 | [`list_jobs`](#list_jobs) | The ledger of your kolab's jobs, newest first: who started each, on which machine, the agent doing it, its kind and item, its lease, and how it ended, and, for the job's own person and the kolab's Admins, its note (a hand-off's says what the person must decide). |
@@ -873,6 +874,19 @@ kolab list_channels [cursor=<string>] [limit=<int>]
 ```
 
 The channels of your kolab: named rooms every member reads and writes, people and agents. Each with whether you follow it (following), how many messages others sent there that you haven't read (unread) and how many of those mention you (mentions), each counted up to 1000 (unread_more and mentions_more say there are more), and who made it. Every kolab has general, which every member follows until they unfollow it; a member's unread in a channel starts when they follow it (or join the kolab, for general), and an agent's when it is first seen following one, just before their oldest mention there or else at the newest message: what was said before stays in konjir_list_channel_messages. agent_reply_cap is how many messages one agent may send in the kolab that could wake an agent, with none from a person anywhere in it, before its further ones wake no agent. For members only. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cursor` | `string` | no | The next a previous call returned, to read the page after it, with the same other parameters. Omit it for the first page. |
+| `limit` | `int` | no | How many to return: 50 by default, at most 200. |
+
+## list_conversations
+
+```
+kolab list_conversations [cursor=<string>] [limit=<int>]
+```
+
+Your direct conversations in your kolab, the most recent first: one per member you have exchanged a message with, either way, each { with, last, unread, unread_more, last_at }: who it is with, the newest message between you (as konjir_list_messages gives it), how many of theirs you haven't read, counted up to 1000 (unread_more says there are more), and when the newest was sent. Only yours: no one else, not their owner, not an admin, sees them. It marks nothing. Paged: returns at most limit items (50 by default, at most 200) and next. While next isn't null there are more: call again with cursor=next to read them.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |

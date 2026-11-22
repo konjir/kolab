@@ -187,6 +187,7 @@ const listMessages = args({
   ...paging,
 });
 const listMembers = args({ ...paging });
+const listConversations = args({ ...paging });
 const evidence = z.array(z.string()).min(1).describe('What backs the claim: kj: addresses (each must resolve), and anything else as text, such as a commit, a file and line, or a test run. At least one.');
 const openCase = args({
   address: address.describe('The element in dispute, e.g. kj:checkout#R1, on a committed version in your kolab'),
@@ -776,6 +777,19 @@ export class AgentTools {
   })
   readMessages({ limit, from }: z.infer<typeof readMessages>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.readMessages(s, { limit, from }));
+  }
+
+  @McpTool({
+    name: 'konjir_list_conversations',
+    description: `Your direct conversations in your kolab, the most recent first: one per member you have exchanged a message with, either way, each { with, last, unread, unread_more, last_at }: who it is with, the newest message between you (as konjir_list_messages gives it), how many of theirs you haven't read, counted up to ${UNREAD_COUNT_CEILING} (unread_more says there are more), and when the newest was sent. Only yours: no one else, not their owner, not an admin, sees them. It marks nothing.${PAGED}`,
+    schema: listConversations,
+    annotations: { readOnlyHint: true },
+  })
+  listConversations({ cursor, limit }: z.infer<typeof listConversations>, context?: McpToolContext) {
+    return asAgent(context, async (s) => {
+      const { items, next } = await this.kolab.conversationsPage(s, { cursor, limit });
+      return { conversations: items, next };
+    });
   }
 
   @McpTool({
