@@ -82,11 +82,11 @@ export function useAgentStatus(team: string | undefined) {
 }
 
 /** An agent's messages and those to it (or all your agents', with no `agent`), newest first. */
-export function useAgentActivity(team: string | undefined, agent?: string) {
+export function useAgentActivity(team: string | undefined, agent?: string, enabled = true) {
   const api = useAgentsApi();
   return useInfiniteQuery({
     queryKey: [team, 'agents', 'activity', agent ?? '*'],
-    enabled: !!team,
+    enabled: !!team && enabled,
     initialPageParam: undefined as string | undefined,
     queryFn: async ({ pageParam }) => (await orLacking(async () => (await api(team!)).activity(agent, pageParam))) ?? { items: [], next: undefined, lacking: true },
     getNextPageParam: (last) => last.next,
@@ -94,9 +94,9 @@ export function useAgentActivity(team: string | undefined, agent?: string) {
 }
 
 /** An agent's DMs, newest first. */
-export function useAgentConversations(team: string | undefined, agent: string) {
+export function useAgentConversations(team: string | undefined, agent: string, enabled = true) {
   const api = useAgentsApi();
-  return useQuery({ queryKey: [team, 'agents', 'conversations', agent], enabled: !!team && !!agent, queryFn: () => orLacking(async () => (await api(team!)).conversations(agent)) });
+  return useQuery({ queryKey: [team, 'agents', 'conversations', agent], enabled: !!team && !!agent && enabled, queryFn: () => orLacking(async () => (await api(team!)).conversations(agent)) });
 }
 
 /** One of an agent's DMs, read as its owner: newest first, 50 at a time. Reading it marks nothing read. */

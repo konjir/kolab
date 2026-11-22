@@ -1,11 +1,11 @@
 import { Stack } from 'expo-router';
 import Storage from 'expo-sqlite/kv-store';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/auth/AuthProvider';
 import { useChannels, useMembers } from '@/kolab/hooks';
 import { handleOf } from '@/kolab/names';
 import { AGENT_NOTIFY, agentNotifyOf, legacyAgentNotify, legacyAgentNotifyKey, ownAgents, type AgentNotify } from '@/kolab/your-agents';
-import { DEFAULT_PREFS, getPrefs, kolabHasPush, PUSH_STATUS_KEY, setPrefs, type NotifyLevel, type NotifyPrefs } from '@/push';
+import { cachedPrefs, DEFAULT_PREFS, getPrefs, kolabHasPush, PUSH_STATUS_KEY, setPrefs, type NotifyLevel, type NotifyPrefs } from '@/push';
 import { useAppTheme } from '@/theme';
 import { Body, Button, Hint, Problem, Row, Screen, Section } from '@/ui';
 
@@ -32,18 +32,22 @@ export default function NotificationSettings() {
   const [said, setSaid] = useState<string>();
   // Each of your agents: when its messages notify you, in Kolab's prefs (`agents`).
   const agents = ownAgents(useMembers(team).data?.members, auth.current?.actor ?? '');
-  const setAgent = (agent: string, level: AgentNotify) => void save({ ...prefs, agents: { ...prefs.agents, [agent]: level } });
+  // Only the agent changed goes to Kolab, which merges per agent: one since removed is never resent.
+  const setAgent = (agent: string, level: AgentNotify) => void save({ ...prefs, agents: { ...prefs.agents, [agent]: level } }, { [agent]: level });
+  // Kolab's answer, once it has come: the copy the phone kept never replaces it.
+  const fromKolab = useRef(false);
 
   useEffect(() => {
     let live = true;
+    fromKolab.current = false;
     void Promise.all([Storage.getItem(key), Storage.getItem(PUSH_STATUS_KEY)]).then(([p, s]) => {
       if (!live) return;
-      if (p) setLocal({ ...DEFAULT_PREFS, ...(JSON.parse(p) as Partial<NotifyPrefs>) });
+      if (p && !fromKolab.current) setLocal(cachedPrefs(p));
       setStatus(s ?? 'Not asked yet.');
     });
     // What Kolab keeps for this team wins over what the phone remembered. Agents' settings an
     // earlier build kept on the phone go to Kolab once, then off the phone.
-    void auth.client().then(async (c) => {
+    void auth.client(team).then(async (c) => {
       if (!(await kolabHasPush(c))) return undefined;
       const kept = await getPrefs(c);
       const legacyKey = legacyAgentNotifyKey(team);
@@ -51,20 +55,23 @@ export default function NotificationSettings() {
       if (stored === null) return kept;
       // Only agents Kolab lists as the person's own now; a choice made on the phone wins.
       const legacy = Object.fromEntries(Object.entries(legacyAgentNotify(stored)).filter(([a]) => a in kept.agents));
-      const moved = Object.keys(legacy).length ? await setPrefs(c, { ...kept, agents: { ...kept.agents, ...legacy } }) : kept;
+      const moved = Object.keys(legacy).length ? await setPrefs(c, { ...kept, agents: { ...kept.agents, ...legacy } }, legacy) : kept;
       await Storage.removeItem(legacyKey).catch(() => undefined);
       return moved;
-    }).then((kept) => { if (live && kept) setLocal(kept); }, () => undefined);
+    }).then((kept) => { if (live && kept) { fromKolab.current = true; setLocal(kept); } }, () => undefined);
     return () => { live = false; };
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const save = async (next: NotifyPrefs) => {
+  const save = async (next: NotifyPrefs, agentsChanged?: NotifyPrefs['agents']) => {
     setLocal(next); setProblem(undefined); setSaid(undefined);
     await Storage.setItem(key, JSON.stringify(next));
     try {
       const client = await auth.client(team);
       if (!(await kolabHasPush(client))) { setSaid('Kept on this phone. This Kolab has no push yet, so it takes effect once it has.'); return; }
-      setLocal(await setPrefs(client, next));
+      const kept = await setPrefs(client, next, agentsChanged);
+      fromKolab.current = true;
+      setLocal(kept);
+      await Storage.setItem(key, JSON.stringify(kept));
       setSaid('Saved.');
     } catch (e) { setProblem((e as Error).message); }
   };

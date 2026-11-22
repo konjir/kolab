@@ -2,7 +2,7 @@ import { FlashList, type ViewToken } from '@shopify/flash-list';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
@@ -11,7 +11,7 @@ import { Icon } from '@/icons';
 import { markReadUpTo } from '@/kolab/api';
 import { markReader, type MarkReader } from '@/kolab/mark-read';
 import { isAgent, useAgentConversation, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
-import { agentsIn, at, disclosureOf, onlyAgent, ownAgents, readOnlyBanner } from '@/kolab/your-agents';
+import { agentsIn, at, disclosureOf, marksRead, onlyAgent, ownAgents, readingAs, readOnlyBanner } from '@/kolab/your-agents';
 import { Button } from '@/ui';
 import { displayName, handleOf, mentionsIn } from '@/kolab/names';
 import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
@@ -33,10 +33,10 @@ export default function Conversation() {
   // `as`: one of your agents, whose DM with `name` this is, read as its owner (read-only). `only`:
   // a channel opened on one of your agents' messages (its "Only @you/bot" filter).
   const { kind, name, as, only } = useLocalSearchParams<{ kind: ConversationKind; name: string; as?: string; only?: string }>();
-  const readOnly = kind === 'dm' && !!as;
   const auth = useAuth();
   const team = auth.current?.team ?? "";
   const me = auth.current?.actor ?? "";
+  const { readOnly, redirect } = readingAs({ kind, name, as, me });
   const { colors } = useAppTheme();
   const router = useRouter();
   const qc = useQueryClient();
@@ -97,8 +97,9 @@ export default function Conversation() {
     marker.current = m;
     return () => { m.dispose(); if (marker.current === m) marker.current = undefined; };
   }, []);
-  // Reading one of your agents' DMs marks nothing read, for it or for you.
-  const markRead = (visible: string[]) => { if (!readOnly) marker.current?.run(visible); };
+  // Reading one of your agents' DMs marks nothing read, for it or for you; nor does a channel
+  // filtered to one agent, where what is on screen isn't all that is there.
+  const markRead = (visible: string[]) => { if (marksRead(readOnly, !!filterBy)) marker.current?.run(visible); };
 
   const actions = (m: Msg) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -137,6 +138,8 @@ export default function Conversation() {
     );
   };
 
+  // Your agent's DM with you is your own DM with it, never read as its owner.
+  if (redirect) return <Redirect href={{ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: redirect } }} />;
   const people = (members ?? []).filter((m) => m.actor !== me).map(handleOf);
   const title = kind === 'channel' ? `#${name}` : displayName(name, members);
   const agentHandle = readOnly ? at(as!, members) : '';

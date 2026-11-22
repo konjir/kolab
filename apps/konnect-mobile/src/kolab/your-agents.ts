@@ -74,25 +74,29 @@ export function agentChannels(status: Pick<AgentStatus, 'channels'> | undefined,
 
 export type YourAgentsRow =
   | { kind: 'dm' | 'mention' | 'capped'; agent: string; item: AgentActivityItem }
-  | { kind: 'stuck'; agent: string; unread: number };
+  | { kind: 'stuck'; agent: string; reason: 'not_running' | 'capped'; count: number };
 
 /**
  * The Activity tab's "Your agents": DMs to your agents, channel messages that mention them, capped
- * ones, newest first; and first, each agent that isn't running with messages waiting for it.
+ * ones (theirs included: that is how an agent is capped), newest first; and first, each agent that
+ * is stuck: capped at the reply cap, or not running with messages waiting for it.
  */
 export function yourAgentsActivity(items: readonly AgentActivityItem[], statuses: readonly AgentStatus[], members?: readonly Named[]): YourAgentsRow[] {
   const mine = new Set(statuses.map((s) => s.agent));
   const handles = new Map(statuses.map((s) => [s.agent, at(s.agent, members).slice(1)]));
   const rows: YourAgentsRow[] = [];
   for (const i of items) {
-    if (!mine.has(i.agent) || i.from === i.agent) continue;
-    if (i.capped) rows.push({ kind: 'capped', agent: i.agent, item: i });
-    else if (i.kind === 'dm') rows.push({ kind: 'dm', agent: i.agent, item: i });
+    if (!mine.has(i.agent)) continue;
+    if (i.capped) { rows.push({ kind: 'capped', agent: i.agent, item: i }); continue; }
+    if (i.from === i.agent) continue;
+    if (i.kind === 'dm') rows.push({ kind: 'dm', agent: i.agent, item: i });
     else if (i.mentions?.some((m) => m === i.agent || m === handles.get(i.agent))) rows.push({ kind: 'mention', agent: i.agent, item: i });
   }
   rows.sort((a, b) => ('item' in b ? b.item.sent_at : '').localeCompare('item' in a ? a.item.sent_at : ''));
-  const stuck: YourAgentsRow[] = statuses.filter((s) => s.needs_you.not_running_with_unread > 0)
-    .map((s) => ({ kind: 'stuck', agent: s.agent, unread: s.needs_you.not_running_with_unread }));
+  const stuck: YourAgentsRow[] = statuses.flatMap((s): YourAgentsRow[] => [
+    ...(s.needs_you.capped > 0 ? [{ kind: 'stuck' as const, agent: s.agent, reason: 'capped' as const, count: s.needs_you.capped }] : []),
+    ...(s.needs_you.not_running_with_unread > 0 ? [{ kind: 'stuck' as const, agent: s.agent, reason: 'not_running' as const, count: s.needs_you.not_running_with_unread }] : []),
+  ]);
   return [...stuck, ...rows];
 }
 
@@ -150,3 +154,16 @@ export function legacyAgentNotify(kept: string | null | undefined): Record<strin
   if (!all || typeof all !== 'object' || Array.isArray(all)) return {};
   return Object.fromEntries(Object.entries(all).filter((e): e is [string, AgentNotify] => (AGENT_NOTIFY_LEVELS as readonly unknown[]).includes(e[1])));
 }
+
+/**
+ * How a conversation screen reads `name`: as one of your agents' DMs (`as`), read-only, unless that
+ * DM is with you, which is your own DM with the agent (`redirect`).
+ */
+export function readingAs(p: { kind: string; name: string; as?: string; me: string }): { readOnly: boolean; redirect?: string } {
+  if (p.kind !== 'dm' || !p.as) return { readOnly: false };
+  if (p.name === p.me) return { readOnly: false, redirect: p.as };
+  return { readOnly: true };
+}
+
+/** Whether scrolling marks read: never in one of your agents' DMs, nor in a channel filtered to one agent. */
+export const marksRead = (readOnly: boolean, filtered: boolean) => !readOnly && !filtered;
