@@ -6,12 +6,9 @@ import type { ReactElement } from 'react';
 import { StyleSheet, useColorScheme } from 'react-native';
 import SignIn from '../app/sign-in';
 import You from '../app/(tabs)/you';
-import DMs from '../app/(tabs)/dms';
-import Activity from '../app/(tabs)/activity';
 import { AuthProvider } from '@/auth/AuthProvider';
 import type { SecureKV } from '@/auth/store';
 import { themeFor } from '@/theme';
-import { NOT_BUILT } from '@/ui';
 
 jest.mock('react-native/Libraries/Utilities/useColorScheme', () => ({ __esModule: true, default: jest.fn() }));
 jest.mock('expo-router', () => ({ router: { replace: jest.fn() }, useRouter: () => ({ navigate: jest.fn() }) }));
@@ -40,11 +37,6 @@ describe('the brand theme', () => {
 });
 
 describe('the tabs', () => {
-  test.each([['DMs', DMs], ['Activity', Activity]] as const)('%s says it isn\'t built yet', async (_, Tab) => {
-    await signedOut(<Tab />);
-    expect(screen.getByText(NOT_BUILT)).toBeTruthy();
-  });
-
   test('You offers another sign-in and making a team, names the theme, and reads @konjir/types\' limits from their TypeScript source', async () => {
     scheme.mockReturnValue('light');
     await signedOut(<You />);
