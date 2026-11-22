@@ -123,10 +123,10 @@ What Lee does, in order, before the release workflows can ship anything. Until t
 
 1. **Apple.** Enrol in the Apple Developer Program.
 2. **App Store Connect.** Make two apps: `com.konjir.konnect` (konnect), and `com.konjir.konnect.preview` (konnect preview, for TestFlight internal testing only and never released). Put each app's Apple ID in `eas.json`'s `submit.production.ios.ascAppId` and `submit.preview.ios.ascAppId`. The submit targets refuse while those say `REPLACE_WITH_…`.
-3. **iOS credentials.** Run `npx nx run @konjir/konnect-mobile:credentials-production-ios`, then `credentials-preview-ios`. Each is interactive, and signs in to Apple with Lee's App Store Connect team API key ("EAS", Admin), whose `.p8` is kept at `~/.config/konnect-mobile/AuthKey_V455KTM3J2.p8` (mode 600), outside the repo. eas-cli's Apple ID sign-in fails with eas-cli 27.11.0. In each, set up:
+3. **iOS credentials.** Run `npx nx run @konjir/konnect-mobile:credentials-production-ios`, then `credentials-preview-ios`. Each is interactive, and signs in to Apple with Lee's App Store Connect team API key ("EAS", Admin), whose `.p8` is kept at `~/.config/konnect-mobile/AuthKey_V455KTM3J2.p8` (mode 600), outside the repo. eas-cli's Apple ID sign-in fails with eas-cli 27.11.0, so what only it can do is done on the web: the APNs key is made in the developer portal (Keys, Apple Push Notifications service, Sandbox & Production, Team Scoped) and uploaded on expo.dev (Credentials, iOS, each bundle ID, Push Key). The targets never keep an Apple ID password in the Keychain (`EXPO_NO_KEYCHAIN`). In each, set up:
    - a distribution certificate and provisioning profile for each bundle ID
-   - the APNs key, for push
-   - an App Store Connect API key, for `eas submit`
+   - the APNs key, for push (uploaded on expo.dev, as above)
+   - the App Store Connect API key, for `eas submit`: answer no to generating one, and give the same team key's path, Key ID and Issuer ID
 4. **Google Play.**
    - A developer account, and the two apps `com.konjir.konnect` and `com.konjir.konnect.preview`.
    - Each app's first AAB must be uploaded by hand in Play Console; Google allows nothing else for a new app. Build it with `build-preview-local` or `build-production-local`.
