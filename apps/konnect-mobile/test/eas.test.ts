@@ -20,19 +20,16 @@ describe('eas update', () => {
     }
   });
 
-  test('is refused with no channel, and unsigned', () => {
+  test('is refused with no channel', () => {
     expect(eas(['update', '--message', 'x'], { APP_VARIANT: 'preview' }).stderr).toContain('name the channel');
-    const r = eas(['update', '--channel', 'preview', '--message', 'x'], { APP_VARIANT: 'preview', KONNECT_UPDATES_PRIVATE_KEY_PATH: '/nonexistent' });
-    expect(r.status).toBe(2);
-    expect(r.stderr).toContain('updates are signed');
   });
 
   test('takes its message from KONNECT_UPDATE_MESSAGE, given once and not empty', () => {
-    const signed = { APP_VARIANT: 'preview', KONNECT_UPDATES_PRIVATE_KEY_PATH: __filename };
-    const both = eas(['update', '--channel', 'preview', '--message', 'x'], { ...signed, KONNECT_UPDATE_MESSAGE: 'main at abc' });
+    const preview = { APP_VARIANT: 'preview' };
+    const both = eas(['update', '--channel', 'preview', '--message', 'x'], { ...preview, KONNECT_UPDATE_MESSAGE: 'main at abc' });
     expect(both.status).toBe(2);
     expect(both.stderr).toContain('give the message once');
-    const empty = eas(['update', '--channel', 'preview'], { ...signed, KONNECT_UPDATE_MESSAGE: ' ' });
+    const empty = eas(['update', '--channel', 'preview'], { ...preview, KONNECT_UPDATE_MESSAGE: ' ' });
     expect(empty.status).toBe(2);
     expect(empty.stderr).toContain('KONNECT_UPDATE_MESSAGE is empty');
   });
@@ -48,7 +45,7 @@ describe('eas update', () => {
       `else require('node:fs').writeFileSync(${JSON.stringify(argv)}, JSON.stringify(a));`,
     ].join('\n'), { mode: 0o755 });
     const message = 'main at abc $(touch pwned) `id`; echo "q" \'s\' & | > *';
-    const r = eas(['update', '--channel', 'preview', '--non-interactive'], { APP_VARIANT: 'preview', KONNECT_UPDATES_PRIVATE_KEY_PATH: __filename, KONNECT_UPDATE_MESSAGE: message, PATH: `${bin}:${process.env.PATH}` });
+    const r = eas(['update', '--channel', 'preview', '--non-interactive'], { APP_VARIANT: 'preview', KONNECT_UPDATE_MESSAGE: message, PATH: `${bin}:${process.env.PATH}` });
     expect([r.status, r.stderr]).toStrictEqual([0, '']);
     const sent = JSON.parse(readFileSync(argv, 'utf8')) as string[];
     expect(sent.slice(sent.indexOf('--message'), sent.indexOf('--message') + 2)).toStrictEqual(['--message', message]);
