@@ -21,7 +21,7 @@ export class TeamTools {
 
   @McpTool({
     name: 'konjir_list_my_teams',
-    description: `For a person's own session only: every kolab you are a member of (teams), by name, each with the role your session works in, whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to ${UNREAD_COUNT_CEILING.toLocaleString('en')} with unread_more and mentions_more saying there are more. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.`,
+    description: `For a person's own session only: every kolab you are a member of (teams), by name, each with the role your session works in (a role is your session's, not a kolab's, and konjir_switch_team keeps it, so it is the same on every row), whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to ${UNREAD_COUNT_CEILING.toLocaleString('en')} with unread_more and mentions_more saying there are more. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.`,
     schema: listMyTeams,
     annotations: { readOnlyHint: true },
   })
