@@ -11158,8 +11158,8 @@ export class Kolab {
         needs_you: {
           mentioned_unread: Math.min(toYou.dms + toYou.mentions, UNREAD_COUNT_CEILING),
           // Its run since the last person's message anywhere in the kolab has reached the cap (countRun).
-          capped: await this.agentCapped(s.kolab, a, cap),
-          not_running_with_unread: false,
+          capped: await this.agentPastCap(s.kolab, a, cap),
+          not_running_with_unread: 0,
         },
       });
     }
@@ -11954,10 +11954,18 @@ export class Kolab {
 
   /** Whether `agent`'s run in `kolab` since a person last wrote there has reached `cap` (countRun), so its further messages wake no agent. */
   private async agentCapped(kolab: string, agent: string, cap: number): Promise<boolean> {
+    return (await this.agentPastCap(kolab, agent, cap)) > 0;
+  }
+
+  /**
+   * How far `agent`'s run in `kolab` since a person last wrote there is at or past `cap` (countRun):
+   * 1 for the message that reached it, and one more for each after, which woke no agent; 0 below it.
+   */
+  private async agentPastCap(kolab: string, agent: string, cap: number): Promise<number> {
     const r = (await this.db.query<{ run: number; seq: string; chat: string | null }>(
       `select a.run, a.person_seq::text as seq, (select c.person_seq::text from kolab_chat c where c.kolab_id = a.kolab_id) as chat
          from kolab_chat_agent a where a.kolab_id = $1 and a.actor_id = $2`, [kolab, agent])).rows[0];
-    return !!r && r.chat !== null && BigInt(r.seq) >= BigInt(r.chat) && r.run >= cap;
+    return r && r.chat !== null && BigInt(r.seq) >= BigInt(r.chat) && r.run >= cap ? r.run - cap + 1 : 0;
   }
 
   /** Whether something runs as `agent` in `kolab`: the server's word (push.agentRunning), or else a listen stream of its open session on this process. */

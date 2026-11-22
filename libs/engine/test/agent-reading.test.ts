@@ -168,8 +168,8 @@ test('status: here, the newest message, the agent\'s unread, and what it needs o
   const { kolab, ann, bo, claude, codex } = await hub();
   const quiet = (await kolab.myAgentsStatus(ann));
   expect(quiet).toStrictEqual({ kolab: 'hub', agents: [
-    { agent: 'ann-claude', label: 'claude', state: null, here: true, last: null, unread: 0, channels: [{ channel: 'general', unread: 0 }], needs_you: { mentioned_unread: 0, capped: false, not_running_with_unread: false } },
-    { agent: 'ann-codex', label: 'codex', state: null, here: true, last: null, unread: 0, channels: [{ channel: 'general', unread: 0 }], needs_you: { mentioned_unread: 0, capped: false, not_running_with_unread: false } },
+    { agent: 'ann-claude', label: 'claude', state: null, here: true, last: null, unread: 0, channels: [{ channel: 'general', unread: 0 }], needs_you: { mentioned_unread: 0, capped: 0, not_running_with_unread: 0 } },
+    { agent: 'ann-codex', label: 'codex', state: null, here: true, last: null, unread: 0, channels: [{ channel: 'general', unread: 0 }], needs_you: { mentioned_unread: 0, capped: 0, not_running_with_unread: 0 } },
   ] });
   // Claude writes to Ann twice and mentions her once; Bo writes to Claude and mentions it.
   const long = `${'x'.repeat(120)}`;
@@ -180,7 +180,7 @@ test('status: here, the newest message, the agent\'s unread, and what it needs o
   await kolab.sendChannelMessage(bo, 'general', '@ann/claude please', { mentions: ['ann/claude'] });
   await kolab.endSession(codex);
   const [c, x] = (await kolab.myAgentsStatus(ann)).agents;
-  expect(c).toMatchObject({ agent: 'ann-claude', here: true, unread: 2, needs_you: { mentioned_unread: 3, capped: false } });
+  expect(c).toMatchObject({ agent: 'ann-claude', here: true, unread: 2, needs_you: { mentioned_unread: 3, capped: 0 } });
   expect(c.last).toStrictEqual({ kind: 'channel', at: expect.any(String), summary: '@ann/claude please' });
   expect(x).toMatchObject({ agent: 'ann-codex', here: false, last: null, unread: 0 });
   // Its channels: the ones it follows, and one it doesn't but was mentioned in, each with its own unread.
@@ -199,11 +199,13 @@ test('status: here, the newest message, the agent\'s unread, and what it needs o
   // The cap: Claude's run since a person last wrote reaches it; a person's message starts it again.
   await kolab.setAgentReplyCap(ann, 2);
   await kolab.sendChannelMessage(claude, 'general', 'one');
-  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(false);
+  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(0);
   await kolab.sendChannelMessage(claude, 'general', 'two');
-  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(true);
+  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(1);
+  await kolab.sendChannelMessage(claude, 'general', 'three, which wakes no agent');
+  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(2);
   await kolab.sendChannelMessage(bo, 'general', 'a person writes');
-  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(false);
+  expect((await kolab.myAgentsStatus(ann)).agents[0].needs_you.capped).toBe(0);
 });
 
 test('a message to or from an agent signals its owner\'s answers too, in a direct message or a channel, once', async () => {

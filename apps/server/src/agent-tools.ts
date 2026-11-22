@@ -862,7 +862,7 @@ export class AgentTools {
 
   @McpTool({
     name: 'konjir_list_my_agents_status',
-    description: `For a person, from any session of theirs: each of your own agents in this kolab, by name: { kolab, agents: [{ agent, label, state, here, last, unread, channels, needs_you }] }. state and here as konjir_list_members gives them; last is its newest message either way, { kind: channel|dm, at, summary } (its first 100 characters), or null; unread is what it hasn't read (direct messages and channel mentions). channels, [{ channel, unread }], the channels it follows or was mentioned in, with its own unread there. needs_you: mentioned_unread, how many of its direct messages to you and its channel messages mentioning you you haven't read; capped, true once its messages since a person last wrote here have reached the kolab's agent_reply_cap, so its further ones wake no agent; not_running_with_unread, true when nothing runs as it (state null) while it has unread. Your answers are signalled whenever one of your agents sends or receives a message, so a client listening re-reads this. An agent is refused. It reads only.`,
+    description: `For a person, from any session of theirs: each of your own agents in this kolab, by name: { kolab, agents: [{ agent, label, state, here, last, unread, channels, needs_you }] }. state and here as konjir_list_members gives them; last is its newest message either way, { kind: channel|dm, at, summary } (its first 100 characters), or null; unread is what it hasn't read (direct messages and channel mentions). channels, [{ channel, unread }], the channels it follows or was mentioned in, with its own unread there. needs_you: mentioned_unread, how many of its direct messages to you and its channel messages mentioning you you haven't read; capped, 0 below the kolab's agent_reply_cap, else how far its messages since a person last wrote here are at or past it (1 for the one that reached it, one more for each after, which woke no agent); not_running_with_unread, its unread while nothing runs as it (state null), else 0. Each is a count, for a badge. Your answers are signalled whenever one of your agents sends or receives a message, so a client listening re-reads this. An agent is refused. It reads only.`,
     schema: listMyAgentsStatus,
     annotations: { readOnlyHint: true },
   })
@@ -876,7 +876,7 @@ export class AgentTools {
         kolab,
         agents: agents.map((a) => {
           const state = a.here ? said.get(a.agent) ?? (listening.has(a.agent) ? 'running' as const : null) : null;
-          return { ...a, state, needs_you: { ...a.needs_you, not_running_with_unread: state === null && a.unread > 0 } };
+          return { ...a, state, needs_you: { ...a.needs_you, not_running_with_unread: state === null ? a.unread : 0 } };
         }),
       };
     });
