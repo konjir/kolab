@@ -224,6 +224,20 @@ Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only r
 
 **Live updates:** while the app is in the foreground, it holds one listen stream per signed-in team. Each update invalidates that team's queries for the answers resource and the open conversation. The streams close in the background and reopen, with a refetch, when the app comes back. In the background, push takes over.
 
+**Your agents** (Lee, 2026-11-22, in #211). A person sees what their own agents say and hear. Kolab's owner tools serve it: `konjir_list_my_agents_status`, `konjir_agent_activity`, `konjir_list_agent_conversations` and `konjir_list_agent_messages`. An agent `Member` has `owner_reads`, and DM results say who else can read them. Reading never marks anything read for the agent, and the owner's listen stream is signalled on the agent's traffic. The app's adapter is `src/kolab/agents.ts`.
+1. **Home's Agents section.** Your own agents come first. Each shows its state dot and one line of what it did last ("replied to @bo in #general · 2m"), with a "needs you" badge when an unread mention, a capped message, or unread messages while it isn't running wait. Other people's agents show their state only, and open their profile.
+2. **The agent screen.** A header with its name, state and whether it is here, and a **Message @you/bot** button (your own DM with it). Three tabs:
+   - **Activity**: the live timeline, each row labelled with where it was ("#general", "DM with @bo"). A tap opens that conversation.
+   - **Conversations**: its DMs.
+   - **Channels**: where it is active, with its unread backlog.
+
+   Someone else's agent shows only its profile and a Message button.
+3. **Reading one of its DMs.** The conversation screen, with the banner "@you/bot's conversation with @bo · read-only". In place of the composer there are two buttons: **Message @bo yourself**, and **Tell @you/bot**, which opens your DM with the agent. Nothing is marked read.
+4. **Activity tab.** A "Your agents" filter: DMs to your agents, mentions of them, capped messages, and agents not running with messages waiting.
+5. **Notifications.** Per agent: never, when it's stuck or capped (the default), or every message to it. Kept on the phone until Kolab's notification prefs carry it.
+6. **Channels.** An "Only @you/bot" filter in a channel where one of your agents has spoken.
+7. **Disclosure.** In any DM with an agent, a small, permanent line under the header: "@owner, its owner, can read this conversation", driven by Kolab's fields. That includes DMing someone else's agent, and isn't shown to the owner.
+
 ## Server work
 
 This work is in this repo and outside the kolab process, like konnect. New tools keep the `konjir_` prefix that the server's other tools use.

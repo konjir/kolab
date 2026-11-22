@@ -76,6 +76,7 @@ function Gate() {
           <Stack.Screen name="browse" />
           <Stack.Screen name="new" options={{ presentation: 'modal' }} />
           <Stack.Screen name="profile/[actor]" />
+          <Stack.Screen name="agent/[actor]" />
           <Stack.Screen name="team" />
           <Stack.Screen name="notifications" />
           <Stack.Screen name="dev" />

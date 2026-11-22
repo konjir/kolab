@@ -6,7 +6,7 @@
  *
  * - Kolab from this checkout, in memory, on http://127.0.0.1:7432/mcp (KONNECT_LOCAL_PORT), with
  *   the stub identity provider in GitHub's place.
- * - Ann owns team `hub`, where Bo writes. Each is signed in as konnect signs a person in (OAuth
+ * - Ann owns team `hub`, where Bo writes; Ann's agents ann/reviewer and ann/helper and Bo's bo/builder are in it. Each is signed in as konnect signs a person in (OAuth
  *   with PKCE, a loopback client, the `team:hub intent:join` scope), with this script playing the
  *   browser, and their sign-ins are kept in .konjir-dev/ (0600, gitignored).
  * - http://127.0.0.1:7433/spike (the port after) hands a dev build the MCP URL and both people's
@@ -86,6 +86,21 @@ if (process.env.KONNECT_LOCAL_SEED !== '0') {
   const bo = await kolab.openSession('bo', 'engineer', { kolab: 'hub', ...by });
   const agent = await kolab.openSession('ann-reviewer', 'engineer', { kolab: 'hub', ...by });
   for (const c of ['design', 'releases']) await kolab.makeChannel(bo, c);
+  // Ann's second agent, ann/helper, for "Your agents": a post in #general, and DMs with Bo that Ann
+  // reads as its owner. And Bo's agent, bo/builder, which DMs Ann, so Ann sees the line that says
+  // its owner can read that conversation.
+  await kolab.addActor('ann-helper', { owner: 'ann', ...by });
+  await kolab.grant('hub', 'ann-helper', 'write', by);
+  await kolab.addActor('bo-builder', { owner: 'bo', ...by });
+  await kolab.grant('hub', 'bo-builder', 'write', by);
+  const helper = await kolab.openSession('ann-helper', 'engineer', { kolab: 'hub', ...by });
+  const builder = await kolab.openSession('bo-builder', 'engineer', { kolab: 'hub', ...by });
+  await kolab.sendChannelMessage(helper, 'general', 'Helper here: I keep the release checklist in #releases.');
+  await kolab.sendMessage(bo, 'ann-helper', 'Can you check the release notes for 0.1?');
+  await kolab.sendMessage(helper, 'bo', 'Checked: two typos, fixed in the draft.');
+  await kolab.sendMessage(builder, 'ann', 'Hi Ann, Bo\'s builder here: the preview build is green.');
+  await kolab.endSession(helper, { signingOut: true });
+  await kolab.endSession(builder, { signingOut: true });
   const hello = await kolab.sendChannelMessage(bo, 'general', 'Morning all. The phone app signs in now: try it on the simulator.');
   await kolab.sendChannelMessage(agent, 'general', '**Review done** for `apps/konnect-mobile`:\n\n- sign-in: PKCE and a per-team client\n- refresh: one at a time per team\n\nNothing blocking.', { replyTo: hello.id });
   await kolab.sendChannelMessage(bo, 'general', '@ann can you look at the composer next?', { mentions: ['ann'] });
@@ -131,7 +146,7 @@ const handoff = createServer((req, res) => {
 });
 await new Promise<void>((resolve) => handoff.listen(port + 1, '127.0.0.1', resolve));
 
-console.log(`Kolab on ${url}: team hub, with ann and bo signed in (kept in ${here}), and ann's agent ann-reviewer.`);
+console.log(`Kolab on ${url}: team hub, with ann and bo signed in (kept in ${here}), ann's agents ann-reviewer and ann-helper, and bo's bo-builder.`);
 console.log('Sign in from the app as Ann: Kolab\'s stub sign-in is Ann\'s, and "Sign in to hub" on its page.');
 console.log(`A dev build reads the URL and their tokens from http://127.0.0.1:${port + 1}/spike. Ctrl-C stops it.`);
 

@@ -1,0 +1,78 @@
+# Your agents: Ann opens her agent ann/helper from Home, sees its activity, reads its DM with Bo
+# read-only (the banner, two buttons, no composer), filters #general to it, and sees, in her own DM
+# with Bo's agent bo/builder, the line saying Bo can read it. Needs a Kolab with the owner tools
+# (konjir_list_my_agents_status and the rest) and local-kolab's seed; then signs out.
+appId: ${APP_ID}
+tags: [local-kolab]
+---
+- runFlow: subflows/sign-in-ann.yaml
+- scrollUntilVisible:
+    element:
+      id: "agent-ann-helper"
+- tapOn:
+    id: "agent-ann-helper"
+- extendedWaitUntil:
+    visible:
+      id: "agent"
+    timeout: 20000
+- assertVisible:
+    id: "message-agent"
+- extendedWaitUntil:
+    visible: "#general · it: Helper here.*"
+    timeout: 20000
+- tapOn:
+    id: "agent-tab-conversations"
+- extendedWaitUntil:
+    visible:
+      id: "agent-dm-bo"
+    timeout: 20000
+- tapOn:
+    id: "agent-dm-bo"
+- extendedWaitUntil:
+    visible:
+      id: "read-only-banner"
+    timeout: 20000
+- assertVisible: "@ann/helper's conversation with @bo · read-only"
+- assertVisible: ".*Checked: two typos.*"
+- assertVisible: ".*Can you check the release notes.*"
+- assertNotVisible:
+    id: "composer"
+- assertVisible: "Message @bo yourself"
+- assertVisible: "Tell @ann/helper"
+# Back to the agent, then Home.
+- tapOn: "Agent"
+- tapOn: "Home"
+# #general, only what ann/helper sent or was mentioned in.
+- scrollUntilVisible:
+    element: "#general.*"
+    direction: UP
+- tapOn: "#general.*"
+- extendedWaitUntil:
+    visible:
+      id: "only-ann-helper"
+    timeout: 20000
+- tapOn:
+    id: "only-ann-helper"
+- assertVisible: ".*Helper here.*"
+- assertNotVisible: ".*@ann can you look at the composer next.*"
+- tapOn: "Home"
+# Bo's agent: its profile, then Ann's DM with it, which says Bo can read it.
+- scrollUntilVisible:
+    element:
+      id: "agent-bo-builder"
+- tapOn:
+    id: "agent-bo-builder"
+- tapOn:
+    id: "message"
+- extendedWaitUntil:
+    visible:
+      id: "disclosure"
+    timeout: 20000
+- assertVisible: "@bo, its owner, can read this conversation"
+- tapOn: "Home"
+- tapOn: "You"
+- tapOn:
+    id: "sign-out"
+- extendedWaitUntil:
+    visible: "Sign in with GitHub"
+    timeout: 20000

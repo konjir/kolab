@@ -3,7 +3,7 @@
  * message knows whether it starts a group (another sender, or more than a minute after the one
  * before), day separators fall between days, and a "New" line sits above the first unread message.
  */
-export interface Msg { id: string; from: string; message: string; reply_to?: string | null; sent_at: string; capped?: boolean; pending?: 'sending' | 'failed' }
+export interface Msg { id: string; from: string; message: string; reply_to?: string | null; sent_at: string; capped?: boolean; mentions?: string[]; pending?: 'sending' | 'failed' }
 
 export type Row =
   | { type: 'message'; key: string; msg: Msg; head: boolean }

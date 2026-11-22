@@ -10,7 +10,9 @@ import { Composer } from '@/Composer';
 import { Icon } from '@/icons';
 import { markReadUpTo } from '@/kolab/api';
 import { markReader, type MarkReader } from '@/kolab/mark-read';
-import { isAgent, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
+import { isAgent, useAgentConversation, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
+import { agentsIn, at, disclosureOf, onlyAgent, ownAgents, readOnlyBanner } from '@/kolab/your-agents';
+import { Button } from '@/ui';
 import { handleOf, mentionsIn } from '@/kolab/names';
 import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
 import { readThrough } from '@/kolab/unread';
@@ -28,7 +30,10 @@ const day = (iso: string) => new Date(iso).toLocaleDateString(undefined, { weekd
  * one that fails stays, with Retry.
  */
 export default function Conversation() {
-  const { kind, name } = useLocalSearchParams<{ kind: ConversationKind; name: string }>();
+  // `as`: one of your agents, whose DM with `name` this is, read as its owner (read-only). `only`:
+  // a channel opened on one of your agents' messages (its "Only @you/bot" filter).
+  const { kind, name, as, only } = useLocalSearchParams<{ kind: ConversationKind; name: string; as?: string; only?: string }>();
+  const readOnly = kind === 'dm' && !!as;
   const auth = useAuth();
   const team = auth.current?.team ?? "";
   const me = auth.current?.actor ?? "";
@@ -36,18 +41,25 @@ export default function Conversation() {
   const router = useRouter();
   const qc = useQueryClient();
   const api = useApi();
-  const convo = useConversation(team, kind, name);
+  const own = useConversation(team, kind, name, !readOnly);
+  const agentDm = useAgentConversation(team, readOnly ? as : undefined, name);
+  const convo = readOnly ? agentDm : own;
   const members = useMembers(team).data?.members;
+  const [onlyOf, setOnlyOf] = useState<string | undefined>(only);
   const channels = useChannels(team).data?.channels;
   const answers = useAnswers(team).data;
   const [pending, setPending] = useState<Msg[]>([]);
   const [replyTo, setReplyTo] = useState<Msg>();
 
   const loaded = useMemo(() => convo.data?.pages.flatMap((p) => p.messages) ?? [], [convo.data]);
-  const unread = useMemo(() => (kind === 'channel'
+  const unread = useMemo(() => (readOnly ? [] : kind === 'channel'
     ? answers?.channels?.find((c) => c.channel === name)?.items?.map((i) => i.id)
-    : answers?.messages?.items?.filter((m) => m.from === name).map((m) => m.id)) ?? [], [answers, kind, name]);
-  const all = useMemo(() => [...pending.filter((p) => !loaded.some((l) => l.id === p.id)), ...loaded], [pending, loaded]);
+    : answers?.messages?.items?.filter((m) => m.from === name).map((m) => m.id)) ?? [], [answers, kind, name, readOnly]);
+  // Your agents that have spoken here: a channel can show only what one of them sent or was sent.
+  const mine = useMemo(() => (kind === 'channel' ? agentsIn(loaded, ownAgents(members, me)) : []), [kind, loaded, members, me]);
+  const filterBy = mine.find((a) => a.actor === onlyOf) ?? (onlyOf ? members?.find((m) => m.actor === onlyOf && m.owner === me) : undefined);
+  const everything = useMemo(() => [...pending.filter((p) => !loaded.some((l) => l.id === p.id)), ...loaded], [pending, loaded]);
+  const all = useMemo(() => (filterBy ? onlyAgent(everything, filterBy) : everything), [everything, filterBy]);
   const rows = useMemo(() => rowsOf(all, unread.find((id) => all.some((m) => m.id === id)), day), [all, unread]);
   const byId = useMemo(() => new Map(all.map((m) => [m.id, m])), [all]);
 
@@ -85,12 +97,14 @@ export default function Conversation() {
     marker.current = m;
     return () => { m.dispose(); if (marker.current === m) marker.current = undefined; };
   }, []);
-  const markRead = (visible: string[]) => marker.current?.run(visible);
+  // Reading one of your agents' DMs marks nothing read, for it or for you.
+  const markRead = (visible: string[]) => { if (!readOnly) marker.current?.run(visible); };
 
   const actions = (m: Msg) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     const reply = () => setReplyTo(m);
     const copy = () => void Clipboard.setStringAsync(m.message);
+    if (readOnly) { copy(); return; } // Nothing to reply with here: a long-press copies.
     if (Platform.OS === 'ios') ActionSheetIOS.showActionSheetWithOptions({ options: ['Reply', 'Copy', 'Cancel'], cancelButtonIndex: 2 }, (i) => (i === 0 ? reply() : i === 1 ? copy() : undefined));
     else Alert.alert('Message', undefined, [{ text: 'Reply', onPress: reply }, { text: 'Copy', onPress: copy }, { text: 'Cancel', style: 'cancel' }]);
   };
@@ -125,9 +139,30 @@ export default function Conversation() {
 
   const people = (members ?? []).filter((m) => m.actor !== me).map(handleOf);
   const title = kind === 'channel' ? `#${name}` : name;
+  const agentHandle = readOnly ? at(as!, members) : '';
+  const otherHandle = at(name, members);
+  // Who else can read a DM with an agent, from Kolab's fields: said under the header, always.
+  const disclosure = kind === 'dm' && !readOnly
+    ? disclosureOf(members?.find((m) => m.actor === name), me, (convo.data?.pages[0] as { readableBy?: string[] } | undefined)?.readableBy)
+    : undefined;
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.surface }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
-      <Stack.Screen options={{ title, headerShown: true, headerBackTitle: 'Home', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink, headerTitleStyle: { fontFamily: FAMILIES.sans } }} />
+      <Stack.Screen options={{ title: readOnly ? `${agentHandle} · ${otherHandle}` : title, headerShown: true, headerBackTitle: readOnly ? 'Agent' : 'Home', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink, headerTitleStyle: { fontFamily: FAMILIES.sans } }} />
+      {readOnly && <Text testID="read-only-banner" accessibilityRole="header" style={[styles.banner, { color: colors.ink, backgroundColor: colors['accent-soft'], borderColor: colors.line }]}>{readOnlyBanner(agentHandle, otherHandle)}</Text>}
+      {disclosure && <Text testID="disclosure" style={[styles.disclosure, { color: colors['ink-muted'], borderColor: colors.line }]}>{disclosure}</Text>}
+      {mine.length > 0 && (
+        <View style={styles.filters}>
+          {mine.map((a) => {
+            const on = filterBy?.actor === a.actor;
+            return (
+              <Pressable key={a.actor} testID={`only-${a.actor}`} accessibilityRole="button" accessibilityState={{ selected: on }} onPress={() => setOnlyOf(on ? undefined : a.actor)}
+                style={[styles.chip, { borderColor: colors.line }, on && { backgroundColor: colors.accent, borderColor: colors.accent }]}>
+                <Text style={[styles.chipText, { color: on ? colors['on-accent'] : colors.ink }]}>Only @{handleOf(a)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
       <FlashList
         testID="messages"
         data={rows}
@@ -140,10 +175,18 @@ export default function Conversation() {
           const ids = viewableItems.flatMap((v) => (v.item?.type === 'message' ? [v.item.msg.id] : []));
           markRead(ids);
         }}
-        ListEmptyComponent={<Text style={[styles.empty, { color: colors['ink-muted'] }]}>{convo.isLoading ? 'Reading…' : convo.isError ? `Couldn't read ${title}: ${(convo.error as Error).message}` : 'No messages yet. Say something.'}</Text>}
+        ListEmptyComponent={<Text style={[styles.empty, { color: colors['ink-muted'] }]}>{convo.isLoading ? 'Reading…' : convo.isError ? `Couldn't read ${title}: ${(convo.error as Error).message}` : filterBy ? `Nothing from or to @${handleOf(filterBy)} here yet.` : readOnly ? 'No messages.' : 'No messages yet. Say something.'}</Text>}
       />
-      <Composer people={people} channels={(channels ?? []).map((c) => c.channel)} replyTo={replyTo} onCancelReply={() => setReplyTo(undefined)}
-        onSend={(t) => void send(t)} placeholder={`Message ${title}`} />
+      {readOnly ? (
+        // Not yours to write in: write to the other side yourself, or tell your agent.
+        <View testID="read-only-actions" style={[styles.actions, { borderColor: colors.line, backgroundColor: colors['surface-raised'] }]}>
+          <Button quiet testID="message-other" label={`Message ${otherHandle} yourself`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name } })} />
+          <Button testID="tell-agent" label={`Tell ${agentHandle}`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: as! } })} />
+        </View>
+      ) : (
+        <Composer people={people} channels={(channels ?? []).map((c) => c.channel)} replyTo={replyTo} onCancelReply={() => setReplyTo(undefined)}
+          onSend={(t) => void send(t)} placeholder={`Message ${title}`} />
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -162,5 +205,11 @@ const styles = StyleSheet.create({
   newLine: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 4 },
   rule: { flex: 1, height: StyleSheet.hairlineWidth * 2 },
   newText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 12 },
+  banner: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 14, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  disclosure: { fontFamily: FAMILIES.sans, fontSize: 12, paddingHorizontal: 16, paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth },
+  filters: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingVertical: 8 },
+  chip: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 4 },
+  chipText: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 13 },
+  actions: { flexDirection: 'column', gap: 8, padding: 12, borderTopWidth: StyleSheet.hairlineWidth },
   empty: { textAlign: 'center', padding: 24, fontFamily: FAMILIES.sans, transform: [{ scaleY: -1 }] },
 });

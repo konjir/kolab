@@ -2,7 +2,9 @@ import { Stack } from 'expo-router';
 import Storage from 'expo-sqlite/kv-store';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/auth/AuthProvider';
-import { useChannels } from '@/kolab/hooks';
+import { useChannels, useMembers } from '@/kolab/hooks';
+import { handleOf } from '@/kolab/names';
+import { AGENT_NOTIFY, agentNotifyKey, agentNotifyOf, ownAgents, withAgentNotify, type AgentNotify } from '@/kolab/your-agents';
 import { DEFAULT_PREFS, getPrefs, kolabHasPush, PUSH_STATUS_KEY, setPrefs, type NotifyLevel, type NotifyPrefs } from '@/push';
 import { useAppTheme } from '@/theme';
 import { Body, Button, Hint, Problem, Row, Screen, Section } from '@/ui';
@@ -28,6 +30,20 @@ export default function NotificationSettings() {
   const [status, setStatus] = useState<string>();
   const [problem, setProblem] = useState<string>();
   const [said, setSaid] = useState<string>();
+  // Each of your agents: when its messages notify you. Kept on this phone: Kolab's prefs have no
+  // field for it yet.
+  const agents = ownAgents(useMembers(team).data?.members, auth.current?.actor ?? '');
+  const [agentPrefs, setAgentPrefs] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void Storage.getItem(agentNotifyKey(team)).then((v) => { if (live) setAgentPrefs(v); }, () => undefined);
+    return () => { live = false; };
+  }, [team]);
+  const setAgent = (agent: string, level: AgentNotify) => {
+    const next = withAgentNotify(agentPrefs, agent, level);
+    setAgentPrefs(next);
+    void Storage.setItem(agentNotifyKey(team), next).catch(() => undefined);
+  };
 
   useEffect(() => {
     let live = true;
@@ -70,6 +86,15 @@ export default function NotificationSettings() {
           })}
         </Section>
       )}
+      {agents.map((a) => {
+        const level = agentNotifyOf(agentPrefs, a.actor);
+        return (
+          <Section key={a.actor} title={`Your agent @${handleOf(a)}`}>
+            {AGENT_NOTIFY.map((l) => <Row key={l.level} testID={`agent-notify-${a.actor}-${l.level}`} icon={level === l.level ? 'following' : 'follow'} label={l.label} onPress={() => setAgent(a.actor, l.level)} />)}
+          </Section>
+        );
+      })}
+      {agents.length > 0 && <Hint>Your agents&apos; settings are kept on this phone for now: Kolab doesn&apos;t take them yet.</Hint>}
       <Section title="Privacy">
         <Row testID="hide-preview" icon={prefs.hidePreview ? 'following' : 'follow'} label="Hide the message's words" detail={prefs.hidePreview ? 'on' : 'off'} onPress={() => void save({ ...prefs, hidePreview: !prefs.hidePreview })} />
         <Hint>Shown, a notification has the sender, the conversation and the first 100 characters, which pass through Expo&apos;s push service and Apple or Google.</Hint>
