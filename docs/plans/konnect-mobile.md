@@ -143,6 +143,45 @@ The targets are `package.json` scripts plus an `nx` block of `nx:run-commands`, 
 - **Store releases:** a manual run behind the `app-stores` environment runs `build-production`, then `submit`. A JS-only fix to production is `update-production`, run the same way.
 - **Secrets:** `EXPO_TOKEN` is a GitHub secret.
 
+## Distribution and builds
+
+Lee's decisions of 2026-11-21: the EAS project is `@icedlee337/konnect`, owned by his personal Expo account, and iOS testers use TestFlight. Everything is built to fit Expo's free plan:
+- 15 Android and 15 iOS cloud builds a month, on a low-priority queue, with no overage.
+- 60 EAS Workflows minutes, whose build jobs count against the same quota. EAS's Maestro jobs aren't on the free plan.
+- Updates are free up to 1,000 monthly active users. Submit is included, and the push service isn't billed.
+
+**Builds run on GitHub's runners, not EAS's.** The repo is public, so GitHub's macOS and Linux runners are free.
+- Binaries are built with `eas build --local`:
+  - iOS on `macos-15`, with Xcode 26.2 selected, the version the expo-modules-jsi patch is made for.
+  - Android on `ubuntu-24.04`, with JDK 17 and the runner's Android SDK.
+- Signing credentials stay EAS-managed, fetched with `EXPO_TOKEN`.
+- The cloud `build-*` targets remain as a fallback.
+- Dev clients and simulator builds are made on Lee's Mac with the `ios` target, or with `build-dev-local` and `build-simulator-local`.
+- Neither EAS Workflows nor EAS's Maestro jobs are used. `.github/workflows/mobile-e2e.yml` runs the Maestro flows on a macOS runner by hand, against a local Kolab, with no secrets.
+- Whether local builds count against the build quota is to be checked on expo.dev's usage page after the first run. The billing FAQ points to local builds when the quota runs out.
+
+**Each merge to main that touches the app or its libraries goes through a fingerprint gate** (`.github/workflows/mobile-release.yml`):
+1. `native-check` works out each platform's native fingerprint for the preview profile.
+2. A binary for a fingerprint is recorded as the git tag `konnect-native/<profile>/<platform>/<fingerprint>`, which the build job pushes once its binary is submitted. EAS records only its own builds: a local build leaves nothing in `eas build:list` for `eas fingerprint:compare` to compare against.
+3. A platform whose fingerprint has a binary gets nothing new.
+4. A platform without one gets a local preview build, submitted with `eas submit --path`, then tagged.
+5. Either way, `update-preview` publishes an over-the-air update on the preview channel. It is free, and every binary with that fingerprint picks it up.
+
+**Where builds go:**
+- **iOS preview:** TestFlight internal testing. The preview profile has store distribution, and `com.konjir.konnect.preview` is its own App Store Connect app, which is never released.
+- **Android preview:** Play's internal testing track for `com.konjir.konnect.preview`. Google requires the first AAB of a new app to be uploaded by hand in Play Console.
+- **Production:** TestFlight and Play's internal track for `com.konjir.konnect`. Promoting to the stores is a manual step in the consoles.
+- **Production release:** a `workflow_dispatch` behind the `app-stores` environment, with Lee as its required reviewer. It runs the local production builds and submits them, or with `update-only`, publishes an update on the production channel.
+
+**Secrets.** The repo is public, so:
+- `EXPO_TOKEN` lives only in the `app-preview` environment (main only) and the `app-stores` environment.
+- Only jobs on a push to main or a `workflow_dispatch` read it, never on a pull request, so a fork's run gets nothing. Pull request checks have no secrets.
+- Each job holds only the permissions it needs. The build jobs alone may write, to push their tag.
+- Actions are pinned to commit SHAs.
+- A personal Expo account has no robot users, so `EXPO_TOKEN` is Lee's own access token.
+
+Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only run `npx nx run @konjir/konnect-mobile:<target>`. The README's "Release setup" lists what Lee sets up, in order.
+
 ## Information architecture (Slack's, mapped onto konnect)
 
 | Slack | konnect |

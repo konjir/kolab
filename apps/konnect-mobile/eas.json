@@ -20,22 +20,29 @@
     },
     "preview": {
       "extends": "base",
-      "distribution": "internal",
+      "distribution": "store",
+      "autoIncrement": true,
       "channel": "preview",
-      "env": { "APP_VARIANT": "preview" }
+      "env": { "APP_VARIANT": "preview" },
+      "android": { "buildType": "app-bundle" }
     },
     "production": {
       "extends": "base",
       "distribution": "store",
       "autoIncrement": true,
       "channel": "production",
-      "env": { "APP_VARIANT": "production" }
+      "env": { "APP_VARIANT": "production" },
+      "android": { "buildType": "app-bundle" }
     }
   },
   "submit": {
+    "preview": {
+      "ios": { "ascAppId": "REPLACE_WITH_PREVIEW_APP_STORE_CONNECT_APP_ID" },
+      "android": { "track": "internal", "releaseStatus": "completed" }
+    },
     "production": {
       "ios": { "ascAppId": "REPLACE_WITH_APP_STORE_CONNECT_APP_ID", "metadataPath": "./store.config.json" },
-      "android": { "track": "production", "releaseStatus": "draft", "serviceAccountKeyPath": "REPLACE_WITH_PATH_TO_PLAY_SERVICE_ACCOUNT_KEY" }
+      "android": { "track": "internal", "releaseStatus": "completed" }
     }
   }
 }

@@ -10,13 +10,12 @@ import path from 'node:path';
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /**
- * The EAS project and the Expo account that owns it. Unset until Lee makes the Expo organization
- * `konjir` and links the project (`npx eas init` in this folder, which writes both here). Until
- * then the EAS targets say the project isn't linked and stop (scripts/eas.mjs), and builds have no
- * over-the-air update URL. Both are public identifiers, not secrets.
+ * The EAS project, @icedlee337/konnect, owned by Lee's personal Expo account (Lee, 2026-11-21).
+ * Both are public identifiers, not secrets. The project ID also gives builds their over-the-air
+ * update URL.
  */
-const EAS_PROJECT_ID: string | undefined = undefined;
-const EAS_OWNER: string | undefined = undefined;
+const EAS_PROJECT_ID: string | undefined = 'fba59fe9-7c12-4d31-ac0b-d270dffb258b';
+const EAS_OWNER: string | undefined = 'icedlee337';
 
 export const VARIANTS = ['development', 'preview', 'production'] as const;
 export type Variant = (typeof VARIANTS)[number];

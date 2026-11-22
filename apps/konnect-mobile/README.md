@@ -94,12 +94,45 @@ The app type-checks and lints with its own TypeScript 6.0 (SDK 58's), not the re
 
 eas-cli is pinned as a devDependency (`eas.json` requires the same version) and run through `npx`, never installed globally. Each profile sets `APP_VARIANT` and has its own update channel. Builds run on the Node version production runs, which `mobile.yml` checks. Updates reach only builds with the same native fingerprint (`runtimeVersion: { policy: 'fingerprint' }`).
 
-### Linking EAS
+### Builds and releases on the free plan
 
-The app isn't linked to an EAS project yet, so every EAS target but `eas-whoami` says "not linked" and stops before eas-cli can offer to create a project under whichever Expo account is signed in. Linking is Lee's, once the Expo organization `konjir` exists:
+The EAS project is `@icedlee337/konnect` (`EAS_PROJECT_ID` and `EAS_OWNER` in `app.config.ts`). Binaries are built with `eas build --local` on GitHub's runners, and an over-the-air update ships whenever the native code hasn't changed. The plan's "Distribution and builds" says why.
 
-1. Make the Expo organization `konjir`, and the Apple Developer team and Google Play account.
-2. In this folder, run `npx eas init` as a member of `konjir`, creating the project `konnect`.
-3. Set `EAS_PROJECT_ID` and `EAS_OWNER` (`konjir`) in `app.config.ts` from what it prints, rather than letting it write an `app.json`. That also gives the builds their update URL.
-4. Add the App Store Connect app's ID (`ascAppId`) to `submit.production.ios` in `eas.json`.
-5. Add `EXPO_TOKEN` to the repository's secrets for the merge and release jobs (plan, CI).
+| Target | What it does |
+| --- | --- |
+| `native-check` | Each platform's native fingerprint for `--profile`, and whether a binary exists for it: a git tag `konnect-native/<profile>/<platform>/<fingerprint>`. |
+| `native-tag` | Records the binary just built, by pushing that tag. |
+| `build-preview-local`, `build-production-local` | `eas build --local` for that profile, with `-- --platform ios\|android --output <file>`. |
+| `build-dev-local`, `build-simulator-local` | A dev client, or one for the iOS simulator, built on this machine. |
+| `submit-preview`, `submit-production` | `eas submit` of a local build, with `-- --platform … --path <file>`. |
+
+`.github/workflows/mobile-release.yml` runs these targets:
+- On each merge: the fingerprint, then a local build and submit only for a new fingerprint, then `update-preview`.
+- By hand, behind `app-stores`: production builds and submit, or an update to production alone.
+
+`.github/workflows/mobile-e2e.yml` runs the Maestro flows on a macOS runner when started by hand.
+
+A local iOS build needs fastlane and CocoaPods, which GitHub's macOS runners have. On this Mac, `build-simulator-local` stopped at "Fastlane is not available", so for now dev and simulator builds here use the `ios` target.
+
+### Release setup
+
+What Lee does, in order, before the release workflows can ship anything. Until then they fail at the first step that needs it, and send nothing.
+
+1. **Apple.** Enrol in the Apple Developer Program.
+2. **App Store Connect.** Make two apps: `com.konjir.konnect` (konnect), and `com.konjir.konnect.preview` (konnect preview, for TestFlight internal testing only and never released). Put each app's Apple ID in `eas.json`'s `submit.production.ios.ascAppId` and `submit.preview.ios.ascAppId`. The submit targets refuse while those say `REPLACE_WITH_…`.
+3. **iOS credentials.** In this folder run `npx eas credentials`, which is interactive and signs in with Lee's Apple account:
+   - a distribution certificate and provisioning profile for each bundle ID
+   - the APNs key, for push
+   - an App Store Connect API key, for `eas submit`
+4. **Google Play.**
+   - A developer account, and the two apps `com.konjir.konnect` and `com.konjir.konnect.preview`.
+   - Each app's first AAB must be uploaded by hand in Play Console; Google allows nothing else for a new app. Build it with `build-preview-local` or `build-production-local`.
+   - Then a Google Cloud service account with release rights, its JSON key uploaded to EAS (`npx eas credentials`, Android, Google Service Account) rather than kept in the repo.
+5. **Android push.** FCM v1 credentials, uploaded to EAS the same way.
+6. **The Expo access token for CI.** Make one on expo.dev and store it as the `EXPO_TOKEN` secret in both GitHub environments below. A personal Expo account has no robot users, so this is Lee's own token, acting as Lee.
+7. **GitHub environments:**
+   - `app-preview`, limited to the `main` branch, holding `EXPO_TOKEN`.
+   - `app-stores`, with Lee as its required reviewer, holding `EXPO_TOKEN`.
+8. **Kolab's push.** A separate Expo access token, which Kolab uses to send pushes through Expo, stored as the SecureString SSM parameter `/konjir/konjir-test/expo-access-token` (Terraform output `expo_access_token_parameter`), which Kolab reads as `KONJIR_EXPO_ACCESS_TOKEN`; `KONJIR_PUSH_PREVIEW=off` keeps message words out of every push. It is a different token from step 6.
+
+After the first build from CI, check expo.dev's usage page to see whether local builds count against the free plan's 15 + 15 builds a month.

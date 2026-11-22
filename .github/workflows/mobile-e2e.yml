@@ -1,0 +1,57 @@
+name: Mobile end to end
+
+# The Maestro flows in apps/konnect-mobile/.maestro, run by hand on a GitHub macOS runner: a
+# Release build for the iOS simulator (its JavaScript bundled in, so no Metro), pointed at a local
+# Kolab from the checkout (local-kolab: the stub identity provider, never GitHub or another Kolab).
+# No secrets and no EAS: EAS's own Maestro jobs aren't on the free plan. Optional, so it isn't a
+# required check.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  NX_DAEMON: 'false'
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  e2e:
+    name: Maestro on the iOS simulator
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode 26.2
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.23.3'
+          cache: npm
+      # Install scripts run here (no secrets in this job): the expo-modules-jsi patch is one.
+      - run: npm ci --no-audit --no-fund
+      - name: Install Maestro
+        env:
+          MAESTRO_VERSION: '2.12.1'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/maestro.zip" "https://github.com/mobile-dev-inc/maestro/releases/download/cli-$MAESTRO_VERSION/maestro.zip"
+          mkdir -p "$HOME/.maestro" && unzip -q "$RUNNER_TEMP/maestro.zip" -d "$RUNNER_TEMP/m" && cp -R "$RUNNER_TEMP/m/maestro/"* "$HOME/.maestro/"
+      - name: Start the local Kolab
+        run: |
+          npx nx run @konjir/konnect-mobile:local-kolab --output-style=stream > "$RUNNER_TEMP/kolab.log" 2>&1 &
+          for _ in $(seq 1 120); do curl -fsS http://127.0.0.1:7432/healthz >/dev/null 2>&1 && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/kolab.log"; exit 1
+      - name: Build and install a Release build on a simulator
+        env:
+          KONNECT_URL: http://127.0.0.1:7432/mcp
+        run: npx nx run @konjir/konnect-mobile:ios --output-style=stream -- --configuration Release --device "iPhone 16" --no-bundler
+      - name: Maestro
+        run: npx nx run @konjir/konnect-mobile:e2e --output-style=stream
