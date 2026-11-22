@@ -117,22 +117,44 @@ test('a person and an agent message each other, and a message to someone with no
   expect((await kolab.readMessages(ann)).messages.map((m) => [m.from, m.message, m.reply_to])).toStrictEqual([['bo-claude', 'Starting now.', sent.id]]);
 });
 
+test('each member\'s login is the GitHub username behind them, as they last signed in: a person\'s own, an agent\'s owner\'s, whatever its actor id; null without a GitHub identity', async () => {
+  const { kolab, ann, bo } = await hub();
+  // Signed up from GitHub: Ann-H, which reads as an agent of Ann's, as gh_ann-h; Admin, a reserved name, as gh_admin; another ann as ann_2.
+  const annH = (await kolab.signInWith({ provider: 'github', subject: '101', login: 'Ann-H' })).actor;
+  const admin = (await kolab.signInWith({ provider: 'github', subject: '102', login: 'Admin' })).actor;
+  const ann2 = (await kolab.signInWith({ provider: 'github', subject: '103', login: 'ann' })).actor;
+  expect([annH, admin, ann2]).toStrictEqual(['gh_ann-h', 'gh_admin', 'ann_2']);
+  // Bo links his account an admin made: his login is GitHub's, not his actor id.
+  await kolab.linkIdentity('bo', { provider: 'github', subject: '104', login: 'BoGH' }, { by: 'admin' });
+  // A login that isn't GitHub's is no one's `login`.
+  await kolab.linkIdentity('ann', { provider: 'stub', subject: 'ann', login: 'ann-at-stub' }, { by: 'admin' });
+  for (const id of [annH, admin, ann2]) await kolab.grant('hub', id, 'read');
+  // gh_admin's agent carries its owner's login.
+  await kolab.addActor('gh_admin-bot', { owner: 'gh_admin' });
+  await kolab.grant('hub', 'gh_admin-bot', 'read');
+  const logins = Object.fromEntries((await kolab.membersPage(ann)).items.map((m) => [m.actor, m.login]));
+  expect(logins).toStrictEqual({ ann: null, 'ann-claude': null, ann_2: 'ann', 'gh_ann-h': 'Ann-H', bo: 'BoGH', 'bo-claude': 'BoGH', gh_admin: 'Admin', 'gh_admin-bot': 'Admin' });
+  // Signing in again with a renamed account updates it.
+  await kolab.signInWith({ provider: 'github', subject: '104', login: 'Bo-Renamed' });
+  expect((await kolab.membersPage(bo)).items.find((m) => m.actor === 'bo')).toMatchObject({ login: 'Bo-Renamed', you: true });
+});
+
 test('members are listed by name for any member, with who is here now, and never what each holds', async () => {
   const { kolab, ann, boAgent, annAgent } = await hub();
   await kolab.endSession(annAgent);
   expect(await kolab.membersPage(boAgent)).toStrictEqual({
     kolab: 'hub', next: null,
     items: [
-      { actor: 'ann', kind: 'person', owner: null, here: true },
-      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', here: false },
-      { actor: 'bo', kind: 'person', owner: null, here: true },
-      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', here: true, you: true },
+      { actor: 'ann', kind: 'person', owner: null, login: null, here: true },
+      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, here: false },
+      { actor: 'bo', kind: 'person', owner: null, login: null, here: true },
+      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, here: true, you: true },
     ],
   });
   // An agent's label is its own field, so it can be named <owner>/<label>; one named otherwise has none.
   await kolab.addActor('helper', { owner: 'bo' });
   await kolab.grant('hub', 'helper', 'write');
-  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, here: false });
+  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, login: null, here: false });
   // A page at a time, by name; a cursor from another list is refused.
   const first = await kolab.membersPage(ann, { limit: 3 });
   expect(first.items.map((m) => m.actor)).toStrictEqual(['ann', 'ann-claude', 'bo']);
