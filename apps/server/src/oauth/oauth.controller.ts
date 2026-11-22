@@ -87,8 +87,12 @@ export function cookieOf(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-/** The PKCE verifier of Kolab's own request to the identity provider: derived from the binding, which only the browser holds. */
-const providerVerifier = (binding: string) => createHash('sha256').update(`konjir-idp:${binding}`).digest('base64url');
+/**
+ * The PKCE verifier of Kolab's own request to the identity provider: derived from the binding, which
+ * only the browser holds, and that request's state, so each request (a restart's for another
+ * account included, restartIdentification) has a verifier of its own.
+ */
+const providerVerifier = (binding: string, state: string) => createHash('sha256').update(`konjir-idp:${binding}:${state}`).digest('base64url');
 const s256 = (v: string) => createHash('sha256').update(v).digest('base64url');
 
 /** How long a sign-in lasts, in words. */
@@ -391,7 +395,7 @@ export class OAuthController {
     res.append('set-cookie', `${bindingCookie(this.options, id)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
     res.setHeader('referrer-policy', 'no-referrer');
     res.redirect(302, this.idp!.authorizationUrl({
-      redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding)),
+      redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding, idpState)),
     }));
   }
 
@@ -423,7 +427,7 @@ export class OAuthController {
     if (pending.person) return sendError(res, 400, `${this.idp.label}'s answer for this sign-in was already used. Go back to the consent page it showed, or start again from the app you were connecting.`);
     let who;
     try {
-      who = await this.idp.identify({ code: q.code, redirectUri: `${base}/oauth/callback/${this.idp.id}`, codeVerifier: providerVerifier(binding) });
+      who = await this.idp.identify({ code: q.code, redirectUri: `${base}/oauth/callback/${this.idp.id}`, codeVerifier: providerVerifier(binding, state) });
     } catch (e) {
       this.logger.warn(`a sign-in with ${this.idp.label} failed: ${maskTokens(e)}`);
       return sendError(res, 502, `${this.idp.label} didn't confirm who signed in. Try again.`);
@@ -491,8 +495,9 @@ export class OAuthController {
    * (appSignInKolab) through consentPerson, as a choice on the chooser does, and sends the code to
    * the app; `other-account` forgets who signed in (restartIdentification) and asks the identity
    * provider again, with `prompt=select_account`, for the same sign-in: its client, redirect URI,
-   * state and PKCE stay, and its page is shown again for whoever signs in. Undefined for any other
-   * answer, which the chooser's handling takes.
+   * state and PKCE challenge stay, the provider's request gets a new state and verifier, and its
+   * page is shown again for whoever signs in. Pressed again before the provider answers, it asks
+   * again (consented). Undefined for any other answer, which the chooser's handling takes.
    */
   private async appAnswered(res: Response, base: string, s: { id: string; binding: string; csrf: string; person: string }, pick: string): Promise<true | undefined> {
     if (pick === 'other-account') {
@@ -505,7 +510,7 @@ export class OAuthController {
       }
       res.setHeader('referrer-policy', 'no-referrer');
       res.redirect(303, this.idp!.authorizationUrl({
-        redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${s.id}.${state}`, codeChallenge: s256(providerVerifier(s.binding)), prompt: 'select_account',
+        redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${s.id}.${state}`, codeChallenge: s256(providerVerifier(s.binding, state)), prompt: 'select_account',
       }));
       return true;
     }
@@ -722,6 +727,10 @@ export class OAuthController {
     const binding = cookieOf(req, bindingCookie(this.options, id));
     if (!binding) return this.stopped(res, { csrf });
     const pending = await this.kolab.pendingAuthorization(binding, { csrf });
+    // konnect's app's *Use a different account* pressed again, before the provider answered the
+    // first press: its form still names this sign-in, which names no one yet, so it asks again.
+    if (pending && !pending.person && str('pick') === 'other-account' && await this.appChoose(pending)
+      && await this.appAnswered(res, base, { id, binding, csrf, person: '' }, 'other-account')) return;
     if (!pending?.person) return this.stopped(res, { binding }, id);
     const setup = pending.clientId !== WEB_CLIENT && !!setupScope(pending.scope);
     // A sign-in that leaves its kolab to its own page answers there, and nowhere else.

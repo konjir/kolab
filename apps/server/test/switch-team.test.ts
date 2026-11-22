@@ -69,7 +69,13 @@ async function signIn(base: string, idp: StubIdentity, client: string, who: { su
     body: new URLSearchParams({ csrf: field(html, 'csrf'), sign_in: field(html, 'sign_in'), ...fields }).toString(),
   });
   const post = (fields: Record<string, string>, o: { from?: string } = {}) => postOn(first.html, fields, o);
-  return { ...first, post, postOn };
+  /** Sends the page's form once, in this browser, following nothing: Kolab's own answer. */
+  const send = (fields: Record<string, string>) => fetch(new URL('/oauth/consent', base), {
+    method: 'POST', redirect: 'manual',
+    headers: { origin: base, 'content-type': 'application/x-www-form-urlencoded', cookie: [...browser.cookies].map(([k, v]) => `${k}=${v}`).join('; ') },
+    body: new URLSearchParams({ csrf: field(first.html, 'csrf'), sign_in: field(first.html, 'sign_in'), ...fields }).toString(),
+  });
+  return { ...first, post, postOn, send };
 }
 
 const tokenEndpoint = async (base: string, form: Record<string, string>) => {
@@ -254,7 +260,12 @@ test('Use a different GitHub account forgets who signed in and asks the identity
   expect(idp.prompts.at(-1)).toBeUndefined();
   // From anywhere but the page, refused, and nothing restarts.
   expect((await p.post({ pick: 'other-account' }, { from: 'https://evil.example' })).res.status).toBe(403);
-  // From the page: back to the provider, asked to let the person choose, and its answer is Ann.
+  // Pressed twice: the first press's trip to the provider is left behind, and the second asks it
+  // again, rather than an error page. The provider's answer is Ann.
+  const first = await p.send({ pick: 'other-account' });
+  expect([first.status, idp.prompts.at(-1)]).toStrictEqual([303, 'select_account']);
+  // Continue on the page meanwhile, with no one signed in: refused, and nothing reaches the app.
+  expect((await p.send({ pick: 'continue' })).status).toBe(400);
   idp.next(ANN);
   const again = await p.post({ pick: 'other-account' });
   expect(idp.prompts.at(-1)).toBe('select_account');
