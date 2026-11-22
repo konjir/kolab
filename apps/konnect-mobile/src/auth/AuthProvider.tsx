@@ -44,12 +44,13 @@ export function useAuth(): Auth {
 export function AuthProvider({ children, kv = secureKV }: { children: ReactNode; kv?: SecureKV }) {
   const url = appExtra().konnectUrl;
   const scheme = [Constants.expoConfig?.scheme].flat()[0] ?? 'com.konjir.konnect';
-  const signedOutRef = useRef<(team: string) => void>(() => undefined);
+  // The team whose sign-in Kolab ended last, with a count so the same team twice is seen twice.
+  const [ended, setEnded] = useState<{ team: string; n: number }>();
   const { store, tokens } = useMemo(() => {
     const store = new LoginStore(kv, url);
     let oauth: Promise<KolabOAuth> | undefined;
     const endpoints = () => (oauth ??= discover(url).catch((e) => { oauth = undefined; throw e; }));
-    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: (team) => signedOutRef.current(team) }) };
+    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: (team) => setEnded((e) => ({ team, n: (e?.n ?? 0) + 1 })) }) };
   }, [kv, url]);
   const clients = useRef(new Map<string, Promise<Client>>());
   const [state, setState] = useState<{ ready: boolean; teams: TeamSummary[]; current?: string }>({ ready: false, teams: [] });
@@ -68,7 +69,7 @@ export function AuthProvider({ children, kv = secureKV }: { children: ReactNode;
     void c?.then((x) => x.close()).catch(() => undefined);
   }, []);
   // Kolab ended a team's sign-in: its connection goes, and the app shows the teams left (or the sign-in screen).
-  useEffect(() => { signedOutRef.current = (team) => { dropClient(team); void reload(); }; }, [dropClient, reload]);
+  useEffect(() => { if (ended) { dropClient(ended.team); void read().then(setState); } }, [ended, dropClient, read]);
 
   const auth: Auth = {
     ready: state.ready, url, teams: state.teams,
