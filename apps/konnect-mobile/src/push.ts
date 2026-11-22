@@ -29,11 +29,20 @@ export const DEFAULT_PREFS: NotifyPrefs = { level: 'mentions_and_dms', muted: []
  * The arguments of konjir_set_notification_prefs for `prefs`: channels by name, each once, sorted.
  * Hiding the words is Kolab's to do (it sends the push), so it goes to Kolab too.
  */
-export function prefsArgs(prefs: NotifyPrefs): { level: NotifyLevel; muted_channels: string[]; hide_preview: boolean; agents?: Record<string, AgentNotifyLevel> } {
+export function prefsArgs(prefs: NotifyPrefs, agentsChanged?: Record<string, AgentNotifyLevel>): { level: NotifyLevel; muted_channels: string[]; hide_preview: boolean; agents?: Record<string, AgentNotifyLevel> } {
   const muted = [...new Set(prefs.muted.map((c) => c.replace(/^#/, '').toLowerCase()).filter(Boolean))].sort();
-  // Kolab merges `agents` per agent: those named are set, the rest keep theirs.
-  const agents = Object.keys(prefs.agents ?? {}).length ? { agents: prefs.agents } : {};
+  // Kolab merges `agents` per agent: only those just changed are sent, so an agent since removed,
+  // which Kolab would refuse, is never sent again.
+  const agents = agentsChanged && Object.keys(agentsChanged).length ? { agents: agentsChanged } : {};
   return { level: prefs.level, muted_channels: prefs.level === 'none' ? [] : muted, hide_preview: prefs.hidePreview, ...agents };
+}
+
+/** The prefs the phone kept for a team, read back: anything unreadable or missing is the default. */
+export function cachedPrefs(raw: string | null | undefined): NotifyPrefs {
+  try {
+    const p = JSON.parse(raw ?? '{}') as Partial<NotifyPrefs>;
+    return { ...DEFAULT_PREFS, ...p, agents: p.agents && typeof p.agents === 'object' ? p.agents : {} };
+  } catch { return DEFAULT_PREFS; }
 }
 
 /**
@@ -95,8 +104,8 @@ export async function getPrefs(client: Client): Promise<NotifyPrefs> {
 }
 
 /** Sets the team's prefs at Kolab, and gives what Kolab keeps now. */
-export async function setPrefs(client: Client, prefs: NotifyPrefs): Promise<NotifyPrefs> {
-  const r = await call<NotificationPrefs>(client, 'konjir_set_notification_prefs', prefsArgs(prefs));
+export async function setPrefs(client: Client, prefs: NotifyPrefs, agentsChanged?: Record<string, AgentNotifyLevel>): Promise<NotifyPrefs> {
+  const r = await call<NotificationPrefs>(client, 'konjir_set_notification_prefs', prefsArgs(prefs, agentsChanged));
   return { level: r.level, muted: r.muted_channels, hidePreview: r.hide_preview, agents: r.agents ?? {} };
 }
 

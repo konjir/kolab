@@ -35,10 +35,12 @@ export default function YourAgent() {
   const m = members?.find((x) => x.actor === actor);
   const status = useAgentStatus(team);
   const mine = status.data?.find((s) => s.agent === actor);
-  const activity = useAgentActivity(team, actor);
+  // Asked of Kolab only once the members list says it is yours: someone else's goes to its profile.
+  const yours = !!m && m.owner === me;
+  const activity = useAgentActivity(team, actor, yours);
   const items = activity.data?.pages.flatMap((p) => p.items) ?? [];
   const lacking = status.data === null || activity.data?.pages.some((p) => 'lacking' in p && p.lacking);
-  const conversations = useAgentConversations(team, actor);
+  const conversations = useAgentConversations(team, actor, yours);
   const handle = m ? handleOf(m) : actor; // as written in a message; shown as @handle
   const needs = needsYouWords(mine?.needs_you);
 

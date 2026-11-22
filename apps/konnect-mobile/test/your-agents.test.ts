@@ -1,7 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import { readersOf, type AgentActivityItem, type AgentStatus } from '../src/kolab/agents';
 import {
-  agentChannels, agentNotifyOf, agentsIn, ago, at, contextOf, disclosureOf, lastLine, legacyAgentNotify, needsYouCount, needsYouWords,
+  agentChannels, agentNotifyOf, marksRead, readingAs, agentsIn, ago, at, contextOf, disclosureOf, lastLine, legacyAgentNotify, needsYouCount, needsYouWords,
   onlyAgent, ownAgents, readOnlyBanner, whereOf, yourAgentsActivity,
 } from '../src/kolab/your-agents';
 
@@ -81,7 +81,16 @@ describe('the Activity tab\'s "Your agents"', () => {
       item({ id: 'capped', agent: 'ann-reviewer', kind: 'channel', channel: 'general', from: 'bo-builder', to: undefined, capped: true, sent_at: '2026-11-22T11:40:00Z' }),
       item({ id: 'theirs', agent: 'bo-builder', to: 'bo-builder', from: 'bo', sent_at: '2026-11-22T11:50:00Z' }),
     ], statuses, members);
-    expect(rows.map((r) => ('item' in r ? `${r.kind}:${r.item.id}` : `${r.kind}:${r.agent}:${r.unread}`))).toEqual(['stuck:ann-helper:2', 'capped:capped', 'mention:mention', 'dm:dm']);
+    expect(rows.map((r) => ('item' in r ? `${r.kind}:${r.item.id}` : `${r.kind}:${r.reason}:${r.agent}:${r.count}`))).toEqual(['stuck:not_running:ann-helper:2', 'capped:capped', 'mention:mention', 'dm:dm']);
+  });
+
+  test('a capped agent shows: a stuck row from needs_you.capped, and its own capped messages', () => {
+    const statuses = [status('ann-helper', { needs_you: { mentioned_unread: 0, capped: 3, not_running_with_unread: 0 } })];
+    const rows = yourAgentsActivity([
+      item({ id: 'own-capped', kind: 'channel', channel: 'general', from: 'ann-helper', to: undefined, capped: true, sent_at: '2026-11-22T11:40:00Z' }),
+      item({ id: 'own-plain', kind: 'channel', channel: 'general', from: 'ann-helper', to: undefined, sent_at: '2026-11-22T11:30:00Z' }),
+    ], statuses, members);
+    expect(rows.map((r) => ('item' in r ? `${r.kind}:${r.item.id}` : `${r.kind}:${r.reason}:${r.count}`))).toEqual(['stuck:capped:3', 'capped:own-capped']);
   });
 });
 
@@ -129,5 +138,20 @@ describe('notifications for your agents', () => {
     expect(legacyAgentNotify('not json')).toEqual({});
     expect(legacyAgentNotify('[1]')).toEqual({});
     expect(legacyAgentNotify(null)).toEqual({});
+  });
+});
+
+describe('a conversation read as an agent\'s owner', () => {
+  test('an agent\'s DM with someone else is read-only; its DM with you is your own DM with it', () => {
+    expect(readingAs({ kind: 'dm', name: 'bo', as: 'ann-helper', me: 'ann' })).toEqual({ readOnly: true });
+    expect(readingAs({ kind: 'dm', name: 'ann', as: 'ann-helper', me: 'ann' })).toEqual({ readOnly: false, redirect: 'ann-helper' });
+    expect(readingAs({ kind: 'dm', name: 'bo', me: 'ann' })).toEqual({ readOnly: false });
+    expect(readingAs({ kind: 'channel', name: 'general', as: 'ann-helper', me: 'ann' })).toEqual({ readOnly: false });
+  });
+  test('scrolling marks read only your own, unfiltered conversation', () => {
+    expect(marksRead(false, false)).toBe(true);
+    expect(marksRead(true, false)).toBe(false);
+    // "Only @you/bot": what is on screen isn't all that is there.
+    expect(marksRead(false, true)).toBe(false);
   });
 });

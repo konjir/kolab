@@ -30,13 +30,18 @@ const kv = (): SecureKV => {
 const adapter = { switchTo: async (_c: unknown, kolab: string) => ({ kolab, role: 'engineer' }) } as unknown as TeamsAdapter;
 
 let realFetch: typeof fetch;
+/** Whether Kolab's token endpoint answers (else the phone has no connection to it). */
+let tokenOnline = true;
 beforeEach(() => {
   mockClients.length = 0;
+  tokenOnline = true;
   realFetch = globalThis.fetch;
   const reply = (json: unknown) => ({ ok: true, status: 200, json: async () => json }) as unknown as Response;
-  globalThis.fetch = (async (url: string) => (String(url).includes('/.well-known/')
-    ? reply({ authorization_endpoint: 'https://kolab.konjir.com/oauth/authorize', token_endpoint: 'https://kolab.konjir.com/oauth/token', registration_endpoint: 'https://kolab.konjir.com/oauth/register' })
-    : reply({ access_token: 'a-side', refresh_token: 'r-1', expires_in: 900, scope: 'konjir kolab:side role:engineer' }))) as typeof fetch;
+  globalThis.fetch = (async (url: string) => {
+    if (String(url).includes('/.well-known/')) return reply({ authorization_endpoint: 'https://kolab.konjir.com/oauth/authorize', token_endpoint: 'https://kolab.konjir.com/oauth/token', registration_endpoint: 'https://kolab.konjir.com/oauth/register' });
+    if (!tokenOnline) throw new TypeError('Network request failed');
+    return reply({ access_token: 'a-side', refresh_token: 'r-1', expires_in: 900, scope: 'konjir kolab:side role:engineer' });
+  }) as typeof fetch;
 });
 afterEach(() => { globalThis.fetch = realFetch; });
 
@@ -61,5 +66,28 @@ describe('the MCP client a screen gets', () => {
     // Asked for no team in particular, even the old render's auth gets the team the sign-in is in now.
     expect(await before.client()).toBe(sideClient);
     expect(await latest!.client('side')).toBe(sideClient);
+  });
+
+  test('a switch Kolab made, whose new token can\'t be fetched yet, is done: the team moves, so a notification waiting for it opens', async () => {
+    let latest: Auth | undefined;
+    const Probe = () => { latest = useAuth(); return null; };
+    await render(<AuthProvider kv={kv()} adapter={adapter}><Probe /></AuthProvider>);
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    tokenOnline = false;
+    await act(async () => { await latest!.switchTeam('side'); });
+    expect(latest?.current?.team).toBe('side');
+    await act(async () => { await latest!.signOut(); });
+  });
+
+  test('a switch Kolab refused fails, and says why: the team stays', async () => {
+    let latest: Auth | undefined;
+    const Probe = () => { latest = useAuth(); return null; };
+    const refusing = { switchTo: async () => { throw new Error('not a member of side'); } } as unknown as TeamsAdapter;
+    await render(<AuthProvider kv={kv()} adapter={refusing}><Probe /></AuthProvider>);
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+    let said = '';
+    await act(async () => { await latest!.switchTeam('side').catch((e: Error) => { said = e.message; }); });
+    expect(said).toContain('not a member of side');
+    expect(latest?.current?.team).toBe('hub');
   });
 });

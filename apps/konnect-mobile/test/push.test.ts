@@ -5,16 +5,19 @@ import { tapHandler, type Tap } from '../src/notification-taps';
 // The native parts load on a phone; only the pure ones are tested here.
 jest.mock('expo-notifications', () => ({}));
 jest.mock('expo-device', () => ({}));
-const { prefsArgs, routeOf, DEFAULT_PREFS } = jest.requireActual<typeof import('../src/push')>('../src/push');
+const { cachedPrefs, prefsArgs, routeOf, DEFAULT_PREFS } = jest.requireActual<typeof import('../src/push')>('../src/push');
 
 describe('push', () => {
   test('prefs become konjir_set_notification_prefs\' arguments: channels once each, sorted, none when nothing notifies', () => {
     expect(prefsArgs({ level: 'all', muted: ['#Design', 'releases', 'design', ''], hidePreview: true, agents: {} })).toEqual({ level: 'all', muted_channels: ['design', 'releases'], hide_preview: true });
     expect(prefsArgs({ level: 'none', muted: ['design'], hidePreview: false, agents: {} })).toEqual({ level: 'none', muted_channels: [], hide_preview: false });
     expect(DEFAULT_PREFS.level).toBe('mentions_and_dms');
-    // Each agent's choice goes to Kolab, which merges them per agent; none named, none sent.
-    expect(prefsArgs({ ...DEFAULT_PREFS, agents: { 'ann-helper': 'all' } })).toMatchObject({ agents: { 'ann-helper': 'all' } });
-    expect(prefsArgs(DEFAULT_PREFS)).not.toHaveProperty('agents');
+    // Only the agent just changed goes to Kolab, which merges per agent: one since removed, still in
+    // the prefs on screen, is never resent (Kolab would refuse the save).
+    const prefs = { ...DEFAULT_PREFS, agents: { 'ann-helper': 'all' as const, 'ann-gone': 'never' as const } };
+    expect(prefsArgs(prefs, { 'ann-helper': 'all' })).toMatchObject({ agents: { 'ann-helper': 'all' } });
+    expect(prefsArgs(prefs, { 'ann-helper': 'all' }).agents).not.toHaveProperty('ann-gone');
+    expect(prefsArgs(prefs)).not.toHaveProperty('agents');
   });
 
   test('a notification opens its conversation in its team, as Kolab\'s push data names it', () => {
@@ -77,5 +80,11 @@ describe('push', () => {
     // Signed out: nothing is shown, and a later sign-in to side opens nothing.
     teamShown(undefined);
     expect(teamShown('side')).toBeUndefined();
+  });
+
+  test('the prefs the phone kept read back safely, agents included', () => {
+    expect(cachedPrefs('{"level":"all"}')).toEqual({ ...DEFAULT_PREFS, level: 'all', agents: {} });
+    expect(cachedPrefs('nope')).toEqual(DEFAULT_PREFS);
+    expect(cachedPrefs(null)).toEqual(DEFAULT_PREFS);
   });
 });

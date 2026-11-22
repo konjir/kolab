@@ -10,6 +10,7 @@ import * as Notifications from 'expo-notifications';
 import { router, type Href } from 'expo-router';
 import Storage from 'expo-sqlite/kv-store';
 import { useEffect, useRef } from 'react';
+import { Alert } from 'react-native';
 import { useAuth, type Auth } from './auth/AuthProvider';
 import { forget, openOrKeep } from './notification-open';
 import { tapHandler, type Tap } from './notification-taps';
@@ -64,7 +65,11 @@ export function PushManager() {
       // the Gate opens the conversation after that reset (notification-open.ts).
       if (openOrKeep(to)) { router.push(to.path as Href); return; }
       if (latest.current.current?.team === to.team) return; // a switch there is under way: the Gate opens it
-      void latest.current.switchTeam(to.team).catch(() => forget(to));
+      // A switch that didn't happen opens nothing later, and says why.
+      void latest.current.switchTeam(to.team).catch((e: Error) => {
+        forget(to);
+        Alert.alert(`Couldn't open ${to.team}`, e.message);
+      });
     });
     if (handle(Notifications.getLastNotificationResponse?.() as Tap | null)) void Notifications.clearLastNotificationResponseAsync?.().catch(() => undefined);
     const sub = Notifications.addNotificationResponseReceivedListener((r) => {

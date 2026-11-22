@@ -80,7 +80,8 @@ function YourAgents({ team }: { team: string | undefined }) {
       {rows.map((r) => {
         const agent = at(r.agent, members);
         if (r.kind === 'stuck') {
-          return <Row key={`stuck-${r.agent}`} icon="stateStopped" label={`${agent} isn't running: ${r.unread} waiting`} onPress={() => router.push({ pathname: '/agent/[actor]', params: { actor: r.agent } })} />;
+          const label = r.reason === 'capped' ? `${agent} is at the reply cap: ${r.count} past it woke no agent` : `${agent} isn't running: ${r.count} waiting`;
+          return <Row key={`stuck-${r.reason}-${r.agent}`} icon={r.reason === 'capped' ? 'capped' : 'stateStopped'} label={label} onPress={() => router.push({ pathname: '/agent/[actor]', params: { actor: r.agent } })} />;
         }
         const i = r.item;
         const says = r.kind === 'dm' ? `to ${agent}` : r.kind === 'mention' ? `mentioned ${agent} in ${whereOf(i, members)}` : `capped in ${whereOf(i, members)}, woke no agent`;

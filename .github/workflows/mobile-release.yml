@@ -202,6 +202,8 @@ jobs:
           export KONNECT_UPDATES_PRIVATE_KEY_PATH="$RUNNER_TEMP/updates-private-key.pem"
           trap 'rm -f "$KONNECT_UPDATES_PRIVATE_KEY_PATH"' EXIT
           (umask 077; printf '%s\n' "$KONNECT_UPDATES_PRIVATE_KEY" > "$KONNECT_UPDATES_PRIVATE_KEY_PATH")
+          # The key is in the file now: out of the environment, so nothing run after (npx, nx, eas) inherits it.
+          unset KONNECT_UPDATES_PRIVATE_KEY
           npx nx run @konjir/konnect-mobile:update-preview --output-style=stream -- --message "main at $COMMIT" --non-interactive
 
   production:
@@ -273,6 +275,8 @@ jobs:
           export KONNECT_UPDATES_PRIVATE_KEY_PATH="$RUNNER_TEMP/updates-private-key.pem"
           trap 'rm -f "$KONNECT_UPDATES_PRIVATE_KEY_PATH"' EXIT
           (umask 077; printf '%s\n' "$KONNECT_UPDATES_PRIVATE_KEY" > "$KONNECT_UPDATES_PRIVATE_KEY_PATH")
+          # The key is in the file now: out of the environment, so nothing run after (npx, nx, eas) inherits it.
+          unset KONNECT_UPDATES_PRIVATE_KEY
           npx nx run @konjir/konnect-mobile:update-production --output-style=stream -- --message "$MESSAGE" --non-interactive
 
   record-production:

@@ -2,7 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import { LoginStore, type Login, type SecureKV } from '../src/auth/store';
 import { redirectSystemPath } from '../app/+native-intent';
 import { PREVIEW_REDIRECT, PRODUCTION_REDIRECT, redirectFor } from '../src/auth/sign-in';
-import { scopeTeam, SignedOut, TeamChanged, Tokens } from '../src/auth/tokens';
+import { scopeTeam, SignedOut, TeamChanged, Tokens, Unreachable } from '../src/auth/tokens';
 import { badgeOf, type MyTeam } from '../src/kolab/teams';
 import { nonce } from '../src/kolab/thread';
 
@@ -69,24 +69,34 @@ describe('a refresh whose answer was lost', () => {
     };
     return { sent, fetch };
   };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const until = async (f: () => boolean) => { for (let i = 0; i < 200 && !f(); i++) await wait(2); };
 
-  test('is sent again with the same refresh token, waiting longer each time, until Kolab answers, and is no sign-out', async () => {
+  test('the caller hears Kolab can\'t be reached after the first failed try; the refresh goes on with the same token, and is no sign-out', async () => {
     const store = new LoginStore(kv(), URL_);
     await store.put(login());
     const k = kolab([offline, offline, offline, () => ok]);
     let signedOut = 0;
-    const kept: string[] = [];
     const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 5, onSignedOut: () => { signedOut++; } });
-    const started = Date.now();
-    const got = tokens.accessToken('hub');
-    await new Promise((r) => setTimeout(r, 3));
-    kept.push((await store.get())!.refreshToken);
-    expect(await got).toBe('access-1');
-    expect(Date.now() - started).toBeGreaterThanOrEqual(5 + 10 + 20 - 3);
+    await expect(tokens.accessToken('hub')).rejects.toBeInstanceOf(Unreachable);
+    expect((await store.get())!.refreshToken).toBe('refresh-0');
+    // A request meanwhile is told at once, rather than kept waiting.
+    await expect(tokens.accessToken('hub')).rejects.toBeInstanceOf(Unreachable);
+    await until(() => k.sent.length === 4);
+    await wait(5);
     expect(k.sent).toEqual(['refresh-0', 'refresh-0', 'refresh-0', 'refresh-0']);
-    expect(kept).toEqual(['refresh-0']);
+    expect(await tokens.accessToken('hub')).toBe('access-1');
     expect(signedOut).toBe(0);
     expect(await store.get()).toMatchObject({ refreshToken: 'refresh-1' });
+  });
+
+  test('while Kolab can\'t be reached, the access token in hand serves until it ends', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login({ expiresAt: 30_000 }));
+    const k = kolab([offline]);
+    const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 60_000 });
+    expect(await tokens.accessToken()).toBe('access-0');
+    await tokens.signOut();
   });
 
   test('an answer whose body can\'t be read, or Kolab busy, is retried, not taken as no access token', async () => {
@@ -95,8 +105,10 @@ describe('a refresh whose answer was lost', () => {
     const cutOff = () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('JSON Parse error: Unexpected end of input'); } });
     const k = kolab([cutOff, () => reply({}, 503), () => reply({ error: 'slow_down' }, 429), () => ok]);
     const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 1 });
+    await expect(tokens.accessToken()).rejects.toBeInstanceOf(Unreachable);
+    await until(() => k.sent.length === 4);
+    await wait(5);
     expect(await tokens.accessToken()).toBe('access-1');
-    expect(k.sent).toHaveLength(4);
   });
 
   test('ends only when Kolab refuses the token itself, which signs out', async () => {
@@ -105,26 +117,59 @@ describe('a refresh whose answer was lost', () => {
     const k = kolab([offline, offline, () => reply({ error: 'invalid_grant', error_description: 'the refresh token was used or revoked' }, 400)]);
     let signedOut = 0;
     const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 1, onSignedOut: () => { signedOut++; } });
-    await expect(tokens.accessToken()).rejects.toBeInstanceOf(SignedOut);
+    await expect(tokens.accessToken()).rejects.toBeInstanceOf(Unreachable);
+    await until(() => signedOut === 1);
     expect(k.sent).toEqual(['refresh-0', 'refresh-0', 'refresh-0']);
-    expect(signedOut).toBe(1);
     expect(await store.get()).toBeUndefined();
+    await expect(tokens.accessToken()).rejects.toBeInstanceOf(SignedOut);
   });
 
-  test('stops after Kolab\'s 10-minute retry window and takes the sign-in as ended', async () => {
+  test('after 90 s of tries (inside Kolab\'s 120 s retry window) they stop and the sign-in is kept; the next request tries again', async () => {
     const store = new LoginStore(kv(), URL_);
     await store.put(login());
-    const k = kolab([offline]);
+    let up = false;
+    const k = kolab([() => (up ? ok : offline())]);
     let clock = 1_000;
     let signedOut = 0;
-    // Each try takes a minute of the clock.
-    const fetch = async (url: string, init: { body: string }) => { clock += 60_000; return k.fetch(url, init); };
+    // Each try takes 10 s of the clock: tries at 0 s, 10 s, … 90 s, then no more.
+    const fetch = async (url: string, init: { body: string }) => { clock += 10_000; return k.fetch(url, init); };
     const tokens = new Tokens({ store, endpoints, fetch, now: () => clock, retryMs: 1, onSignedOut: () => { signedOut++; } });
-    await expect(tokens.accessToken()).rejects.toThrow('10 minutes');
-    expect(k.sent.length).toBe(10);
-    expect(new Set(k.sent)).toEqual(new Set(['refresh-0']));
-    expect(signedOut).toBe(1);
-    expect(await store.get()).toBeUndefined();
+    await expect(tokens.accessToken()).rejects.toBeInstanceOf(Unreachable);
+    await until(() => k.sent.length >= 9);
+    await wait(10);
+    expect(k.sent.length).toBe(9);
+    expect(signedOut).toBe(0);
+    expect((await store.get())!.refreshToken).toBe('refresh-0');
+    up = true;
+    expect(await tokens.accessToken()).toBe('access-1');
+  });
+
+  test('a phone that slept past the window still asks once on waking, and is not signed out', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login());
+    let clock = 1_000;
+    const k = kolab([() => { clock += 5 * 60_000; return offline(); }, () => ok]);
+    const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => clock, retryMs: 1 });
+    await expect(tokens.accessToken()).rejects.toBeInstanceOf(Unreachable);
+    await until(() => k.sent.length === 2);
+    await wait(5);
+    expect(await tokens.accessToken()).toBe('access-1');
+  });
+
+  test('a switch stops a refresh that is retrying and makes its own; Kolab moved the sign-in, so the login names the new team even before the refresh lands', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login({ expiresAt: 600_000 }));
+    const asked: string[] = [];
+    let up = false;
+    const k = kolab([() => (up ? reply({ access_token: 'a-side', refresh_token: 'r-side', expires_in: 900, scope: 'konjir kolab:side role:engineer' }) : offline())]);
+    const tokens = new Tokens({ store, endpoints, fetch: k.fetch, now: () => 1_000, retryMs: 5 });
+    await expect(tokens.switchTeam('side', async (t) => { asked.push(t); return { kolab: 'side', role: 'engineer' }; })).rejects.toBeInstanceOf(Unreachable);
+    expect(asked).toEqual(['access-0']);
+    expect(await store.who()).toEqual({ actor: 'ann', team: 'side', role: 'engineer' });
+    up = true;
+    await until(() => k.sent.length >= 2);
+    await wait(5);
+    expect(await tokens.accessToken('side')).toBe('a-side');
   });
 
   test('signing out while it retries stops it, and revokes the refresh token it kept', async () => {
@@ -136,10 +181,8 @@ describe('a refresh whose answer was lost', () => {
       throw new TypeError('Network request failed');
     };
     const tokens = new Tokens({ store, endpoints, fetch, now: () => 1_000, retryMs: 60_000 });
-    const refreshing = tokens.accessToken();
-    await new Promise((r) => setTimeout(r, 5));
+    await expect(tokens.accessToken()).rejects.toBeInstanceOf(Unreachable);
     expect(await tokens.signOut()).toEqual({ revoked: true });
-    await expect(refreshing).rejects.toThrow('stopped');
     expect(revoked).toEqual(['refresh-0']);
     expect(await store.get()).toBeUndefined();
   });

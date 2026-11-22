@@ -15,7 +15,7 @@ import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
 import { discover, InvalidClient, redirectFor, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type Who } from './store';
-import { TeamChanged, Tokens } from './tokens';
+import { TeamChanged, Tokens, Unreachable } from './tokens';
 
 /**
  * expo-secure-store, readable after the phone's first unlock (so a refresh can run in the
@@ -145,10 +145,16 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
     },
     switchTeam: async (team) => {
       if (!state.who || team === state.who.team) return;
-      await tokens.switchTeam(team, async (accessToken) => {
-        const c = await teamClient(url, { token: async () => accessToken, renew: async () => accessToken });
-        try { return await adapter.switchTo(c, team); } finally { await c.close().catch(() => undefined); }
-      });
+      try {
+        await tokens.switchTeam(team, async (accessToken) => {
+          const c = await teamClient(url, { token: async () => accessToken, renew: async () => accessToken });
+          try { return await adapter.switchTo(c, team); } finally { await c.close().catch(() => undefined); }
+        });
+      } catch (e) {
+        // Kolab moved the sign-in, and its new token is still on the way (Unreachable): the switch
+        // is done, and the token comes with the refresh going on in the background. Otherwise it failed.
+        if (!(e instanceof Unreachable) || (await store.who())?.team !== team) throw e;
+      }
       dropClient();
       await reload();
     },
