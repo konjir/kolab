@@ -82,6 +82,8 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   // A person ends a session of their own (D103): its grant revoked as theirs, and it ended by them.
   endOwnSession: { recorded: ['oauth_grant.revoked_by', 'session.ended_by'] },
   switchSession: { recorded: ['session.ended_by', 'session.opened_by'] },
+  // konnect's app moves its grant to another of the person's kolabs (konjir_switch_team): the session ended, and the new one opened, by the person.
+  switchTeam: { recorded: ['session.ended_by', 'session.opened_by'] },
   signInWith: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by'] },
   linkIdentity: { recorded: ['identity.linked_by'] },
   registerClient: { unsigned: 'client_registration' },

@@ -78,6 +78,24 @@ export interface PendingInvitation {
   invited_by_login: string | null;
   level: InviteLevel; created_at: string;
 }
+/**
+ * One of a person's teams, as konjir_list_my_teams lists it (konnect's app): a kolab they are a
+ * member of, by their own access; the role a session of theirs works in there (the session's own,
+ * which a switch keeps); whether they own it; whether the session works there now; and their own
+ * inbox there, counted as their answers there count it: `unread`, their unread direct messages and
+ * the unread in the channels they follow, and `mentions`, unread messages that mention them in any
+ * channel, each at most UNREAD_COUNT_CEILING, with unread_more and mentions_more true past it.
+ */
+export interface MyTeam {
+  kolab: string; role: Role; owner: boolean; current: boolean;
+  unread: number; unread_more: boolean; mentions: number; mentions_more: boolean;
+}
+/** An invitation waiting for the person, as konjir_list_my_teams lists it: accepted or declined on Kolab's sign-in page. */
+export interface MyInvitation { kolab: string; invited_by: string; invited_at: string }
+/** What konjir_list_my_teams returns. */
+export interface MyTeams { teams: MyTeam[]; invitations: MyInvitation[] }
+/** What a person's switch of their sign-in to another of their teams returns (konjir_switch_team): where it works now. */
+export interface TeamSwitched { kolab: string; role: Role }
 /** What an invite's link shows whoever holds it, before they accept: the kolab, the access, and who invites them. */
 export interface InvitePreview {
   kolab: string; title: string; owner: string; level: InviteLevel; layers: Layer[];
