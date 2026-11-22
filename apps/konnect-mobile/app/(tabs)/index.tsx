@@ -5,7 +5,8 @@ import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 're
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/auth/AuthProvider';
 import { Icon, type IconName } from '@/icons';
-import { useAnswers, useChannels, useConversations, useMembers } from '@/kolab/hooks';
+import { useAgentStatus, useAnswers, useChannels, useConversations, useMembers } from '@/kolab/hooks';
+import { lastLine, needsYouCount } from '@/kolab/your-agents';
 import { handleOf } from '@/kolab/names';
 import { unreadOf, type Unread } from '@/kolab/unread';
 import { setBadge } from '@/push';
@@ -32,6 +33,8 @@ export default function Home() {
   const members = useMembers(team);
   const answers = useAnswers(team);
   const conversations = useConversations(team);
+  const me = auth.current?.actor ?? '';
+  const statuses = useAgentStatus(team).data;
   const myTeams = useMyTeams().data?.teams;
   // The app's badge: what is unread across the person's teams, as a push sets it.
   const unreadTotal = myTeams ? badgeOf(myTeams) : unreadOf(answers.data).total;
@@ -49,7 +52,8 @@ export default function Home() {
   const followed = (channels.data?.channels ?? []).filter((c) => c.following && match(c.channel));
   // Direct messages: the person's conversations with people, newest first (S3); agents have their own section.
   const dms = (conversations.data?.conversations ?? []).filter((c) => all.find((m) => m.actor === c.with)?.kind !== 'agent' && match(c.with));
-  const agents = all.filter((m) => m.kind === 'agent' && match(handleOf(m)));
+  // Your own agents first, then everyone else's.
+  const agents = all.filter((m) => m.kind === 'agent' && match(handleOf(m))).sort((x, y) => Number(y.owner === me) - Number(x.owner === me));
   const unreadRows = [
     ...[...unread.channels].filter(([c]) => match(c)).map(([c, u]) => ({ key: `c-${c}`, label: `#${c}`, href: `/c/channel/${c}`, u, icon: 'channel' as IconName })),
     ...[...unread.dms].filter(([p]) => match(p)).map(([p, u]) => ({ key: `d-${p}`, label: p, href: `/c/dm/${p}`, u, icon: (all.find((m) => m.actor === p)?.kind === 'agent' ? 'agent' : 'person') as IconName })),
@@ -84,8 +88,16 @@ export default function Home() {
           {!conversations.isLoading && dms.length === 0 && <Hint>{q ? 'Nobody matches.' : 'No direct messages yet: the pencil starts one.'}</Hint>}
         </Section>
         <Section title="Agents">
-          {agents.map((a) => <Item key={a.actor} icon={STATE_ICON[a.state ?? ''] ?? 'stateStopped'} label={handleOf(a)} detail={a.state ?? 'not running'} unread={unread.dms.get(a.actor)}
-            onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: a.actor } })} />)}
+          {agents.map((a) => {
+            // Yours: what it did last, and a badge when something needs you. Others': their state alone.
+            const s = a.owner === me ? statuses?.find((x) => x.agent === a.actor) : undefined;
+            const needs = needsYouCount(s?.needs_you);
+            return (
+              <Item key={a.actor} testID={`agent-${a.actor}`} icon={STATE_ICON[s?.state ?? a.state ?? ''] ?? 'stateStopped'} label={handleOf(a)} detail={s?.state ?? a.state ?? 'not running'}
+                sub={a.owner === me ? lastLine(s) : undefined} flag={needs ? 'needs you' : undefined} unread={unread.dms.get(a.actor)}
+                onPress={() => router.push(a.owner === me ? { pathname: '/agent/[actor]', params: { actor: a.actor } } : { pathname: '/profile/[actor]', params: { actor: a.actor } })} />
+            );
+          })}
           {!members.isLoading && agents.length === 0 && <Hint>{q ? 'No agent matches.' : 'No agents in this team yet.'}</Hint>}
         </Section>
         <View style={{ height: 72 }} />
@@ -99,15 +111,19 @@ export default function Home() {
 }
 
 /** A row of Home: bold when unread, with a badge counting mentions. */
-function Item({ icon, label, detail, unread, onPress, testID }: { icon: IconName; label: string; detail?: string; unread?: Unread; onPress: () => void; testID?: string }) {
+function Item({ icon, label, detail, sub, flag, unread, onPress, testID }: { icon: IconName; label: string; detail?: string; sub?: string; flag?: string; unread?: Unread; onPress: () => void; testID?: string }) {
   const { colors } = useAppTheme();
   const bold = !!unread?.count;
   return (
-    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={`${label}${bold ? `, ${unread!.count} unread` : ''}`} onPress={onPress}
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={`${label}${bold ? `, ${unread!.count} unread` : ''}${flag ? `, ${flag}` : ''}`} onPress={onPress}
       style={({ pressed }) => [styles.item, pressed && { backgroundColor: colors['accent-soft'] }]}>
       <Icon name={icon} size={18} tintColor={bold ? colors.ink : colors['ink-muted']} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
-      <Text numberOfLines={1} style={[styles.label, { color: bold ? colors.ink : colors['ink-muted'], fontWeight: bold ? '700' : '400' }]}>{label}</Text>
+      <View style={{ flex: 1 }}>
+        <Text numberOfLines={1} style={[styles.label, { color: bold ? colors.ink : colors['ink-muted'], fontWeight: bold ? '700' : '400' }]}>{label}</Text>
+        {sub && <Text numberOfLines={1} style={[styles.sub, { color: colors['ink-muted'] }]}>{sub}</Text>}
+      </View>
       {detail && <Text style={[styles.detail, { color: colors['ink-muted'] }]}>{detail}</Text>}
+      {flag && <View style={[styles.flag, { borderColor: colors.boundary }]}><Text style={[styles.flagText, { color: colors.boundary }]}>{flag}</Text></View>}
       {!!unread?.mentions && <View style={[styles.badge, { backgroundColor: colors.boundary }]}><Text style={[styles.badgeText, { color: colors['on-accent'] }]}>{unread.mentions}</Text></View>}
     </Pressable>
   );
@@ -120,7 +136,10 @@ const styles = StyleSheet.create({
   switcherText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 15 },
   jump: { flex: 1, height: 40, borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, fontFamily: FAMILIES.sans, fontSize: 15 },
   item: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 11 },
-  label: { flex: 1, fontFamily: FAMILIES.sans, fontSize: 16 },
+  label: { fontFamily: FAMILIES.sans, fontSize: 16 },
+  sub: { fontFamily: FAMILIES.sans, fontSize: 13, marginTop: 1 },
+  flag: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 1 },
+  flagText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 11 },
   detail: { fontFamily: FAMILIES.mono, fontSize: 12 },
   badge: { minWidth: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   badgeText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 12 },

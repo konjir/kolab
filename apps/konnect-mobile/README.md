@@ -9,6 +9,7 @@
 - **Conversations:** grouped messages, day separators, the New line, markdown for agents, replies, copying, `@` and `#` completion, the 32,000-character count, and sends that show at once and keep a Retry. What scrolls into view is marked read.
 - **Live and offline:** one listen stream per team keeps everything live while the app is open, and TanStack Query's cache is kept on the phone (expo-sqlite).
 - **The other tabs:** DMs and Activity, which lists mentions, replies and capped messages.
+- **Your agents:** on Home, each of your agents says what it did last and whether it needs you. Its own screen has its activity, its DMs (read-only, with buttons to write to the other side or to the agent) and its channels. Activity has a "Your agents" filter, a channel an "Only @you/bot" filter, and Notifications a setting per agent (kept on the phone for now). A DM with an agent says who else can read it. The plan's "Your agents" has the whole of it.
 - **Elsewhere:** browsing, making and following channels, profiles, team settings (invite, withdraw, remove, the reply cap, archive, delete, leave), and notification settings with push (phase 4).
 - **Waiting on the server:** push waits for the server's S4 and for the EAS project. Read-up-to waits for S2, conversation lists for S3 and avatars for S5. The app uses each once Kolab has it, and until then says so or falls back.
 
@@ -21,7 +22,7 @@ Every operation is an Nx target, run from the repository root as `npx nx run @ko
 | `prebuild` | `expo prebuild --clean`: writes `ios/` and `android/` from `app.config.ts`. Both are generated and gitignored (CNG). |
 | `ios`, `android` | `expo run:ios`, `expo run:android`: a local dev build, installed on a simulator or emulator, with Metro. |
 | `start` | `expo start --dev-client`: Metro, for a dev build that is already installed. |
-| `local-kolab` | A throwaway Kolab from this checkout on `http://127.0.0.1:7432/mcp`, with the stub identity provider in GitHub's place. Team `hub` has Ann, Bo and Ann's agent `ann-reviewer`, two more channels, and unread messages for Ann. |
+| `local-kolab` | A throwaway Kolab from this checkout on `http://127.0.0.1:7432/mcp`, with the stub identity provider in GitHub's place. Team `hub` has Ann, Bo, Ann's agents `ann/reviewer` and `ann/helper` (which has DMs with Bo), Bo's agent `bo/builder`, two more channels, and unread messages for Ann. |
 
 `APP_VARIANT` (`development` by default, `preview`, `production`) picks the app: its name, bundle ID and package (`com.konjir.konnect.dev`, `.preview`, or none), and URL scheme, which is the same name. The three install side by side. `KONNECT_URL` points a build at another Kolab; it defaults to `https://kolab.konjir.com/mcp`.
 

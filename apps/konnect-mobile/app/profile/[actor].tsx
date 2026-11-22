@@ -27,6 +27,7 @@ export default function Profile() {
           <Row icon="signIn" label="Signed in here" detail={m.here ? 'yes' : 'no'} />
         </Section>
       )}
+      {m && m.kind === 'agent' && m.owner === auth.current?.actor && <Button quiet testID="open-agent" label="What it is doing" onPress={() => router.replace({ pathname: '/agent/[actor]', params: { actor: m.actor } })} />}
       {m && !m.you && <Button testID="message" label={`Message ${handleOf(m)}`} onPress={() => router.replace({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: m.actor } })} />}
     </Screen>
   );
