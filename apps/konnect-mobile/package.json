@@ -22,7 +22,15 @@
     "build-dev": "node scripts/eas.mjs build --profile development",
     "build-preview": "node scripts/eas.mjs build --profile preview",
     "build-production": "node scripts/eas.mjs build --profile production --auto-submit",
+    "build-dev-local": "node scripts/eas.mjs build --local --profile development",
+    "build-simulator-local": "node scripts/eas.mjs build --local --profile development-simulator --platform ios",
+    "build-preview-local": "node scripts/eas.mjs build --local --non-interactive --profile preview",
+    "build-production-local": "node scripts/eas.mjs build --local --non-interactive --profile production",
     "submit": "node scripts/eas.mjs submit --profile production --latest",
+    "submit-preview": "node scripts/eas.mjs submit --non-interactive --profile preview",
+    "submit-production": "node scripts/eas.mjs submit --non-interactive --profile production",
+    "native-check": "node scripts/native.mjs check",
+    "native-tag": "node scripts/native.mjs tag",
     "update-preview": "node scripts/eas.mjs update --channel preview --environment preview",
     "update-production": "node scripts/eas.mjs update --channel production --environment production",
     "version": "node scripts/eas.mjs build:version:get",
@@ -205,6 +213,30 @@
         "cache": false
       },
       "local-kolab": {
+        "cache": false
+      },
+      "build-dev-local": {
+        "cache": false
+      },
+      "build-simulator-local": {
+        "cache": false
+      },
+      "build-preview-local": {
+        "cache": false
+      },
+      "build-production-local": {
+        "cache": false
+      },
+      "submit-preview": {
+        "cache": false
+      },
+      "submit-production": {
+        "cache": false
+      },
+      "native-check": {
+        "cache": false
+      },
+      "native-tag": {
         "cache": false
       }
     }
