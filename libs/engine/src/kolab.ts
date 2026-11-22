@@ -31,6 +31,7 @@ import {
   DEFAULT_POLICY, FUNCTIONAL_ANSWERERS, POLICY_SETTINGS, VERSION_APPROVERS, WORK_APPROVERS,
   type KolabPolicy, type PolicySet, type PolicyView, type VersionApprover, type WorkApprover,
 } from '@konjir/types';
+import type { MyTeam, MyTeams, TeamSwitched } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
 // Row types used only inside the engine (shared types are in @konjir/types)
@@ -4036,6 +4037,126 @@ export class Kolab {
     if (!(await accessIn(this.db, person, scope.team)).level) throw new AccessError(`no kolab ${scope.team} you can reach`);
     await this.db.transaction((tx) => issue(tx, scope.team));
     return issued(scope.team, plan.kind === 'make');
+  }
+
+  // ---- a person's teams from one sign-in (konnect's app; Lee's instruction of 2026-11-21) ----
+
+  /**
+   * Where a `choose:kolab` sign-in from konnect's own app (nativeRedirect) signs the person in
+   * without showing its page, so that a person with teams signs in on GitHub's tap alone: the only
+   * kolab they are a member of, or the one of theirs they used last (their newest session there, on
+   * any machine). Undefined, so the page is shown, when an invitation waits for them (the page is
+   * where one is accepted or declined, and nothing else accepts one), when they are a member of no
+   * kolab (the page says so, and the app offers to make a team), and when they are a member of
+   * several and have worked in none of them. The kolabs are chooseOptions', the page's own.
+   */
+  async appSignInKolab(person: string): Promise<string | undefined> {
+    const { invitations, kolabs } = await this.chooseOptions(person);
+    if (invitations.length || !kolabs.length) return undefined;
+    if (kolabs.length === 1) return kolabs[0].id;
+    return (await this.db.query<{ kolab_id: string }>(
+      `select kolab_id from session where actor_id = $1 and kolab_id = any($2::text[])
+        order by coalesce(last_used_at, started_at) desc, id limit 1`, [person, kolabs.map((k) => k.id)])).rows[0]?.kolab_id;
+  }
+
+  /**
+   * konjir_list_my_teams, for a person's own session: every kolab they are a member of, by their
+   * own access (chooseOptions', the sign-in page's list), by name, each with the role the session
+   * works in (which konjir_switch_team keeps), whether they own it (ownsKolab, as konjir_invite asks
+   * it), whether the session works there now, and their own inbox there (inboxCounts); and the
+   * invitations waiting for them, oldest first. Every count is of the person's own unread, by their
+   * own id, in a kolab they are a member of, so it tells nothing of any other kolab, nor of anyone
+   * else's inbox. Refused to an agent.
+   */
+  async myTeams(sessionId: string): Promise<MyTeams> {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person lists their teams, from their own session`);
+    const { invitations, kolabs } = await this.chooseOptions(s.actor_id);
+    const teams: MyTeam[] = [];
+    for (const k of kolabs) {
+      teams.push({
+        kolab: k.id, role: s.active_role, owner: await ownsKolab(this.db, s.actor_id, k.id), current: k.id === s.kolab,
+        ...(await this.inboxCounts({ ...s, kolab: k.id, access: k.access })),
+      });
+    }
+    return { teams, invitations: invitations.map((i) => ({ kolab: i.kolab, invited_by: i.invited_by, invited_at: i.created_at })) };
+  }
+
+  /**
+   * A person's own unread in the kolab `s` names, counted as their answers there count it: `unread`,
+   * their unread direct messages (unreadMessages' rows) and the unread in each channel they follow,
+   * and `mentions`, the unread that mention them in any channel (channelCounts, as `counted` gives
+   * each channel's to unreadChannels). Each at most UNREAD_COUNT_CEILING, with `_more` true past it
+   * or when any part of it says there may be more. It writes nothing: `s` is a person's.
+   */
+  private async inboxCounts(s: Session): Promise<Pick<MyTeam, 'unread' | 'unread_more' | 'mentions' | 'mentions_more'>> {
+    const dms = (await this.db.query<{ n: number }>(
+      `select count(*)::int as n from (select 1 from message m where m.kolab_id = $1 and m.sent_to = $2
+          and not exists (select 1 from message_receipt r where r.message_id = m.id) limit $3) z`,
+      [s.kolab, s.actor_id, UNREAD_COUNT_CEILING + 1])).rows[0].n;
+    let unread = dms;
+    let unreadMore = false;
+    let mentions = 0;
+    let mentionsMore = false;
+    for (const c of await this.channelCounts(this.db, s)) {
+      const n = counted(c);
+      if (c.following) { unread += n.unread; unreadMore ||= n.unread_more; }
+      mentions += n.mentions;
+      mentionsMore ||= n.mentions_more;
+    }
+    return {
+      unread: Math.min(unread, UNREAD_COUNT_CEILING), unread_more: unreadMore || unread > UNREAD_COUNT_CEILING,
+      mentions: Math.min(mentions, UNREAD_COUNT_CEILING), mentions_more: mentionsMore || mentions > UNREAD_COUNT_CEILING,
+    };
+  }
+
+  /**
+   * konjir_switch_team: moves the session's sign-in, a person's grant through konnect's own app, to
+   * another kolab they are a member of (by their own access, as the sign-in page lists them), in the
+   * role the session works in, as the web's switch keeps it (switchSession). In one transaction
+   * under the access lock, so all of it happens or none does: the session ends, and its streams are
+   * told once that commits (D41); the grant's scope names the new kolab (grantedScope), so what
+   * Kolab does to a kolab's sign-ins (removing a member, erasing it) reaches it there and not where
+   * it began; and a new session opens on the grant, on the same machine, its access checked as any
+   * session's is, with an access token no one is given. A token never travels in a tool's result:
+   * the app takes its next one from /oauth/token with the refresh token it holds, which renews the
+   * grant's open session, now this one (refreshGrant), rotating as ever. The old access token is
+   * dead from the moment this commits. Refused to an agent, to a session that is no grant's
+   * (hand-issued) or whose grant is revoked or lapsed, to any client's grant but konnect's app's
+   * (every redirect URI one of NATIVE_REDIRECT_URIS, as S1 lets sign in on choose:kolab), and for a
+   * kolab the person isn't a member of, which reads the same whether it exists or not. To the kolab
+   * it works in already, it changes nothing.
+   */
+  async switchTeam(sessionId: string, kolab: string): Promise<TeamSwitched> {
+    const nowhere = () => new AccessError(`you aren't a member of a kolab ${typeof kolab === 'string' ? kolab.slice(0, 60) : ''}: konjir_list_my_teams lists yours`);
+    if (typeof kolab !== 'string' || !isKolabName(kolab)) throw nowhere();
+    return this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      const old = (await tx.query<{ id: string; actor_id: string; kind: ActorKind; kolab_id: string; active_role: Role; grant_id: string | null; machine_key: string; place: string | null; redirect_uris: string[] | null; grant_live: boolean | null }>(
+        `select s.id, s.actor_id, a.kind, s.kolab_id, s.active_role, s.grant_id, s.machine_key, s.place, c.redirect_uris,
+                (g.revoked_at is null and g.expires_at > now()) as grant_live
+           from session s join actor a on a.id = s.actor_id
+           left join oauth_grant g on g.id = s.grant_id left join oauth_client c on c.id = g.client_id
+          where ${LIVE_SESSION} for update of s`, [sessionKey(sessionId)])).rows[0];
+      if (!old) throw new RoleError('no open session for that token');
+      if (old.kind !== 'person') throw new AccessError(`${old.actor_id} is an agent: only a person switches teams, from their own sign-in`);
+      if (!old.grant_id || !old.grant_live) throw new AccessError('this session is no sign-in through an app, so it has no sign-in to move: sign in to the other team instead');
+      if (!old.redirect_uris?.length || !old.redirect_uris.every(nativeRedirect)) {
+        throw new AccessError('switching teams is for konnect\'s own app only: sign this app in to the other team instead');
+      }
+      // Access first, by the person's own, so an archived kolab and someone else's read as one that doesn't exist (D52).
+      if (!(await accessIn(tx, old.actor_id, kolab)).level || !(await ownerAccess(tx, old.actor_id, kolab)).level) throw nowhere();
+      if (kolab === old.kolab_id) return { kolab, role: old.active_role };
+      await tx.query(`update session set ended_at = now(), ended_by = $2 where id = $1`, [old.id, old.actor_id]);
+      await tx.query(`update oauth_grant set scope = $2 where id = $1`, [old.grant_id, grantedScope(kolab, old.active_role)]);
+      // Its access token is never shown: refreshGrant gives the app the one it uses.
+      await insertSession(tx, newSessionToken(), {
+        actor: old.actor_id, role: old.active_role, kolab, machine: old.machine_key, place: old.place, grant: old.grant_id, ttlS: this.oauth.accessTtlS, by: old.actor_id,
+      });
+      await signal({ session: 'ended', id: old.id });
+      await this.signalRequestsOf(tx, signal, old.actor_id);
+      return { kolab, role: old.active_role };
+    });
   }
 
   // ---- who holds access: a kolab's admins see it and change direct grants (W3.6, API8) ----
