@@ -5,6 +5,8 @@
 // prompt konnect gives an agent, for each --act-for. The service here is an address with nothing
 // behind it, so anything that reached it would fail as unreachable, not as asserted.
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@jest/globals';
@@ -166,14 +168,52 @@ test('the exit status says what happened: 2 a wrong command line, 3 not logged i
   expect(await fails(m.run(['team', 'create', 'mine'], { terminal: false }))).toBe('konnect team create opens the browser, and this isn\'t run from a terminal: run it yourself, once');
   // Logging out of a team with no login kept changes nothing, and isn't a failure.
   expect(await m.run(['logout', 'hub'])).toBe('You weren\'t logged in to team hub.');
-  // A login kept for a service that can't be reached is kept, and konnect's own command is the one said: --forget drops it.
-  mkdirSync(join(m.env.KONNECT_CONFIG_DIR, 'teams'), { recursive: true, mode: 0o700 });
-  writeFileSync(join(m.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json'), JSON.stringify({ [NOWHERE]: { client: { client_id: 'kjcl_1' }, tokens: { access_token: 'kjs_a', refresh_token: 'kjr_r', token_type: 'Bearer' } } }), { mode: 0o600 });
-  expect(await fails(m.run(['logout', 'hub']))).toMatch(/is still kept: run konnect logout hub again, or konnect logout hub --forget to drop it anyway$/);
-  expect(await m.run(['logout', 'hub', '--forget'])).toBe('Logged out of team hub here; the service couldn\'t be told, so the login lapses within 30 days unused.');
 });
 
-test('acting as an agent (--agent, or KONNECT_AGENT), every command but status, send, receive, history, channel list and team list is refused (4), before anything is sent', async () => {
+test('a logout the service isn\'t told of keeps the login, says so in konnect\'s words with konnect\'s own command, and fails (1); --forget drops it', async () => {
+  const keep = (m: ReturnType<typeof machine>, url: string) => {
+    mkdirSync(join(m.env.KONNECT_CONFIG_DIR, 'teams'), { recursive: true, mode: 0o700 });
+    const file = join(m.env.KONNECT_CONFIG_DIR, 'teams', 'hub.json');
+    writeFileSync(file, JSON.stringify({ [url]: { client: { client_id: 'kjcl_1' }, tokens: { access_token: 'kjs_a', refresh_token: 'kjr_r', token_type: 'Bearer' } } }), { mode: 0o600 });
+    return () => Object.keys(JSON.parse(readFileSync(file, 'utf8')));
+  };
+  const forgot = 'Logged out of team hub here; the service couldn\'t be told, so the login lapses within 30 days unused.';
+
+  // A service that can't be reached: said as konnect says it, with the hint for a local one.
+  const m = machine(NOWHERE, 'logout');
+  const kept = keep(m, NOWHERE);
+  expect(await fails(m.run(['logout', 'hub']))).toBe('can\'t reach the service at http://127.0.0.1:9/mcp: check your connection and try again, or start the local one. Until then your login to team hub is still kept here: run konnect logout hub again, or konnect logout hub --forget to drop it anyway');
+  expect(await exitOf(m.run(['logout', 'hub']))).toBe(1);
+  expect(kept()).toStrictEqual([NOWHERE]);
+  expect(await m.run(['logout', 'hub', '--forget'])).toBe(forgot);
+  expect(kept()).toStrictEqual([]);
+
+  // A service that answers, but refuses to revoke (here 401): the login is kept, and nobody is told to log in again.
+  const refusing = createServer((_req, res) => { res.writeHead(401).end(); });
+  await new Promise<void>((r) => refusing.listen(0, '127.0.0.1', r));
+  try {
+    const url = `http://127.0.0.1:${(refusing.address() as AddressInfo).port}/mcp`;
+    const r = machine(url, 'logout-401');
+    const keptThere = keep(r, url);
+    expect(await fails(r.run(['logout', 'hub']))).toBe('the service refused to revoke your login (it answered 401), so your login to team hub is still kept here: run konnect logout hub again, or konnect logout hub --forget to drop it anyway');
+    expect(await exitOf(r.run(['logout', 'hub']))).toBe(1);
+    expect(await r.run(['logout', 'hub', '--forget'])).toBe(forgot);
+    expect(keptThere()).toStrictEqual([]);
+  } finally { await new Promise((r) => refusing.close(r)); }
+
+  // http to another host: konnect refuses the URL before any login is read or sent, --forget too (1), and keeps what is there.
+  const remote = 'http://kolab.example/mcp';
+  const h = machine(remote, 'logout-http');
+  const keptRemote = keep(h, remote);
+  const refusal = 'KONNECT_URL names http://kolab.example/mcp, which konnect can\'t log in to: give the service\'s https URL, such as https://kolab.konjir.com/mcp';
+  for (const argv of [['logout', 'hub'], ['logout', 'hub', '--forget']]) {
+    expect(await fails(h.run(argv))).toBe(refusal);
+    expect(await exitOf(h.run(argv))).toBe(1);
+  }
+  expect(keptRemote()).toStrictEqual([remote]);
+});
+
+test('acting as an agent (--agent, or KONNECT_AGENT), every command but status, send, receive, history, watch, channel list, team list and lease list, claim, release and run is refused (4), before anything is sent', async () => {
   const m = machine(NOWHERE, 'agent');
   const refused = async (argv: string[], env: Record<string, string> = {}) => {
     const run = () => m.run(argv, { env: { ...m.env, ...env }, open: () => { throw new Error('no browser'); } });
@@ -194,8 +234,13 @@ test('acting as an agent (--agent, or KONNECT_AGENT), every command but status, 
   expect(await refused(['--agent', 'helper', 'agent', 'remove', 'x'])).toBe(said('agent remove'));
   expect(await refused(['--agent', 'helper', 'login', 'hub'])).toBe(said('login'));
   expect(await refused(['logout', 'hub'], { KONNECT_AGENT: 'helper' })).toBe(said('logout', 'KONNECT_AGENT'));
-  // The six it may run reach for the agent's own login (here, none is kept: 3), never the person's.
-  for (const argv of [['status'], ['send', '@bo', 'hi'], ['receive'], ['history', '#general'], ['channel', 'list'], ['team', 'list']]) {
+  expect(await refused(['--agent', 'helper', 'agent', 'attach', 'x'])).toBe(said('agent attach'));
+  expect(await refused(['--agent', 'helper', 'agent', 'stop', 'x'])).toBe(said('agent stop'));
+  expect(await refused(['--agent', 'helper', 'host', 'list'])).toBe(said('host list'));
+  expect(await refused(['--agent', 'helper', 'lease', 'break', 'testdb'])).toBe(said('lease break'));
+  // Those it may run reach for the agent's own login (here, none is kept: 3), never the person's.
+  for (const argv of [['status'], ['send', '@bo', 'hi'], ['receive'], ['history', '#general'], ['watch'], ['watch', '#general'], ['channel', 'list'], ['team', 'list'],
+    ['lease', 'list'], ['lease', 'claim', 'testdb'], ['lease', 'release', 'testdb'], ['lease', 'run', 'testdb', 'true']]) {
     expect(await fails(m.run(['--team', 'hub', '--agent', 'helper', ...argv]))).toBe('agent helper has no login to team hub on this machine: its owner should run konnect agent add helper again to renew it');
   }
 });
