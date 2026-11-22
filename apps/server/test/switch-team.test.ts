@@ -433,7 +433,7 @@ test('konjir_list_my_teams: every kolab the person is a member of, with their ow
   // Neither the kolab he left, written to while he was there, nor a public one, nor Carol's, is among them.
   expect(teams.map((x) => x.kolab)).toStrictEqual(['anns', 'bobs']);
   // Dave's are his own: his message and his mention, never Bob's.
-  const daves = await tool(mcp, await kolab.openSession('dave', 'product', { kolab: 'anns' }), 'konjir_list_my_teams');
+  const daves = await tool(mcp, (await appTokens(base, idp, app, DAVE)).access_token, 'konjir_list_my_teams');
   expect(daves.ok!.teams).toStrictEqual([{ kolab: 'anns', role: 'product', owner: false, current: true, unread: 4, unread_more: false, mentions: 1, mentions_more: false }]);
 
   // Reading counts marks nothing: the answers still hold the same.
@@ -449,6 +449,12 @@ test('konjir_list_my_teams: every kolab the person is a member of, with their ow
   await kolab.grant('bobs', 'bob-bot', 'read');
   const agent = await kolab.openSession('bob-bot', 'product', { kolab: 'bobs' });
   expect((await tool(mcp, agent, 'konjir_list_my_teams')).error).toMatch(/bob-bot is an agent: only a person lists their teams/);
+  // And to any sign-in but the app's: a hand-issued session of his, or his CLI's.
+  expect((await tool(mcp, inAnns, 'konjir_list_my_teams')).error).toMatch(/this session is no sign-in through an app: listing your teams is for konnect's own app/);
+  const cli = await register(base, [CB]);
+  const p = await signIn(base, idp, cli, BOB, { redirect: CB });
+  const c = await exchange(base, cli, (await p.post({ pick: 'kolab:bobs' })).left!.searchParams.get('code')!, CB);
+  expect((await tool(mcp, c.body.access_token, 'konjir_list_my_teams')).error).toMatch(/listing your teams is for konnect's own app only/);
 });
 
 test('konjir_switch_team moves the app\'s grant to another team: the session ends and its streams close, the old access token is dead, and the same refresh token signs in there', async () => {
