@@ -34,8 +34,8 @@
   },
   "submit": {
     "production": {
-      "ios": {},
-      "android": { "track": "production", "releaseStatus": "draft" }
+      "ios": { "ascAppId": "REPLACE_WITH_APP_STORE_CONNECT_APP_ID", "metadataPath": "./store.config.json" },
+      "android": { "track": "production", "releaseStatus": "draft", "serviceAccountKeyPath": "REPLACE_WITH_PATH_TO_PLAY_SERVICE_ACCOUNT_KEY" }
     }
   }
 }
