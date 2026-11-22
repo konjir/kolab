@@ -133,7 +133,13 @@ What Lee does, in order, before the release workflows can ship anything. Until t
    - Then a Google Cloud service account with release rights, its JSON key uploaded to EAS (`credentials-production-android` and `credentials-preview-android`, Google Service Account) rather than kept in the repo.
 5. **Android push.** FCM v1 credentials, uploaded to EAS the same way.
 6. **The Expo access token for CI.** On expo.dev (account settings, Access tokens), add a robot user `github-actions` with the Developer role, make it a token, and store that as the `EXPO_TOKEN` secret in both GitHub environments below (`gh secret set EXPO_TOKEN --env <environment> --repo konjir/kolab`, which asks for the value). A robot acts as itself rather than as Lee, and can be revoked alone.
-7. **No update signing.** expo-updates code signing needs a paid EAS plan ("EAS Update code signing requires a subscription to the EAS Production or Enterprise plan"), and Lee chose the free one (2026-11-22). An update is trusted as Expo's account and TLS are, as is what EAS submits with the App Store Connect key it holds. To publish an update by hand, set `APP_VARIANT` to the channel's variant and its message in `KONNECT_UPDATE_MESSAGE`; `scripts/eas.mjs` refuses a mismatched variant.
+7. **No update signing.** expo-updates code signing needs a paid EAS plan ("EAS Update code signing requires a subscription to the EAS Production or Enterprise plan"), and Lee chose the free one (2026-11-22). What that means:
+   - Whoever can publish an update to the EAS project can run their own JavaScript in every installed app on that channel at its next launch, with no store review and no console step: Lee's Expo account, the `github-actions` robot's token, code merged to `main` (the preview Update job runs the repo's scripts with that token), or Expo itself. A build EAS submits with the App Store Connect key only reaches TestFlight, and still needs App Review to reach the store; an update doesn't.
+   - That JavaScript has everything the app has, including each team's refresh token in the secure store, so it could take every user's Kolab sign-ins and act as them.
+   - `EXPO_TOKEN` is the whole trust anchor, and `app-stores`'s required reviewer doesn't guard updates: the same token is in `app-preview`, which has no reviewer.
+   - So: two-factor authentication on Lee's Expo account; a separate robot token for each environment, so either can be revoked alone; and a token rotated the moment it may have been seen.
+
+   To publish an update by hand, set `APP_VARIANT` to the channel's variant and its message in `KONNECT_UPDATE_MESSAGE`; `scripts/eas.mjs` refuses a mismatched variant.
 8. **GitHub environments:**
    - `app-preview`, limited to the `main` branch, holding `EXPO_TOKEN`.
    - `app-stores`, limited to the `main` branch, with Lee as its required reviewer, holding the same.
