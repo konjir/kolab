@@ -41,6 +41,14 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # A push that changes nothing but konnect's phone app (EAS builds it: mobile-release.yml) and its
+    # own workflows starts no run: its release id is the one before (pack.sh leaves both out), and
+    # Terraform reads neither, so its plan would be empty, with two approvals for nothing. Only these
+    # two paths, and only when every file a push changes is under them: the lockfile, the site, any
+    # other workflow or anything Kolab or Terraform reads still starts a run.
+    paths-ignore:
+      - 'apps/konnect-mobile/**'
+      - '.github/workflows/mobile*.yml'
   # Deploy main again by hand (Actions › Deploy › Run workflow), as after a failed run.
   workflow_dispatch:
     inputs:
@@ -207,15 +215,26 @@ jobs:
         run: |
           [ "$GATE" = true ] || { echo "::error::DEPLOY_FROM_CI isn't true: deploys are paused"; exit 1; }
 
-      # Approving an older run after a newer commit reached main would roll production back.
+      # Approving an older run after a newer commit reached main would roll production back. A
+      # newer commit that changes only what paths-ignore names starts no run of its own, so main
+      # past this commit by those changes alone leaves this run the newest deploy of what Kolab
+      # runs: it goes on. Anything else, or a comparison GitHub can't give whole (300 files or
+      # more, or main not ahead of this commit), is refused as before.
       - name: Refuse a commit main has moved past
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$head" != "$GITHUB_SHA" ]; then
-            echo "::error::main is at $head now, past this run's $GITHUB_SHA: approve the newest Deploy run instead"
-            exit 1
+            cmp=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...$head")
+            status=$(jq -r .status <<< "$cmp")
+            count=$(jq '.files | length' <<< "$cmp")
+            others=$(jq -r '.files[] | .filename, (.previous_filename // empty)' <<< "$cmp" | grep -Ev '^(apps/konnect-mobile/.+|\.github/workflows/mobile[^/]*\.yml)$' || true)
+            if [ "$status" != ahead ] || [ "$count" -ge 300 ] || [ -n "$others" ]; then
+              echo "::error::main is at $head now, past this run's $GITHUB_SHA: approve the newest Deploy run instead"
+              exit 1
+            fi
+            echo "main is at $head, past $GITHUB_SHA only by changes to konnect's phone app, which start no Deploy run: this run deploys what Kolab runs at $head"
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
