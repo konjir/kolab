@@ -13,7 +13,7 @@ import { appExtra } from '@/config';
 import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
-import { discover, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
+import { discover, signIn as signInWith, SignInStopped, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type Who } from './store';
 import { Tokens } from './tokens';
 
@@ -86,7 +86,21 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
     current: state.who,
     teams: state.who ? [state.who] : [],
     signIn: async (ask) => {
-      const login = await signInWith({ url, scheme, ask, clientName: `konnect (${appExtra().variant})` });
+      const clientName = `konnect (${appExtra().variant})`;
+      const kept = await store.client();
+      let login;
+      try {
+        login = await signInWith({ url, scheme, ask, clientName, clientId: kept });
+      } catch (e) {
+        // A registration Kolab no longer knows (a Kolab started afresh, say): register again, once.
+        // Kolab's page can't send an unknown client back, so a sign-in closed on it also forgets
+        // the registration, and the next try registers anew.
+        if (kept && e instanceof SignInStopped) await store.forgetClient();
+        if (!kept || !/client/i.test((e as Error).message)) throw e;
+        await store.forgetClient();
+        login = await signInWith({ url, scheme, ask, clientName });
+      }
+      await store.keepClient(login.clientId);
       const before = await store.get();
       await store.put(login);
       dropClient();

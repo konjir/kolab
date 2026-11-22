@@ -1,22 +1,21 @@
-# From the sign-in screen to hub's Home, as Ann: Kolab's page is either the one tap ("Continue as
-# @ann", for a person with teams and no invitation waiting) or the chooser (an invitation waits,
-# as local-kolab's seed has one to ops), where Ann picks hub.
+# From the sign-in screen to hub's Home, as Ann. Kolab's page is either the one tap ("Continue as
+# @ann", naming the team she used last), where "Choose another team" leads to the chooser, or the
+# chooser itself (an invitation waits, as local-kolab's seed has one to ops). Either way Ann picks hub.
 appId: ${APP_ID}
 ---
 - tapOn: "Sign in with GitHub"
 - extendedWaitUntil:
-    visible: "Sign in to hub|Continue.*"
+    visible: "Sign in to hub|Choose another team"
     timeout: 30000
 - runFlow:
     when:
-      visible: "Sign in to hub"
+      visible: "Choose another team"
     commands:
-      - tapOn: "Sign in to hub"
-- runFlow:
-    when:
-      visible: "Continue.*"
-    commands:
-      - tapOn: "Continue.*"
+      - tapOn: "Choose another team"
+      - extendedWaitUntil:
+          visible: "Sign in to hub"
+          timeout: 20000
+- tapOn: "Sign in to hub"
 - extendedWaitUntil:
     visible: "general.*"
     timeout: 30000

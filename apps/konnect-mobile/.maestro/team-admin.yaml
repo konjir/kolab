@@ -1,8 +1,9 @@
 # Team settings: invite Cy (a GitHub account the local Kolab's stub knows), see the invitation, and
-# withdraw it, then sign out. Signed in to hub as Ann, its owner, against the local Kolab.
+# withdraw it, then sign out: Ann, hub's owner, from signed out, against the local Kolab.
 appId: ${APP_ID}
 tags: [local-kolab]
 ---
+- runFlow: subflows/sign-in-ann.yaml
 - tapOn: "You"
 - tapOn:
     id: "team-settings"
