@@ -26,6 +26,8 @@ export interface TokensOptions {
   now?: () => number;
   /** How long before its end an access token is renewed. */
   earlyMs?: number;
+  /** Told when Kolab ends a team's sign-in (a refused refresh), after it is forgotten. */
+  onSignedOut?: (team: string) => void;
 }
 
 const form = (fields: Record<string, string>) => new URLSearchParams(fields).toString();
@@ -82,6 +84,7 @@ export class Tokens {
       // The grant is over (revoked, expired, or the token already used): only a new sign-in helps.
       if (body.error === 'invalid_grant' || body.error === 'invalid_client') {
         await this.o.store.remove(team);
+        this.o.onSignedOut?.(team);
         throw new SignedOut(team, `Kolab ended the sign-in (${body.error_description ?? body.error})`);
       }
       throw new Error(`Kolab didn't refresh ${team}'s sign-in: ${res.status} ${body.error ?? ''}`.trim());

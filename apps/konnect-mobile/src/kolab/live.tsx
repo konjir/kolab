@@ -40,6 +40,12 @@ function LiveStreams() {
   const auth = useAuth();
   const qc = useQueryClient();
   const teams = auth.teams.map((t) => t.team).join(',');
+  // What a team signed out of left in the cache (and on the phone) goes with it.
+  useEffect(() => {
+    if (!auth.ready) return;
+    const signedIn = new Set(teams ? teams.split(',') : []);
+    qc.removeQueries({ predicate: (q) => !signedIn.has(String(q.queryKey[0])) });
+  }, [auth.ready, teams, qc]);
   useEffect(() => {
     if (!teams) return;
     const stops = teams.split(',').map((team) => listen(auth, team, () => void qc.invalidateQueries({ queryKey: [team] })));

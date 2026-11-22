@@ -1,5 +1,6 @@
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 import { MAX_MESSAGE_TEXT, MAX_MESSAGES_PER_HOUR } from '@konjir/types';
@@ -13,6 +14,7 @@ const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 /** You: your teams and their sign-ins, and this build. Notification settings come with push. */
 export default function You() {
   const auth = useAuth();
+  const router = useRouter();
   const { name, colors } = useAppTheme();
   const { variant, konnectUrl } = appExtra();
   const [busy, setBusy] = useState<string>();
@@ -34,6 +36,7 @@ export default function You() {
             onPress={t.team === auth.current?.team ? undefined : () => void auth.switchTeam(t.team)} />
         ))}
         {auth.ready && auth.teams.length === 0 && <Hint>Not signed in to any team.</Hint>}
+        {auth.current && <Row testID="team-settings" icon="settings" label={`${auth.current.team} settings`} detail="invite, remove, leave" onPress={() => router.push('/team')} />}
       </Section>
       <Button testID="sign-in" label="Sign in to a team" busy={busy === 'sign-in'}
         onPress={() => void run('sign-in', async () => `Signed in to ${await auth.signIn({ kind: 'choose' })}.`)} />
