@@ -569,7 +569,7 @@ test('a switch and a refresh at once land in one order: the grant keeps one open
     expect((await kolab.sessionInfo(r.body.access_token)).kolab).toBe(open[0].kolab_id);
   }
 
-  // Rotation, after a switch: the used refresh token, again within the grace, gets the same answer, and revokes nothing.
+  // Rotation, after a switch: the used refresh token, again before its successor is used, gets the same answer, and revokes nothing.
   const t = await appTokens(base, idp, app, BOB);
   const to = (await kolab.sessionInfo(t.access_token)).kolab === 'bobs' ? 'anns' : 'bobs';
   expect((await tool(mcp, t.access_token, 'konjir_switch_team', { kolab: to })).ok).toMatchObject({ kolab: to });
@@ -578,8 +578,8 @@ test('a switch and a refresh at once land in one order: the grant keeps one open
   const lost = await refresh(base, app, t.refresh_token);
   expect([lost.status, lost.body.access_token, lost.body.refresh_token, lost.body.scope]).toStrictEqual([200, n.body.access_token, n.body.refresh_token, n.body.scope]);
   expect(await kolab.sessionOpen(n.body.access_token)).toBe(true);
-  // Past it, it is a replay: the grant is revoked, and its session in the new kolab ends.
-  await kolab.db.query(`update oauth_refresh_token set used_at = now() - interval '1 minute' where key = $1`, [sessionKey(t.refresh_token)]);
+  // Past refreshRetryS, it is a replay: the grant is revoked, and its session in the new kolab ends.
+  await kolab.db.query(`update oauth_refresh_token set used_at = now() - interval '11 minutes' where key = $1`, [sessionKey(t.refresh_token)]);
   expect((await refresh(base, app, t.refresh_token)).body.error).toBe('invalid_grant');
   expect(await kolab.sessionOpen(n.body.access_token)).toBe(false);
   expect((await refresh(base, app, n.body.refresh_token)).body.error).toBe('invalid_grant');

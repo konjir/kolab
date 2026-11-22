@@ -2337,11 +2337,12 @@ export class Kolab {
    * The authorization server's lifetimes and limits (D55). An access token lives `accessTtlS`
    * (15 minutes); a grant lives `refreshTtlS` (30 days) past its last refresh; an authorization
    * code `codeTtlS`; a sign-in has `requestTtlS` to be consented to. A refresh token presented
-   * again within `refreshGraceS` of its use is a concurrent request, refused without revoking
-   * anything; later, a replay, which revokes its grant. A person owns at most `agentsPerPerson`
-   * agents they made themselves.
+   * again within `refreshRetryS` (10 minutes) of its use, before its successor is used, is a retry
+   * whose answer was lost, and gets that answer again; after its successor is used, or later, a
+   * replay, which revokes its grant (refreshGrant). A person owns at most `agentsPerPerson` agents
+   * they made themselves.
    */
-  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshGraceS: 10, agentsPerPerson: 10 };
+  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshRetryS: 600, agentsPerPerson: 10 };
   /**
    * How long a hand-issued session lasts (openSession, W2.22): 30 days by default
    * (KONJIR_HAND_ISSUED_TOKEN_DAYS for `kolab serve`). Once it expires, its token is refused like
@@ -3079,11 +3080,17 @@ export class Kolab {
    * in place of the one used (rotation). The session keeps its id, kolab and role; its access is
    * checked again, and one that can no longer reach its kolab ends: konnect's app's sign-in then
    * moves to another of the person's teams and is renewed there (moveAppGrantsIn), or is revoked
-   * when none is left. It takes the access lock first, as revokeGrant and switchTeam do. The same
-   * refresh token presented again within refreshGraceS (its answer lost on the way) gets the same
-   * successor tokens, while they are still the grant's live ones (sameRefresh), and is otherwise
-   * refused without revoking anything; past refreshGraceS it is a replay, and revokes the grant. A refresh token used once
-   * before, past refreshGraceS, is a replay: the grant is revoked and its session ends (D41).
+   * when none is left. It takes the access lock first, as revokeGrant and switchTeam do.
+   *
+   * A refresh token used once before and presented again (its answer lost on the way, a phone
+   * offline, or a concurrent request) gets the same successor tokens while the successor refresh
+   * token is unused and they are still the grant's live answer, for up to refreshRetryS from its
+   * use (sameRefresh): RFC 9700's refresh token protection allows it, since reuse matters once
+   * the successor is in use. A successor no longer the grant's live answer for another reason (its session's access
+   * token replaced, the grant revoked or lapsed), or a sealed answer that doesn't open, is refused
+   * without revoking anything. Once the successor has been used, or past refreshRetryS, it is a
+   * replay: the grant is revoked and its session ends (D41). The trade-off: within that window,
+   * whoever holds a just-used refresh token gets the live successor, as its rightful client would.
    */
   async refreshGrant(p: { refreshToken: string; clientId: string }): Promise<OAuthTokens> {
     const key = sessionKey(p.refreshToken);
@@ -3092,15 +3099,20 @@ export class Kolab {
     let replayed: string | null = null;
     const out = await this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      const t = (await tx.query<{ grant_id: string; client_id: string; used_long_ago: boolean | null; used: boolean; dead: boolean; scope: string; successor: string | null }>(
-        `select t.grant_id, g.client_id, (t.used_at is not null and t.used_at < now() - $2 * interval '1 second') as used_long_ago, t.used_at is not null as used,
+      const t = (await tx.query<{ grant_id: string; client_id: string; used: boolean; used_long_ago: boolean; dead: boolean; scope: string; successor: string | null }>(
+        `select t.grant_id, g.client_id, t.used_at is not null as used, coalesce(t.used_at < now() - $2 * interval '1 second', false) as used_long_ago,
                 (t.used_at is not null or t.expires_at <= now() or g.revoked_at is not null or g.expires_at <= now()) as dead, g.scope, t.successor
-           from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where t.key = $1 for update of t`, [key, this.oauth.refreshGraceS])).rows[0];
+           from oauth_refresh_token t join oauth_grant g on g.id = t.grant_id where t.key = $1 for update of t`, [key, this.oauth.refreshRetryS])).rows[0];
       if (!t || t.client_id !== p.clientId) return undefined;
-      if (t.used_long_ago) { replayed = t.grant_id; return undefined; }
-      // The same refresh again within the grace window: its answer was lost on the way (a phone's
-      // network), so the same successor tokens, while they are still the grant's live ones.
-      if (t.used) return t.successor ? this.sameRefresh(tx, p.refreshToken, t.grant_id, t.successor) : undefined;
+      if (t.used) {
+        // Past refreshRetryS, or its successor used since (which clears this row's), a replay.
+        if (t.used_long_ago || !t.successor) { replayed = t.grant_id; return undefined; }
+        // Within it, its answer lost on the way (a phone's network): the same successor tokens,
+        // while they are unused and still the grant's live answer.
+        const same = await this.sameRefresh(tx, p.refreshToken, key, t.grant_id, t.successor);
+        if (same === 'replayed') { replayed = t.grant_id; return undefined; }
+        return same;
+      }
       if (t.dead) return undefined;
       const open = () => tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role }>(
         `select id, actor_id, kolab_id, active_role from session where grant_id = $1 and ended_at is null for update`, [t.grant_id]);
@@ -3117,7 +3129,7 @@ export class Kolab {
       // Its successor, sealed with a key only this refresh token derives, for a retry of it (sameRefresh);
       // the one before it is cleared, now that its successor, this token, is used.
       await tx.query(`update oauth_refresh_token set successor = null where grant_id = $1 and successor is not null`, [t.grant_id]);
-      await tx.query(`update oauth_refresh_token set used_at = now(), successor = $2 where key = $1`, [key, sealSuccessor(p.refreshToken, { access, refresh })]);
+      await tx.query(`update oauth_refresh_token set used_at = now(), successor = $2 where key = $1`, [key, sealSuccessor(p.refreshToken, key, t.grant_id, { access, refresh })]);
       await tx.query(`insert into oauth_refresh_token(key, grant_id, expires_at) values ($1, $2, now() + $3 * interval '1 second')`,
         [sessionKey(refresh), t.grant_id, this.oauth.refreshTtlS]);
       await tx.query(`update oauth_grant set expires_at = now() + $2 * interval '1 second' where id = $1`, [t.grant_id, this.oauth.refreshTtlS]);
@@ -3134,15 +3146,19 @@ export class Kolab {
 
   /**
    * In `tx`, under the access lock, the answer a refresh already gave, for the same refresh token
-   * presented again within refreshGraceS (refreshGrant): its sealed successor opened with that token,
-   * returned only while it is still the grant's live answer: the successor refresh token unused and
-   * unexpired, the grant live, and its open session's access token the successor's, unexpired. Any
-   * other way, undefined, refused as before: a successor already used was received, and one a
-   * switch or another change replaced is no longer the grant's.
+   * presented again within refreshRetryS (refreshGrant): its sealed successor opened with that token,
+   * bound to its row's key and grant, returned only while it is still the grant's live answer: the
+   * successor refresh token unused and unexpired, the grant live, and its open session's access
+   * token the successor's, unexpired. A successor used already is 'replayed', for refreshGrant to
+   * revoke the grant. Any other way, undefined, refused without revoking anything: a sealed answer
+   * that doesn't open, or a successor a switch or another change left no longer the grant's.
    */
-  private async sameRefresh(tx: Q, refreshToken: string, grantId: string, sealed: string) {
-    const was = openSuccessor(refreshToken, sealed);
+  private async sameRefresh(tx: Q, refreshToken: string, key: string, grantId: string, sealed: string) {
+    const was = openSuccessor(refreshToken, key, grantId, sealed);
     if (!was) return undefined;
+    const n = (await tx.query<{ used: boolean }>(
+      `select n.used_at is not null as used from oauth_refresh_token n where n.key = $1 and n.grant_id = $2`, [sessionKey(was.refresh), grantId])).rows[0];
+    if (n?.used) return 'replayed' as const;
     const r = (await tx.query<{ id: string; actor_id: string; kolab_id: string; active_role: Role; left_s: number }>(
       `select s.id, s.actor_id, s.kolab_id, s.active_role, greatest(1, floor(extract(epoch from s.expires_at - now())))::int as left_s
          from oauth_refresh_token n join oauth_grant g on g.id = n.grant_id join session s on s.grant_id = g.id and s.ended_at is null
@@ -15440,24 +15456,31 @@ const conversationKey = (kolab: string, a: string, b: string) => `${kolab} ${a <
 
 /**
  * A refresh's successor tokens, sealed for its row (migration 0059) with a key only the refresh
- * token itself derives (HKDF-SHA256, not the sha256 Kolab keeps as its key), AES-256-GCM: so the
- * same refresh retried can be answered the same (refreshGrant), and the database alone opens nothing.
+ * token itself derives (HKDF-SHA256, not the sha256 Kolab keeps as its key), AES-256-GCM with a
+ * 16-byte tag, its additional data the row's key and grant (successorAad), so a sealed answer opens
+ * only in the row it was written to: so the same refresh retried can be answered the same
+ * (refreshGrant), and the database alone opens nothing.
  */
 function successorKey(refreshToken: string): Buffer {
   return Buffer.from(hkdfSync('sha256', refreshToken, 'konjir-refresh-successor', 'kolab refresh successor v1', 32));
 }
-function sealSuccessor(refreshToken: string, t: { access: string; refresh: string }): string {
+const successorAad = (key: string, grantId: string) => Buffer.from(`kolab refresh successor\n${key}\n${grantId}`, 'utf8');
+function sealSuccessor(refreshToken: string, key: string, grantId: string, t: { access: string; refresh: string }): string {
   const iv = randomBytes(12);
-  const c = createCipheriv('aes-256-gcm', successorKey(refreshToken), iv);
+  const c = createCipheriv('aes-256-gcm', successorKey(refreshToken), iv, { authTagLength: 16 });
+  c.setAAD(successorAad(key, grantId));
   const body = Buffer.concat([c.update(JSON.stringify(t), 'utf8'), c.final()]);
   return `v1.${iv.toString('base64url')}.${body.toString('base64url')}.${c.getAuthTag().toString('base64url')}`;
 }
-function openSuccessor(refreshToken: string, sealed: string): { access: string; refresh: string } | undefined {
-  const [v, iv, body, tag] = sealed.split('.');
-  if (v !== 'v1' || !iv || !body || !tag) return undefined;
+function openSuccessor(refreshToken: string, key: string, grantId: string, sealed: string): { access: string; refresh: string } | undefined {
+  const [v, iv, body, tag, ...rest] = sealed.split('.');
+  if (v !== 'v1' || !iv || !body || !tag || rest.length) return undefined;
+  const tagBytes = Buffer.from(tag, 'base64url');
+  if (tagBytes.length !== 16) return undefined;
   try {
-    const d = createDecipheriv('aes-256-gcm', successorKey(refreshToken), Buffer.from(iv, 'base64url'));
-    d.setAuthTag(Buffer.from(tag, 'base64url'));
+    const d = createDecipheriv('aes-256-gcm', successorKey(refreshToken), Buffer.from(iv, 'base64url'), { authTagLength: 16 });
+    d.setAAD(successorAad(key, grantId));
+    d.setAuthTag(tagBytes);
     const t = JSON.parse(Buffer.concat([d.update(Buffer.from(body, 'base64url')), d.final()]).toString('utf8')) as { access?: unknown; refresh?: unknown };
     return typeof t.access === 'string' && typeof t.refresh === 'string' ? { access: t.access, refresh: t.refresh } : undefined;
   } catch { return undefined; }
