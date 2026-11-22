@@ -84,6 +84,10 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   switchSession: { recorded: ['session.ended_by', 'session.opened_by'] },
   // konnect's app moves its grant to another of the person's kolabs (konjir_switch_team): the session ended, and the new one opened, by the person.
   switchTeam: { recorded: ['session.ended_by', 'session.opened_by'] },
+  // From konnect's app's sign-in, as the sign-in page's Accept, Decline and team:<name> intent:create do it.
+  acceptTeamInvitation: { recorded: ['kolab_invitation.accepted_by', 'audit_event:grant.set'] },
+  declineTeamInvitation: { recorded: ['kolab_invitation.declined_by'] },
+  makeTeam: { recorded: ['kolab.created_by'] },
   signInWith: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by'] },
   linkIdentity: { recorded: ['identity.linked_by'] },
   registerClient: { unsigned: 'client_registration' },
@@ -91,6 +95,7 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   oauthClient: { unsigned: 'authorization_pending' },
   beginAuthorization: { unsigned: 'authorization_pending' },
   identifyAuthorization: { recorded: ['oauth_request.actor_id'] },
+  restartIdentification: { unsigned: 'authorization_pending' },
   abandonAuthorization: { unsigned: 'authorization_dropped' },
   declineAuthorization: { unsigned: 'authorization_dropped' },
   consent: { recorded: ['oauth_code.person_id', 'kolab.created_by', 'actor.created_by', 'audit_event:grant.set', 'kolab_invite.accepted_by'] },

@@ -2410,6 +2410,24 @@ export class Kolab {
   }
 
   /**
+   * The person on an identified authorization's page asks to sign in with another account at the
+   * identity provider (konnect's app's *Use a different GitHub account*), from that page's form, with
+   * its token (`csrf`) and the browser's binding: the authorization forgets who signed in, and its
+   * form's token, and takes a new state for the provider, so the provider's next answer, and only
+   * that, names the person; the client, its redirect URI, state, PKCE challenge, scope and expiry
+   * stay. Refused once it is claimed, used, expired, or isn't this browser's. Returns the new state.
+   */
+  async restartIdentification(binding: string, csrf: string): Promise<{ state: string }> {
+    const state = randomBytes(32).toString('base64url');
+    const r = await this.db.query(
+      `update oauth_request set actor_id = null, csrf_key = null, state_key = $3
+        where id = $1 and csrf_key = $2 and actor_id is not null and claimed_at is null and expires_at > now() returning id`,
+      [sessionKey(binding), sessionKey(csrf), sessionKey(state)]);
+    if (!r.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
+    return { state };
+  }
+
+  /**
    * The authorization a browser's binding names, while it lasts, for the consent page. With
    * `state`, only if that is the state sent to the identity provider for it, so a forged callback
    * is refused before its code reaches the provider (RFC 6749 §10.12). With `csrf`, only if that is
@@ -4042,23 +4060,21 @@ export class Kolab {
   // ---- a person's teams from one sign-in (konnect's app; Lee's instruction of 2026-11-21) ----
 
   /**
-   * The team a `choose:kolab` sign-in from konnect's own app (nativeRedirect) offers a person on one
-   * button, its page's only choice besides choosing another: the only kolab they are a member of
-   * (`only`), or, of several, the one they used last (their newest session there, on any machine).
-   * Undefined, so the chooser is shown, when an invitation waits for them (the chooser is where one
-   * is accepted or declined, and nothing else accepts one), when they are a member of no kolab (it
-   * says so, and the app offers to make a team), and when they are a member of several and have
-   * worked in none of them. The kolabs are chooseOptions', the chooser's own.
+   * Where a `choose:kolab` sign-in from konnect's own app (nativeRedirect) opens its session when the
+   * person presses Continue on its page, which is about who signed in and names no team: the kolab of
+   * theirs they used last (their newest session there, on any machine), or else the first by name.
+   * The app shows and changes the team itself (konjir_list_my_teams, konjir_switch_team), and takes
+   * invitations and new teams there too. Undefined when they are a member of no kolab, since a
+   * session must be in one: then the page offers to make a team or accept an invitation, as the
+   * chooser does. The kolabs are chooseOptions', the chooser's own.
    */
-  async appSignInKolab(person: string): Promise<{ kolab: { id: string; title: string; access: Access }; only: boolean } | undefined> {
-    const { invitations, kolabs } = await this.chooseOptions(person);
-    if (invitations.length || !kolabs.length) return undefined;
-    if (kolabs.length === 1) return { kolab: kolabs[0], only: true };
+  async appSignInKolab(person: string): Promise<string | undefined> {
+    const ids = (await this.chooseOptions(person)).kolabs.map((k) => k.id).sort();
+    if (!ids.length) return undefined;
     const last = (await this.db.query<{ kolab_id: string }>(
       `select kolab_id from session where actor_id = $1 and kolab_id = any($2::text[])
-        order by coalesce(last_used_at, started_at) desc, id limit 1`, [person, kolabs.map((k) => k.id)])).rows[0]?.kolab_id;
-    const kolab = kolabs.find((k) => k.id === last);
-    return kolab && { kolab, only: false };
+        order by coalesce(last_used_at, started_at) desc, id limit 1`, [person, ids])).rows[0]?.kolab_id;
+    return last ?? ids[0];
   }
 
   /**
@@ -4134,18 +4150,7 @@ export class Kolab {
     if (typeof kolab !== 'string' || !isKolabName(kolab)) throw nowhere();
     return this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      const old = (await tx.query<{ id: string; actor_id: string; kind: ActorKind; kolab_id: string; active_role: Role; grant_id: string | null; machine_key: string; place: string | null; redirect_uris: string[] | null; grant_live: boolean | null }>(
-        `select s.id, s.actor_id, a.kind, s.kolab_id, s.active_role, s.grant_id, s.machine_key, s.place, c.redirect_uris,
-                (g.revoked_at is null and g.expires_at > now()) as grant_live
-           from session s join actor a on a.id = s.actor_id
-           left join oauth_grant g on g.id = s.grant_id left join oauth_client c on c.id = g.client_id
-          where ${LIVE_SESSION} for update of s`, [sessionKey(sessionId)])).rows[0];
-      if (!old) throw new RoleError('no open session for that token');
-      if (old.kind !== 'person') throw new AccessError(`${old.actor_id} is an agent: only a person switches teams, from their own sign-in`);
-      if (!old.grant_id || !old.grant_live) throw new AccessError('this session is no sign-in through an app, so it has no sign-in to move: sign in to the other team instead');
-      if (!old.redirect_uris?.length || !old.redirect_uris.every(nativeRedirect)) {
-        throw new AccessError('switching teams is for konnect\'s own app only: sign this app in to the other team instead');
-      }
+      const old = await this.appSession(tx, sessionId, { does: 'switches teams', doing: 'switching teams', instead: 'sign this app in to the other team instead' }, true);
       // Access first, by the person's own, so an archived kolab and someone else's read as one that doesn't exist (D52).
       if (!(await accessIn(tx, old.actor_id, kolab)).level || !(await ownerAccess(tx, old.actor_id, kolab)).level) throw nowhere();
       if (kolab === old.kolab_id) return { kolab, role: old.active_role };
@@ -4159,6 +4164,74 @@ export class Kolab {
       await this.signalRequestsOf(tx, signal, old.actor_id);
       return { kolab, role: old.active_role };
     });
+  }
+
+  /**
+   * In `q`, the open session `sessionId` reaches, when it is a person's sign-in through konnect's own
+   * app: a grant's, still live, whose client's every redirect URI is one of NATIVE_REDIRECT_URIS (as
+   * S1 lets sign in on choose:kolab). With `lock`, the session's row is locked. Refused otherwise,
+   * with what the caller `does` and is `doing`, and what to do `instead`: an agent's session, a
+   * hand-issued one, one whose grant was revoked or lapsed, and any other client's sign-in.
+   */
+  private async appSession(q: Q, sessionId: string, say: { does: string; doing: string; instead: string }, lock = false) {
+    const s = (await q.query<{ id: string; actor_id: string; kind: ActorKind; kolab_id: string; active_role: Role; grant_id: string | null; machine_key: string; place: string | null; redirect_uris: string[] | null; grant_live: boolean | null }>(
+      `select s.id, s.actor_id, a.kind, s.kolab_id, s.active_role, s.grant_id, s.machine_key, s.place, c.redirect_uris,
+              (g.revoked_at is null and g.expires_at > now()) as grant_live
+         from session s join actor a on a.id = s.actor_id
+         left join oauth_grant g on g.id = s.grant_id left join oauth_client c on c.id = g.client_id
+        where ${LIVE_SESSION}${lock ? ' for update of s' : ''}`, [sessionKey(sessionId)])).rows[0];
+    if (!s) throw new RoleError('no open session for that token');
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person ${say.does}, from their own sign-in`);
+    if (!s.grant_id || !s.grant_live) throw new AccessError(`this session is no sign-in through an app: ${say.doing} is for konnect's own app; ${say.instead}`);
+    if (!s.redirect_uris?.length || !s.redirect_uris.every(nativeRedirect)) throw new AccessError(`${say.doing} is for konnect's own app only: ${say.instead}`);
+    return s as typeof s & { grant_id: string };
+  }
+
+  /** The invitation waiting for `person` to kolab `kolab` (invitationsFor), or refused, saying nothing of a kolab they aren't invited to. */
+  private async invitationTo(person: string, kolab: unknown): Promise<PendingInvitation> {
+    const inv = typeof kolab === 'string' ? (await this.invitationsFor(person)).find((i) => i.kolab === kolab) : undefined;
+    if (!inv) throw new TenancyError(`no invitation to a kolab ${typeof kolab === 'string' ? kolab.slice(0, 60) : ''} waits for you: konjir_list_my_teams lists those that do`);
+    return inv;
+  }
+
+  /**
+   * konjir_accept_invitation, from konnect's app's sign-in (appSession): the invitation waiting for
+   * the person to `kolab` is accepted exactly as Accept on the sign-in page accepts it
+   * (acceptInvitation: under the access lock, their own grant raised to cover it, audited `grant.set`
+   * with the invitation's id, their unread started there, the invitation settled), but no sign-in
+   * moves: the session stays where it is, and konjir_switch_team moves it. Returns the kolab, and the
+   * role the session would work in there.
+   */
+  async acceptTeamInvitation(sessionId: string, kolab: string): Promise<TeamSwitched> {
+    const s = await this.appSession(this.db, sessionId, { does: 'accepts an invitation', doing: 'accepting an invitation here', instead: 'accept it on Kolab\'s sign-in page instead' });
+    const inv = await this.invitationTo(s.actor_id, kolab);
+    const joined = await this.acceptInvitation(inv.id, s.actor_id, async () => undefined);
+    return { kolab: joined, role: s.active_role };
+  }
+
+  /** konjir_decline_invitation, from konnect's app's sign-in (appSession): declined as Decline on the sign-in page declines it (declineInvitation). */
+  async declineTeamInvitation(sessionId: string, kolab: string): Promise<{ declined: true }> {
+    const s = await this.appSession(this.db, sessionId, { does: 'declines an invitation', doing: 'declining an invitation here', instead: 'decline it on Kolab\'s sign-in page instead' });
+    const inv = await this.invitationTo(s.actor_id, kolab);
+    await this.declineInvitation(s.actor_id, inv.id);
+    return { declined: true };
+  }
+
+  /**
+   * konjir_make_team, from konnect's app's sign-in (appSession): a new kolab named `name`, private
+   * and the person's, with no agent, exactly as a `team:<name> intent:create` sign-in makes one: the
+   * same plan (teamPlan: a name a kolab may have, not reserved, not taken, even by a kolab of theirs,
+   * within the cap and the rate, with a free name suggested when it is taken) and the same making
+   * (makeOwnKolab, which checks the cap and the rate again under the access lock). The session stays
+   * where it is. Returns the kolab, and the role the session would work in there.
+   */
+  async makeTeam(sessionId: string, name: string): Promise<TeamSwitched> {
+    const s = await this.appSession(this.db, sessionId, { does: 'makes a team', doing: 'making a team here', instead: 'make it with a team:<name> sign-in instead' });
+    if (typeof name !== 'string') throw new TenancyError('name the team to make');
+    const plan = await this.teamPlan(s.actor_id, name, 'create');
+    if (plan.kind === 'refused') throw new TenancyError(plan.refused);
+    await this.makeOwnKolab(s.actor_id, name, name);
+    return { kolab: name, role: s.active_role };
   }
 
   // ---- who holds access: a kolab's admins see it and change direct grants (W3.6, API8) ----
