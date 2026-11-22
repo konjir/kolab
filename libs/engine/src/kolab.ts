@@ -756,10 +756,17 @@ interface OutboxJob {
 }
 
 /**
- * A push job's payload (0058): the message it is about, what each person is told of it, and the
- * tokens it has sent to so far, so a job retried after a failure part way sends each one once.
+ * A push job's payload (0058): the message it is about, by its id and kind, alone; the job reads the
+ * message itself, decides who is told, and computes each person's preview and badge when it runs
+ * (pushJob), so no message's words wait in the outbox. And the tokens it has sent to so far, so a
+ * job retried after a failure part way sends each one once.
  */
-interface PushPayload { message: string; notifications: PushNotification[]; sent?: string[] }
+interface PushPayload { message: string; kind: 'dm' | 'channel'; sent?: string[] }
+
+/** How many times a push job is tried before it is dropped, its own lane's, not the outbox's (pushJob). */
+export const PUSH_MAX_ATTEMPTS = 5;
+/** The longest a push job waits between tries, in seconds: a push hours late is no use. */
+export const PUSH_MAX_BACKOFF_S = 60;
 
 /** One push as Expo's push service takes it: to one device's token. */
 export interface PushMessage extends Omit<PushNotification, 'actor'> { to: string; sound: 'default' }
@@ -858,7 +865,7 @@ export class Kolab {
    * null while push is off (the server sets it only when it has an access token); with `preview`
    * false, a push carries no words of its message.
    */
-  readonly push: { send: PushSend | null; preview: boolean } = { send: null, preview: true };
+  readonly push: { send: PushSend | null; preview: boolean; listening: (() => string[]) | null } = { send: null, preview: true, listening: null };
   /**
    * Which redirect URIs are konnect's own app's (appRedirect): always APP_REDIRECT_URI, and, with
    * `devSchemes`, its development builds' private-use schemes, for local-kolab and tests
@@ -1272,7 +1279,7 @@ export class Kolab {
         return { state: 'done' as const, result };
       } catch (error) {
         if (claim.lost || error instanceof ClaimLost) {
-          log.warn(`lost the claim on outbox job ${job.kind} for version ${job.versionId} while running it; another process runs it again`, { job: job.kind, version: job.versionId });
+          log.warn(`lost the claim on ${jobName(job)} while running it; another process runs it again`, { job: job.kind, version: job.versionId });
           return { state: 'lost' as const };
         }
         if (error instanceof Deferred) {
@@ -1391,9 +1398,10 @@ export class Kolab {
       `update outbox o set claim = null, claimed_by = null, claimed_until = null, attempts = greatest(o.attempts - 1, 0)
         where o.claim = $1 and ${archivedKolabSql('o.kolab_id')} returning o.id`, [job.token]);
     if (paused.rows.length) {
-      log.info(`outbox job ${job.kind} for version ${job.versionId} waits: its kolab was archived while it ran`, { job: job.kind, version: job.versionId });
+      log.info(`${jobName(job)} waits: its kolab was archived while it ran`, { job: job.kind, version: job.versionId });
       return;
     }
+    if (job.kind === 'push') return this.failPush(job, error);
     const r = await this.inTransaction(async (tx) => {
       const freed = await tx.query<{ id: string; kolab_id: string; state: OutboxState; attempts: number }>(
         `update outbox set claim = null, claimed_by = null, claimed_until = null, last_error = $2,
@@ -1415,6 +1423,32 @@ export class Kolab {
       if (job.kind === 'rebase') await this.rebaseDied(job.versionId, error).catch((e) => log.error('could not mark the variant whose rebase job died', { version: job.versionId, error: e }));
     } else if (r && !this.closed) {
       log.warn(`outbox job ${job.kind} for version ${job.versionId} failed (attempt ${r.attempts}); it will be tried again`, { job: job.kind, version: job.versionId, kolab: r.kolab_id, attempts: r.attempts, error });
+    }
+  }
+
+  /**
+   * A push job whose send failed (fail): tried again after a backoff of its own, doubling from 1 s
+   * to PUSH_MAX_BACKOFF_S, PUSH_MAX_ATTEMPTS times, then dropped, with one warn line (event
+   * push_job_dropped): a push is worth nothing hours late, and the outbox's dead jobs, and their
+   * alarm (outbox_job_dead), are for work Kolab owes its kolabs.
+   */
+  private async failPush(job: { token: string; kind: OutboxKind; versionId: string }, error: unknown) {
+    const r = await this.inTransaction(async (tx) => {
+      const gone = (await tx.query<{ id: string; kolab_id: string; attempts: number }>(
+        `delete from outbox where claim = $1 and attempts >= $2 returning id, kolab_id, attempts`, [job.token, PUSH_MAX_ATTEMPTS])).rows[0];
+      if (gone) return { ...gone, dropped: true };
+      const freed = (await tx.query<{ id: string; kolab_id: string; attempts: number }>(
+        `update outbox set claim = null, claimed_by = null, claimed_until = null, last_error = $2,
+                run_after = clock_timestamp() + least(power(2, greatest(attempts - 1, 0)), $3) * interval '1 second'
+          where claim = $1 returning id, kolab_id, attempts`, [job.token, maskTokens(error).slice(0, 2000), PUSH_MAX_BACKOFF_S])).rows[0];
+      if (freed) await this.notifyWork(tx);
+      return freed && { ...freed, dropped: false };
+    });
+    if (!r) return;
+    if (r.dropped) {
+      log.warn(`push job ${r.id} dropped after ${r.attempts} failed attempts: ${maskTokens(error)}`, { event: 'push_job_dropped', id: r.id, kolab: r.kolab_id, attempts: r.attempts, error });
+    } else if (!this.closed) {
+      log.warn(`push job ${r.id} failed (attempt ${r.attempts}); it will be tried again`, { event: 'push_job_failed', id: r.id, kolab: r.kolab_id, attempts: r.attempts, error });
     }
   }
 
@@ -1459,8 +1493,10 @@ export class Kolab {
     w.running = (async () => {
       do {
         w.again = false;
+        // Pushes in their own lane, beside the rest, so a slow push never holds up a rebase.
+        this.wakePushes();
         try {
-          await this.drainOutbox();
+          await this.drainOutbox({ lane: 'main' });
         } catch (e) {
           if (!this.closed) log.error('the outbox worker could not read the outbox', { error: e });
         }
@@ -1529,12 +1565,13 @@ export class Kolab {
    * node still owes its cascade. Returns how many finished. The worker calls it; a test can too,
    * with `max` to run at most that many jobs.
    */
-  async drainOutbox(opts: { max?: number } = {}): Promise<number> {
+  async drainOutbox(opts: { max?: number; lane?: 'all' | 'main' | 'push' } = {}): Promise<number> {
+    const lane = opts.lane ?? 'all';
     let done = 0;
-    for (let taken = 0; taken < (opts.max ?? Infinity); taken++) {
+    for (let taken = 0; lane !== 'push' && taken < (opts.max ?? Infinity); taken++) {
       const job = await this.claimJob(
         `select j.id from outbox j left join version jv on jv.id = j.version_id
-          where j.state = 'pending' and j.run_after <= clock_timestamp()
+          where j.state = 'pending' and j.run_after <= clock_timestamp() and j.kind <> 'push'
             and (j.claimed_until is null or j.claimed_until < clock_timestamp())
             and (j.claim is null or not (j.claim = any($3::text[])))
             and not ${archivedKolabSql('j.kolab_id')}
@@ -1545,7 +1582,33 @@ export class Kolab {
       if (!job) break;
       if ((await this.runJob(job)) === 'done') done++;
     }
+    // The push lane: its own loop, so a slow push service never holds up a rebase or a cascade.
+    for (let taken = 0; lane !== 'main' && taken < (opts.max ?? Infinity) - done; taken++) {
+      const job = await this.claimJob(
+        `select j.id from outbox j
+          where j.kind = 'push' and j.state = 'pending' and j.run_after <= clock_timestamp()
+            and (j.claimed_until is null or j.claimed_until < clock_timestamp())
+            and (j.claim is null or not (j.claim = any($3::text[])))
+            and not ${archivedKolabSql('j.kolab_id')}
+          order by j.id limit 1 for update of j skip locked`, []);
+      if (!job) break;
+      if ((await this.runJob(job)) === 'done') done++;
+    }
     return done;
+  }
+
+  /** The worker's push lane, beside its main pass (wake): one pass at a time, again if woken meanwhile. */
+  private pushLane?: { running?: Promise<void>; again: boolean };
+  private wakePushes() {
+    if (this.closed || this.stopping) return;
+    const lane = this.pushLane ??= { again: false };
+    if (lane.running) { lane.again = true; return; }
+    lane.running = (async () => {
+      do {
+        lane.again = false;
+        try { await this.drainOutbox({ lane: 'push' }); } catch (e) { if (!this.closed) log.error('the outbox worker could not read the push lane', { error: e }); }
+      } while (lane.again && !this.closed && !this.stopping);
+    })().finally(() => { lane.running = undefined; });
   }
 
   /**
@@ -4181,6 +4244,7 @@ export class Kolab {
       teams.push({
         kolab: k.id, role: s.active_role, owner: await ownsKolab(this.db, s.actor_id, k.id), current: k.id === s.kolab,
         ...(await this.inboxCounts({ ...s, kolab: k.id, access: k.access })),
+        badge: await this.unreadIn(k.id, s.actor_id),
       });
     }
     return { teams, invitations: invitations.map((i) => ({ kolab: i.kolab, invited_by: i.invited_by, invited_at: i.created_at })) };
@@ -10570,15 +10634,16 @@ export class Kolab {
     // The person behind each shown: an agent's owner only when the owner is a member here, as `owner`
     // names them, so no login says who owns an agent whose owner this kolab doesn't show.
     const behind = (h: { id: string; kind: ActorKind; owner_id: string | null }) => (h.kind === 'agent' ? (h.owner_id !== null && names.has(h.owner_id) ? h.owner_id : null) : h.id);
-    const logins = new Map((await this.db.query<{ actor_id: string; login: string }>(
-      `select actor_id, login from identity where provider = $1 and actor_id = any($2::text[])`,
-      [GITHUB_PROVIDER, [...new Set(rows.map(behind).filter((x): x is string => x !== null))]])).rows.map((r) => [r.actor_id, r.login]));
+    const logins = new Map((await this.db.query<{ actor_id: string; login: string; subject: string }>(
+      `select actor_id, login, subject from identity where provider = $1 and actor_id = any($2::text[])`,
+      [GITHUB_PROVIDER, [...new Set(rows.map(behind).filter((x): x is string => x !== null))]])).rows.map((r) => [r.actor_id, r]));
     return {
       kolab: s.kolab, next,
       items: rows.map((h) => ({
         actor: h.id, kind: h.kind, owner: h.owner_id !== null && names.has(h.owner_id) ? h.owner_id : null,
         ...(h.kind === 'agent' ? { label: agentLabel(h) } : {}),
-        login: logins.get(behind(h) ?? '') ?? null,
+        login: logins.get(behind(h) ?? '')?.login ?? null,
+        github_id: logins.get(behind(h) ?? '')?.subject ?? null,
         here: here.has(h.id),
         ...(h.id === s.actor_id ? { you: true as const } : {}),
       })),
@@ -10594,12 +10659,25 @@ export class Kolab {
    * checked under the access lock; one from the sender's owner's budget of messages is held for it
    * and marked used as it commits (W2.21). An archived kolab takes none.
    */
-  async sendMessage(sessionId: string, to: string, body: string, opts: { replyTo?: string } = {}): Promise<Message> {
+  async sendMessage(sessionId: string, to: string, body: string, opts: { replyTo?: string; nonce?: string } = {}): Promise<Message> {
     if (typeof body !== 'string' || !body.trim()) throw new LimitError('a message needs some words: give message');
     checkText('the message', body, MAX_MESSAGE_TEXT);
+    const nonce = nonceOf(opts.nonce);
     const s = await this.session(sessionId);
     if (to === s.actor_id) throw new LimitError(`${to} is you: a message goes to another member of kolab ${s.kolab}`);
-    const id = ulid();
+    // A send repeated with its nonce: the message it sent, with nothing sent or spent again.
+    const repeat = async (q: Q) => {
+      if (nonce === null) return undefined;
+      const m = (await q.query<MessageRow>(`select ${MESSAGE_COLUMNS} from message m left join message_receipt r on r.message_id = m.id
+        where m.kolab_id = $1 and m.sent_by = $2 and m.nonce = $3`, [s.kolab, s.actor_id, nonce])).rows[0];
+      if (!m) return undefined;
+      if (m.sent_to !== to || m.body !== body || m.reply_to !== (opts.replyTo ?? null)) throw new LimitError(`nonce ${nonce} names another message you sent in kolab ${s.kolab}: give a new nonce for a new message`);
+      return messageOf(m);
+    };
+    const before = await repeat(this.db);
+    if (before) return before;
+    let queued = false;
+    let id = '';
     const sent = await this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so it takes no new messages`);
       const members = await this.membersIn(tx, s.kolab);
@@ -10613,19 +10691,35 @@ export class Kolab {
         const between = r && ((r.sent_by === s.actor_id && r.sent_to === to) || (r.sent_by === to && r.sent_to === s.actor_id));
         if (!between) throw new LimitError(`reply_to names no message between you and ${to} in kolab ${s.kolab}: give the id of one, or leave it out`);
       }
+      // The conversation's lock: its messages are numbered one at a time, in the order they commit,
+      // so marking read up to one (konjir_mark_messages_read) never passes one that commits later.
+      await tx.query(`select pg_advisory_xact_lock(${CONVERSATION_LOCK}, hashtext($1))`, [conversationKey(s.kolab, s.actor_id, to)]);
+      const again = await repeat(tx);
+      if (again) throw new Repeated(again);
       await tx.exec('set local role kj_system');
       // The loop cap (migration 0052): a person's message starts every agent's run again; an agent's
       // to an agent counts in its own run, and one to a person counts nothing.
       const run = await this.countRun(tx, s, recipient.kind === 'agent');
+      const last = (await tx.query<{ id: string }>(
+        `select greatest((select max(id) from message where kolab_id = $1 and sent_by = $2 and sent_to = $3),
+                         (select max(id) from message where kolab_id = $1 and sent_by = $3 and sent_to = $2)) as id`, [s.kolab, s.actor_id, to])).rows[0];
+      const fresh = ulid();
+      id = last?.id && fresh <= last.id ? ulid(decodeTime(last.id) + 1) : fresh;
       await this.useRate(tx, hold);
       const sent = (await tx.query<{ sent_at: Date | string }>(
-        `insert into message(id, kolab_id, sent_by, sent_to, body, reply_to) values ($1,$2,$3,$4,$5,$6) returning sent_at`,
-        [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null])).rows[0];
+        `insert into message(id, kolab_id, sent_by, sent_to, body, reply_to, nonce) values ($1,$2,$3,$4,$5,$6,$7) returning sent_at`,
+        [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null, nonce])).rows[0];
       if (run) await tx.query(`insert into message_run(message_id, kolab_id, agent_run) values ($1, $2, $3)`, [id, s.kolab, run]);
       await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
+      queued = await this.enqueuePush(tx, { kind: 'dm', kolab: s.kolab, id, recipients: [to] });
       return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
-    }, undefined, { access: true }));
-    // Committed: this process's listeners hear it, for a push (0058).
+    }, undefined, { access: true })).catch((e: unknown) => {
+      if (e instanceof Repeated) return e.message as Message;
+      throw e;
+    });
+    if (sent.id !== id) return sent;
+    if (queued) this.wake();
+    // Committed: this process's listeners hear it.
     this.tellSent({ kind: 'dm', kolab: s.kolab, id, from: s.actor_id, to, message: body, recipients: [to] });
     return sent;
   }
@@ -10702,8 +10796,9 @@ export class Kolab {
   /**
    * One page of the session's actor's direct conversations in its kolab (konjir_list_conversations):
    * one row per member it has exchanged a message with, either way, a member now or not, with the
-   * newest message between them, how many of theirs it hasn't read (up to UNREAD_COUNT_CEILING,
-   * unread_more past it) and when the newest was sent, the most recent conversation first. Paged by
+   * newest message between them, how many of theirs it hasn't read among their newest UNREAD_SCAN
+   * (up to UNREAD_COUNT_CEILING; unread_more past it, or when the oldest of those is unread too) and
+   * when the newest was sent, the most recent conversation first. Paged by
    * that newest message's id, so a conversation that gets a new message while a client pages moves
    * to the top, ahead of the page it is on. Only the caller's own: the query names it as one end of
    * every message, as messagesPage does. It finds the members it talks with a member at a time
@@ -10714,7 +10809,7 @@ export class Kolab {
     const size = pageSize(page.limit);
     const list = scoped('conversations', { kolab: s.kolab, actor: s.actor_id });
     const [before] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
-    const rows = (await this.db.query<MessageRow & { other: string; unread: number }>(
+    const rows = (await this.db.query<MessageRow & { other: string; unread: number; scanned: number; edge_unread: boolean | null }>(
       `with recursive senders(other) as (
          (select sent_by from message where kolab_id = $1 and sent_to = $2 order by sent_by limit 1)
          union all
@@ -10737,18 +10832,24 @@ export class Kolab {
          where $3::text is null or l.id < $3
          order by l.id desc limit $4
        )
-       select n.other, ${MESSAGE_COLUMNS},
-              (select count(*)::int from (select 1 from message u where u.kolab_id = $1 and u.sent_to = $2 and u.sent_by = n.other
-                  and not exists (select 1 from message_receipt ur where ur.message_id = u.id) limit $5) c) as unread
+       select n.other, ${MESSAGE_COLUMNS}, c.unread, c.scanned, c.edge_unread
          from newest n join message m on m.id = n.id left join message_receipt r on r.message_id = m.id
+         -- Unread among the newest UNREAD_SCAN of theirs, as a channel's unread reads at most that many:
+         -- one range of an index, however long the conversation.
+         cross join lateral (
+           select (count(*) filter (where w.unread))::int as unread, count(*)::int as scanned,
+                  (array_agg(w.unread order by w.id))[1] as edge_unread
+             from (select u.id, not exists (select 1 from message_receipt ur where ur.message_id = u.id) as unread
+                     from message u where u.kolab_id = $1 and u.sent_to = $2 and u.sent_by = n.other order by u.id desc limit $5) w) c
         order by m.id desc`,
-      [s.kolab, s.actor_id, before ?? null, size + 1, UNREAD_COUNT_CEILING + 1])).rows;
+      [s.kolab, s.actor_id, before ?? null, size + 1, UNREAD_SCAN])).rows;
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
     return {
       next,
       items: shown.map((r) => ({
         with: r.other, last: messageOf(r),
-        unread: Math.min(r.unread, UNREAD_COUNT_CEILING), unread_more: r.unread > UNREAD_COUNT_CEILING,
+        // More past the ceiling, or past the scan when the oldest it read is unread too, so older ones may be.
+        unread: Math.min(r.unread, UNREAD_COUNT_CEILING), unread_more: r.unread > UNREAD_COUNT_CEILING || (r.scanned >= UNREAD_SCAN && !!r.edge_unread),
         last_at: iso(r.sent_at)!,
       })),
     };
@@ -11006,14 +11107,27 @@ export class Kolab {
    * from the sender's owner's budget of messages is held for it, as for a message. An archived kolab
    * takes none.
    */
-  async sendChannelMessage(sessionId: string, channel: string, body: string, opts: { replyTo?: string; mentions?: string[] } = {}): Promise<ChannelMessage> {
+  async sendChannelMessage(sessionId: string, channel: string, body: string, opts: { replyTo?: string; mentions?: string[]; nonce?: string } = {}): Promise<ChannelMessage> {
     if (typeof body !== 'string' || !body.trim()) throw new LimitError('a message needs some words: give message');
     checkText('the message', body, MAX_MESSAGE_TEXT);
+    const nonce = nonceOf(opts.nonce);
     const asked = opts.mentions ?? [];
     if (!Array.isArray(asked) || asked.some((m) => typeof m !== 'string')) throw new LimitError('mentions is a list of members\' names');
     if (asked.length > MAX_MENTIONS) throw new LimitError(`a message mentions at most ${MAX_MENTIONS} members; it names ${asked.length}`);
     const s = await this.session(sessionId);
-    const { sent, channelId, recipients } = await this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
+    // A send repeated with its nonce: the message it sent, with nothing sent or spent again.
+    const repeat = async (q: Q) => {
+      if (nonce === null) return undefined;
+      const m = (await q.query<ChannelMessageRow>(`select ${CHANNEL_MESSAGE_COLUMNS} from channel_message m join channel c on c.id = m.channel_id
+        where m.kolab_id = $1 and m.sent_by = $2 and m.nonce = $3`, [s.kolab, s.actor_id, nonce])).rows[0];
+      if (!m) return undefined;
+      if (m.channel !== channelName(channel) || m.body !== body || m.reply_to !== (opts.replyTo ?? null)) throw new LimitError(`nonce ${nonce} names another message you sent in kolab ${s.kolab}: give a new nonce for a new message`);
+      return channelMessageOf(m);
+    };
+    const before = await repeat(this.db);
+    if (before) return before;
+    let queued = false;
+    const done = await this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so it takes no new messages`);
       const members = await this.channelMembers(tx, s);
       const c = await this.channelIn(tx, s.kolab, channel);
@@ -11029,6 +11143,8 @@ export class Kolab {
       }))].filter((id) => id !== s.actor_id).sort();
       // The channel's row, as Kolab's own login, before any role: its messages are numbered one at a time.
       await tx.query(`select 1 from channel where id = $1 for no key update`, [c.id]);
+      const again = await repeat(tx);
+      if (again) throw new Repeated(again);
       if (opts.replyTo !== undefined && !(await tx.query(`select 1 from channel_message where id = $1 and channel_id = $2`, [opts.replyTo, c.id])).rows.length) {
         throw new LimitError(`reply_to names no message of #${c.name} in kolab ${s.kolab}: give the id of one, or leave it out`);
       }
@@ -11040,8 +11156,8 @@ export class Kolab {
       const id = last && fresh <= last.id ? ulid(decodeTime(last.id) + 1) : fresh;
       await this.useRate(tx, hold);
       const sent = (await tx.query<{ sent_at: Date | string }>(
-        `insert into channel_message(id, kolab_id, channel_id, sent_by, body, reply_to, agent_run) values ($1, $2, $3, $4, $5, $6, $7) returning sent_at`,
-        [id, s.kolab, c.id, s.actor_id, body, opts.replyTo ?? null, run])).rows[0];
+        `insert into channel_message(id, kolab_id, channel_id, sent_by, body, reply_to, agent_run, nonce) values ($1, $2, $3, $4, $5, $6, $7, $8) returning sent_at`,
+        [id, s.kolab, c.id, s.actor_id, body, opts.replyTo ?? null, run, nonce])).rows[0];
       if (mentions.length) {
         await tx.query(`insert into channel_mention(message_id, channel_id, kolab_id, actor_id) select $1, $2, $3, unnest($4::text[])`, [id, c.id, s.kolab, mentions]);
       }
@@ -11063,12 +11179,19 @@ export class Kolab {
           signalled.push(h.id);
         }
       }
+      queued = await this.enqueuePush(tx, { kind: 'channel', kolab: s.kolab, id, recipients: signalled });
       return {
         sent: { id, channel: c.name, from: s.actor_id, message: body, reply_to: opts.replyTo ?? null, mentions, sent_at: iso(sent.sent_at)! },
         channelId: c.id, recipients: signalled,
       };
-    }, undefined, { access: true }));
-    // Committed: this process's listeners hear it, for a push (0058).
+    }, undefined, { access: true })).catch((e: unknown) => {
+      if (e instanceof Repeated) return { repeated: e.message as ChannelMessage };
+      throw e;
+    });
+    if ('repeated' in done) return done.repeated;
+    const { sent, channelId, recipients } = done;
+    if (queued) this.wake();
+    // Committed: this process's listeners hear it.
     this.tellSent({ kind: 'channel', kolab: s.kolab, id: sent.id, from: s.actor_id, channel: sent.channel, channel_id: channelId, message: body, mentions: sent.mentions, recipients });
     return sent;
   }
@@ -11396,20 +11519,67 @@ export class Kolab {
   }
 
   /**
-   * Decides who is pushed a message just sent (onMessageSent), and queues one push job for it in
-   * the outbox, unless no one is: each recipient who is a person, not its sender, with a device
-   * whose sign-in is live (registered from any of their teams), and whom wantsPush says yes to under
-   * their prefs in the message's team. `data.team` names that team, which the app switches to.
-   * A person's push carries the message's first words only while the server's `push.preview` is on
-   * and they haven't chosen hide_preview. `listening` names the sessions holding a listen stream on this server process: a person with
-   * one of them open in the message's team is skipped (they see it there); one listening in
-   * another team is not. Push off (no `push.send`), it
-   * queues nothing. Returns how many people the job tells.
+   * In `tx`, the send's own transaction, one push job for the message just written (pushJob), when
+   * push is on here (`push.send`) and a cheap check finds a recipient who is a person, not its
+   * sender, with a live device (LIVE_DEVICE): the job names the message alone, and decides who is
+   * told when it runs. So a message that commits has its push job, whatever becomes of this process
+   * after. Returns whether it queued one; the caller wakes the worker once the send commits.
    */
-  async queuePushes(m: SentMessage, opts: { listening?: string[] } = {}): Promise<number> {
-    if (!this.push.send) return 0;
+  private async enqueuePush(tx: Q, m: { kind: 'dm' | 'channel'; kolab: string; id: string; recipients: string[] }): Promise<boolean> {
+    if (!this.push.send || !m.recipients.length) return false;
+    // As Kolab's own login, which reads sign-ins and sessions (kj_system reads neither), then back as kj_system to write the job.
+    await tx.exec('set local role none');
+    const someone = (await tx.query(
+      `select 1 from actor a where a.id = any($1::text[]) and a.kind = 'person'
+          and exists (select 1 from push_device d left join oauth_grant dg on dg.id = d.grant_id where d.actor_id = a.id and ${LIVE_DEVICE}) limit 1`,
+      [m.recipients])).rows.length > 0;
+    await tx.exec('set local role kj_system');
+    if (!someone) return false;
+    await tx.query(`insert into outbox(id, kind, version_id, kolab_id, payload) values ($1, 'push', null, $2, $3)`,
+      [outboxId(), m.kolab, JSON.stringify({ message: m.id, kind: m.kind } satisfies PushPayload)]);
+    await this.notifyWork(tx as Db);
+    return true;
+  }
+
+  /**
+   * A push job's message, read again from the message tables as the job runs: who sent it, its
+   * words, its kolab, and whom it signalled when it was sent, as the send decided them: for a direct
+   * message its recipient; for a channel message every member who follows the channel (general
+   * without a choice of their own) or is mentioned, but its sender. Undefined once it is gone (its
+   * kolab erased).
+   */
+  private async messageForPush(id: string, kind: 'dm' | 'channel'): Promise<SentMessage | undefined> {
+    if (kind === 'dm') {
+      const m = (await this.db.query<{ kolab_id: string; sent_by: string; sent_to: string; body: string }>(
+        `select kolab_id, sent_by, sent_to, body from message where id = $1`, [id])).rows[0];
+      return m && { kind: 'dm', kolab: m.kolab_id, id, from: m.sent_by, to: m.sent_to, message: m.body, recipients: [m.sent_to] };
+    }
+    const m = (await this.db.query<{ kolab_id: string; channel_id: string; channel: string; sent_by: string; body: string; mentions: string[] | null }>(
+      `select m.kolab_id, m.channel_id, c.name as channel, m.sent_by, m.body,
+              array(select x.actor_id from channel_mention x where x.message_id = m.id order by x.actor_id) as mentions
+         from channel_message m join channel c on c.id = m.channel_id where m.id = $1`, [id])).rows[0];
+    if (!m) return undefined;
+    const mentions = m.mentions ?? [];
+    const choices = new Map((await this.db.query<{ actor_id: string; following: boolean }>(
+      `select actor_id, following from channel_follow where channel_id = $1`, [m.channel_id])).rows.map((r) => [r.actor_id, r.following]));
+    const recipients = (await this.membersIn(this.db, m.kolab_id)).map((h) => h.id)
+      .filter((h) => h !== m.sent_by && ((choices.get(h) ?? m.channel === GENERAL_CHANNEL) || mentions.includes(h)));
+    return { kind: 'channel', kolab: m.kolab_id, id, from: m.sent_by, channel: m.channel, channel_id: m.channel_id, message: m.body, mentions, recipients };
+  }
+
+  /**
+   * Who of a message's recipients is pushed it, and what each is told (pushJob): each recipient who
+   * is a person, not its sender, with a device whose sign-in is live (registered from any of their
+   * teams), and whom wantsPush says yes to under their prefs in the message's team. `data.team`
+   * names that team, which the app switches to. A person's push carries the message's first words
+   * only while the server's `push.preview` is on and they haven't chosen hide_preview. Someone with
+   * a listen stream open in the message's team on this process (`push.listening`, the server's) is
+   * skipped (they see it there); one listening in another team is not.
+   */
+  private async pushNotifications(m: SentMessage): Promise<PushNotification[]> {
     const recipients = [...new Set(m.recipients)].filter((r) => r !== m.from);
-    if (!recipients.length) return 0;
+    if (!recipients.length) return [];
+    const listening = this.push.listening?.() ?? [];
     const rows = (await this.db.query<{ actor: string; level: NotificationLevel; muted: boolean; hide: boolean; listening: boolean }>(
       `select a.id as actor, coalesce(p.level, $4) as level, coalesce($5::text = any(p.muted), false) as muted,
               coalesce(p.hide_preview, false) as hide,
@@ -11420,34 +11590,29 @@ export class Kolab {
           and exists (select 1 from push_device d left join oauth_grant dg on dg.id = d.grant_id
                        where d.actor_id = a.id and ${LIVE_DEVICE})
         order by a.id`,
-      [m.kolab, recipients, opts.listening ?? [], DEFAULT_NOTIFICATION_LEVEL, m.kind === 'channel' ? m.channel_id : null])).rows;
+      [m.kolab, recipients, listening, DEFAULT_NOTIFICATION_LEVEL, m.kind === 'channel' ? m.channel_id : null])).rows;
     const chosen = rows.filter((r) => wantsPush({
       kind: m.kind, level: r.level, muted: r.muted, mentioned: m.kind === 'channel' && m.mentions.includes(r.actor), listening: r.listening,
     }));
-    if (!chosen.length) return 0;
     const title = m.kind === 'dm' ? m.from : `${m.from} in #${m.channel}`;
     const body = this.push.preview ? [...m.message].slice(0, PUSH_PREVIEW_CHARS).join('') : undefined;
     const data: PushData = m.kind === 'dm'
       ? { team: m.kolab, kind: 'dm', with: m.from, message_id: m.id }
       : { team: m.kolab, kind: 'channel', channel: m.channel, message_id: m.id };
-    const notifications: PushNotification[] = [];
+    const out: PushNotification[] = [];
     // No words for a person who hides them, whatever the server's own setting.
-    for (const r of chosen) notifications.push({ actor: r.actor, title, ...(body === undefined || r.hide ? {} : { body }), data, badge: await this.badgeOf(r.actor) });
-    await this.inTransaction(async (tx) => {
-      await tx.exec('set local role kj_system');
-      await tx.query(`insert into outbox(id, kind, version_id, kolab_id, payload) values ($1, 'push', null, $2, $3)`,
-        [outboxId(), m.kolab, JSON.stringify({ message: m.id, notifications } satisfies PushPayload)]);
-      await this.notifyWork(tx);
-    });
-    this.wake();
-    return notifications.length;
+    for (const r of chosen) out.push({ actor: r.actor, title, ...(body === undefined || r.hide ? {} : { body }), data, badge: await this.badgeOf(r.actor) });
+    return out;
   }
 
   /**
-   * A push job's work: each person's push to each of their live devices, through `push.send`,
-   * PUSH_BATCH at a time. A device whose token comes back unregistered is forgotten. Each batch sent is recorded on the job, so a job retried after
-   * the service failed part way (send throws: the outbox retries it with backoff) sends each once.
-   * With push off since it was queued, it is dropped, and says so.
+   * A push job's work, in the outbox's push lane (drainOutbox): the message it names read again
+   * (messageForPush), who is told and what decided now (pushNotifications), and each person's push
+   * to each of their live devices, through `push.send`, PUSH_BATCH at a time. A device whose token
+   * comes back unregistered is forgotten. Each batch sent is recorded on the job, so a job retried
+   * after the service failed part way (send throws: the job is tried again with its own backoff,
+   * PUSH_MAX_ATTEMPTS times, then dropped) sends each once. With push off on this process from the
+   * start (no `push.send`), it is dropped, and says so; a message gone since is nothing to push.
    */
   private async pushJob(job: OutboxJob, claim: Claim): Promise<void> {
     const send = this.push.send;
@@ -11456,13 +11621,17 @@ export class Kolab {
       log.warn(`push job ${job.id} dropped: push is off on this Kolab`, { event: 'push_dropped', id: job.id, kolab: job.kolab_id });
       return;
     }
-    if (!p?.notifications?.length) return;
+    if (!p?.message) return;
+    const m = await this.messageForPush(p.message, p.kind ?? 'dm');
+    if (!m) return;
+    const notifications = await this.pushNotifications(m);
+    if (!notifications.length) return;
     const sent = new Set(p.sent ?? []);
     const devices = (await this.db.query<{ token: string; actor_id: string }>(
       `select d.token, d.actor_id from push_device d left join oauth_grant dg on dg.id = d.grant_id
         where d.actor_id = any($1::text[]) and ${LIVE_DEVICE} order by d.actor_id, d.token`,
-      [p.notifications.map((n) => n.actor)])).rows;
-    const of = new Map(p.notifications.map((n) => [n.actor, n]));
+      [notifications.map((n) => n.actor)])).rows;
+    const of = new Map(notifications.map((n) => [n.actor, n]));
     const messages: PushMessage[] = devices.filter((d) => !sent.has(d.token)).map((d) => {
       const { actor: _, ...n } = of.get(d.actor_id)!;
       return { to: d.token, ...n, sound: 'default' as const };
@@ -15211,6 +15380,24 @@ interface MarkInput {
 
 /** A new bearer token for a session: random, not a sortable ULID. An OAuth access token is one too (D55). */
 const newSessionToken = () => `kjs_${randomBytes(24).toString('base64url')}`;
+
+/** An outbox job as a log line names it: a version's job by its version, a push job (which names none) by its own id. */
+const jobName = (job: { kind: OutboxKind; versionId: string }) => (job.kind === 'push' ? `push job ${job.versionId}` : `outbox job ${job.kind} for version ${job.versionId}`);
+
+/** A send repeated with its nonce, found under its lock: the message it sent, returned instead (sendMessage, sendChannelMessage). */
+class Repeated { constructor(readonly message: Message | ChannelMessage) {} }
+
+/** A client's nonce for a send (migration 0059): 1 to 100 letters, digits and `. _ : -`, a UUID say; null when none is given. */
+function nonceOf(nonce: unknown): string | null {
+  if (nonce === undefined || nonce === null) return null;
+  if (typeof nonce !== 'string' || !/^[A-Za-z0-9._:-]{1,100}$/.test(nonce)) throw new LimitError('nonce is your own id for this send, 1 to 100 letters, digits and . _ : -, such as a UUID');
+  return nonce;
+}
+
+/** The advisory lock class of a conversation's sends (sendMessage), apart from every single-key lock. */
+const CONVERSATION_LOCK = 5901;
+/** A conversation's key for its lock: its kolab and its two members, in order, whoever sends. */
+const conversationKey = (kolab: string, a: string, b: string) => `${kolab} ${a < b ? a : b} ${a < b ? b : a}`;
 
 /**
  * A refresh's successor tokens, sealed for its row (migration 0059) with a key only the refresh

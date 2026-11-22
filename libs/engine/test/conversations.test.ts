@@ -94,3 +94,19 @@ test('the members talked with are found through the indexes, not by reading ever
     `explain select sent_by from message where kolab_id = 'hub' and sent_to = 'ann' and sent_by > 'bo' order by sent_by limit 1`)).rows.map((r) => r['QUERY PLAN']).join('\n');
   expect(plan).toMatch(/message_to_from|message_from_to|Index/);
 });
+
+test('a conversation\'s unread reads at most twice the ceiling of their newest messages, however long it is: a long one read through has none and no more, a long unread one says there are more', async () => {
+  const { kolab, ann, bo } = await hub();
+  const many = (from: string, n: number, prefix: string) => kolab.db.query(
+    `insert into message(id, kolab_id, sent_by, sent_to, body) select '01J' || $3 || lpad(g::text, 22, '0'), 'hub', $1, 'ann', 'x' from generate_series(1, $2::int) g`,
+    [from, n, prefix]);
+  // Bo: 2,100 messages, every one read, then one new.
+  await many('bo', 2 * UNREAD_COUNT_CEILING + 100, 'A');
+  await kolab.db.query(`insert into message_receipt(message_id, kolab_id, actor_id) select id, kolab_id, sent_to from message where sent_by = 'bo'`);
+  await kolab.sendMessage(bo, 'ann', 'one new');
+  // Cy: 2,100, none read.
+  await many('cy', 2 * UNREAD_COUNT_CEILING + 100, 'B');
+  const rows = Object.fromEntries((await kolab.conversationsPage(ann)).items.map((c) => [c.with, [c.unread, c.unread_more]]));
+  expect(rows.cy).toStrictEqual([UNREAD_COUNT_CEILING, true]);
+  expect(rows.bo).toStrictEqual([1, false]);
+});

@@ -89,6 +89,12 @@ export interface PendingInvitation {
 export interface MyTeam {
   kolab: string; role: Role; owner: boolean; current: boolean;
   unread: number; unread_more: boolean; mentions: number; mentions_more: boolean;
+  /**
+   * What this team adds to the app's badge, as a push counts it: the person's unread direct
+   * messages, and in each channel their unread if they follow it or their unread mentions if not,
+   * at most UNREAD_COUNT_CEILING, so the app sums its teams' and gets the number a push sets.
+   */
+  badge: number;
 }
 /** An invitation waiting for the person, as konjir_list_my_teams lists it: accepted or declined on Kolab's sign-in page. */
 export interface MyInvitation { kolab: string; invited_by: string; invited_at: string }
@@ -897,6 +903,12 @@ export interface Member {
    * agent, a person an admin made and never linked).
    */
   login: string | null;
+  /**
+   * The GitHub account's numeric id behind them, `identity.subject`, which never changes hands as a
+   * login can, so an app shows `https://avatars.githubusercontent.com/u/<github_id>` and a renamed
+   * login never shows a stranger's face; null whenever `login` is.
+   */
+  github_id: string | null;
   /** Whether a session of theirs is open in the kolab now: a message reaches one that is listening at once, and waits for one that isn't. */
   here: boolean;
   /**

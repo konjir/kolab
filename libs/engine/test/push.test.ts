@@ -1,9 +1,9 @@
 // Push notifications to konnect's phone app (S4, migration 0058): a person registers their app's
 // Expo push token in a team and chooses what they are told of there; each message sent through this
-// Kolab is told to its listeners once it commits (onMessageSent), queuePushes decides who is pushed
-// it under their prefs and queues one push job in the outbox, and the job sends it through the
-// sender the server gives (Expo's push API, mocked here), forgetting devices that are no longer
-// registered and retrying through the outbox when the service fails.
+// Kolab queues, in the send's own transaction, one push job naming the message alone when someone it
+// reaches has a live device; the job, in the outbox's push lane, reads the message again, decides who
+// is pushed it under their prefs, and sends it through the sender the server gives (Expo's push API,
+// mocked here), forgetting devices that are no longer registered and retrying with its own backoff.
 import { expect, test } from '@jest/globals';
 import { MAX_PUSH_DEVICES, PUSH_BATCH, UNREAD_COUNT_CEILING, type SentMessage } from '@konjir/types';
 import { wantsPush, type PushMessage, type PushTicket } from '@konjir/engine';
@@ -34,14 +34,19 @@ async function hub(opts: { answer?: (m: PushMessage) => PushTicket } = {}) {
   k.push.send = async (messages) => { batches.push(messages); return messages.map(opts.answer ?? (() => ({ ok: true }))); };
   const sent: SentMessage[] = [];
   k.onMessageSent((m) => sent.push(m));
-  /** Queues the pushes of the message just sent, and runs the job: what was sent, flattened. */
+  /** Runs the push jobs the sends queued, with `listening` the sessions this process hears streams of: what was sent, flattened. */
   const pushed = async (listening: string[] = []) => {
-    const n = await k.queuePushes(sent[sent.length - 1], { listening });
+    k.push.listening = () => listening;
     batches.length = 0;
     await k.drainOutbox();
-    return { people: n, messages: batches.flat() };
+    return { messages: batches.flat() };
   };
-  return { kolab: k, ...s, signIns, phone, batches, sent, pushed };
+  /** A push job for message `id` run again, as if just queued: what it sends now. */
+  const rerun = async (id: string, kind: 'dm' | 'channel' = 'dm') => {
+    await k.db.query(`insert into outbox(id, kind, version_id, kolab_id, payload) values ($1, 'push', null, 'hub', $2)`, [`~push-${id}-${batches.length}-${Date.now()}`, JSON.stringify({ message: id, kind })]);
+    return pushed();
+  };
+  return { kolab: k, ...s, signIns, phone, batches, sent, pushed, rerun };
 }
 
 const jobs = async (k: TestKolab) => (await k.db.query<{ kind: string; payload: unknown; attempts: number }>(`select kind, payload, attempts from outbox order by id`)).rows;
@@ -223,16 +228,18 @@ test('a direct message to a person with a device queues one push job, which send
   const long = 'x'.repeat(150);
   const m = await kolab.sendMessage(ann, 'bo', long);
   expect(sent[sent.length - 1]).toStrictEqual({ kind: 'dm', kolab: 'hub', id: m.id, from: 'ann', to: 'bo', message: long, recipients: ['bo'] });
-  const n = await kolab.queuePushes(sent[sent.length - 1]);
-  expect(n).toBe(1);
-  expect(await jobs(kolab)).toStrictEqual([{ kind: 'push', attempts: 0, payload: {
-    message: m.id,
-    notifications: [{ actor: 'bo', title: 'ann', body: 'x'.repeat(100), data: { team: 'hub', kind: 'dm', with: 'ann', message_id: m.id }, badge: 2 }],
-  } }]);
+  // Queued in the send's own transaction, naming the message alone: no words of it wait in the outbox.
+  const queued = await jobs(kolab);
+  expect(queued.filter((j) => (j.payload as { message: string }).message === m.id)).toStrictEqual([{ kind: 'push', attempts: 0, payload: { message: m.id, kind: 'dm' } }]);
+  expect(JSON.stringify(queued)).not.toContain('xxxxxxxx');
   // The admin's list names the job by its kolab and message, never what it says.
-  expect((await kolab.outboxJobs()).map((j) => [j.kind, j.subject])).toStrictEqual([['push', `hub message ${m.id}`]]);
+  expect((await kolab.outboxJobs()).filter((j) => j.subject === `hub message ${m.id}`).map((j) => j.kind)).toStrictEqual(['push']);
+  batches.length = 0;
   await kolab.drainOutbox();
-  expect(batches.flat().map((x) => [x.to, x.title, x.badge])).toStrictEqual([[token('b1'), 'ann', 2], [token('b2'), 'ann', 2]]);
+  // Decided as it runs: the start of the message, read from the message itself, and the unread now.
+  const dm = batches.flat().filter((x) => x.data.message_id === m.id);
+  expect(dm.map((x) => [x.to, x.title, x.body, x.badge])).toStrictEqual([[token('b1'), 'ann', 'x'.repeat(100), 2], [token('b2'), 'ann', 'x'.repeat(100), 2]]);
+  expect(dm[0].data).toStrictEqual({ team: 'hub', kind: 'dm', with: 'ann', message_id: m.id });
   expect(await jobs(kolab)).toStrictEqual([]);
 });
 
@@ -242,7 +249,6 @@ test('the job sends one push per device, and a channel message\'s title names th
   await kolab.registerPushDevice(await phone('bo'), token('b2'), 'android');
   const m = await kolab.sendChannelMessage(ann, 'general', 'deploy is green, @bo', { mentions: ['bo'] });
   const r = await pushed();
-  expect(r.people).toBe(1);
   expect(r.messages).toStrictEqual([token('b1'), token('b2')].map((to) => ({
     to, title: 'ann in #general', body: 'deploy is green, @bo', data: { team: 'hub', kind: 'channel', channel: 'general', message_id: m.id }, badge: 1, sound: 'default',
   })));
@@ -326,13 +332,14 @@ test('push off: nothing is decided or queued, and a job queued before it went of
   const { kolab, ann, bo, sent } = await hub();
   await kolab.registerPushDevice(bo, token('b'), 'ios');
   await kolab.sendMessage(ann, 'bo', 'queued while on');
-  expect(await kolab.queuePushes(sent[sent.length - 1])).toBe(1);
+  expect((await jobs(kolab)).length).toBe(1);
   kolab.push.send = null;
   await kolab.sendMessage(ann, 'bo', 'sent while off');
-  expect(await kolab.queuePushes(sent[sent.length - 1])).toBe(0);
   expect((await jobs(kolab)).length).toBe(1);
+  // Push off on this process from the start: the job is dropped, and says so.
   await kolab.drainOutbox();
   expect(await jobs(kolab)).toStrictEqual([]);
+  expect(sent.length).toBe(2);
 });
 
 test('a device registered from the app\'s sign-in gets nothing once that sign-in is revoked, lapses, or has no open session', async () => {
@@ -432,7 +439,7 @@ test(`pushes go ${PUSH_BATCH} at a time; when the service fails, the job is retr
     return messages.map(() => ({ ok: true as const }));
   };
   await kolab.sendChannelMessage(ann, 'general', 'everyone', { mentions: people });
-  expect(await kolab.queuePushes(sent[sent.length - 1])).toBe(12);
+  expect((await jobs(kolab)).length).toBe(1);
   batches.length = 0;
   await kolab.drainOutbox();
   expect(batches.map((b) => b.length)).toStrictEqual([PUSH_BATCH, 120 - PUSH_BATCH]);
@@ -450,7 +457,7 @@ test(`pushes go ${PUSH_BATCH} at a time; when the service fails, the job is retr
 });
 
 test('the badge is the person\'s unread across every team they are in: direct messages, followed channels\' unread and others\' mentions, summed, at most the ceiling', async () => {
-  const { kolab, ann, bo, cy, sent } = await hub();
+  const { kolab, ann, bo, cy, sent, rerun } = await hub();
   await kolab.registerPushDevice(bo, token('b'), 'ios');
   await kolab.makeChannel(cy, 'deploys');
   await kolab.sendChannelMessage(cy, 'deploys', 'not followed, no mention');
@@ -459,9 +466,9 @@ test('the badge is the person\'s unread across every team they are in: direct me
   await kolab.sendMessage(cy, 'bo', 'direct');
   await kolab.sendMessage(ann, 'bo', 'and this one');
   const last = sent[sent.length - 1];
-  await kolab.queuePushes(last);
-  expect(((await jobs(kolab))[0].payload as { notifications: { badge: number }[] }).notifications[0].badge).toBe(4);
   await kolab.db.query(`delete from outbox`);
+  const badge = async () => (await rerun(last.id)).messages.map((m) => m.badge);
+  expect(await badge()).toStrictEqual([4]);
   // Another team of Bo's adds its unread; an archived one, and one he isn't in, add nothing.
   await kolab.createKolab('side', { owner: 'cy' });
   await kolab.grant('side', 'bo', 'read');
@@ -475,14 +482,12 @@ test('the badge is the person\'s unread across every team they are in: direct me
     await kolab.endSession(c);
   }
   await kolab.archive({ kolab: 'gone' });
-  await kolab.queuePushes(last);
-  expect(((await jobs(kolab))[0].payload as { notifications: { badge: number }[] }).notifications[0].badge).toBe(5);
   await kolab.db.query(`delete from outbox`);
+  expect(await badge()).toStrictEqual([5]);
   await kolab.db.query(
     `insert into message(id, kolab_id, sent_by, sent_to, body)
      select '01J' || lpad(g::text, 23, '0'), 'hub', 'cy', 'bo', 'x' from generate_series(1, $1::int) g`, [UNREAD_COUNT_CEILING]);
-  await kolab.queuePushes(last);
-  expect(((await jobs(kolab))[0].payload as { notifications: { badge: number }[] }).notifications[0].badge).toBe(UNREAD_COUNT_CEILING);
+  expect(await badge()).toStrictEqual([UNREAD_COUNT_CEILING]);
 });
 
 test('a refused send tells no listener', async () => {
@@ -498,8 +503,8 @@ test('erasing a team removes its prefs and push jobs, and its members keep their
   await kolab.registerPushDevice(ann, token('a'), 'ios');
   await kolab.setNotificationPrefs(bo, { level: 'all' });
   await kolab.sendMessage(ann, 'bo', 'before the erase');
-  await kolab.queuePushes(sent[sent.length - 1]);
   expect((await jobs(kolab)).length).toBe(1);
+  expect(sent.length).toBe(1);
   await kolab.eraseOwnKolab(ann, 'hub');
   for (const t of ['notification_pref', 'outbox']) expect((await kolab.db.query(`select 1 from ${t}`)).rows).toStrictEqual([]);
   expect((await kolab.db.query(`select actor_id from push_device order by actor_id`)).rows).toStrictEqual([{ actor_id: 'ann' }, { actor_id: 'bo' }]);

@@ -12,8 +12,12 @@ import { KOLAB, PUSH_OPTIONS, type PushOptions } from './tokens.js';
 /** Expo's push API (https://docs.expo.dev/push-notifications/sending-notifications/). */
 export const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
-/** How long one request to Expo's push service may take before it counts as unreachable, and is retried. */
-const EXPO_TIMEOUT_MS = 15_000;
+/**
+ * How long one request to Expo's push service may take before it counts as unreachable, and is
+ * retried with the push lane's own backoff: short, since a push is worth little late and the lane
+ * waits on it.
+ */
+const EXPO_TIMEOUT_MS = 5_000;
 
 /**
  * Push's settings from the environment, for `kolab serve` (S4): KONJIR_EXPO_ACCESS_TOKEN, Expo's
@@ -33,7 +37,8 @@ export function pushOptionsFromEnv(env: NodeJS.ProcessEnv = process.env): PushOp
  * DeviceNotRegistered. It throws, so the outbox retries the job with backoff, when the service
  * can't be reached, times out, answers 429 or 5xx, or answers what isn't a ticket for each
  * message. Any other refusal (a 4xx: a bad token, a bad request) is the same next time: each
- * message gets an error ticket, which is logged, and nothing is retried.
+ * message gets an error ticket, which is logged at warn (a refusal of what Kolab sent, not a fault
+ * of Kolab's), and nothing is retried.
  */
 export function expoSender(opts: { accessToken: string; fetch?: typeof fetch; url?: string }): PushSend {
   const send = opts.fetch ?? fetch;
@@ -55,7 +60,7 @@ export function expoSender(opts: { accessToken: string; fetch?: typeof fetch; ur
     const body = await res.json().catch(() => undefined) as { data?: unknown; errors?: { code?: string; message?: string }[] } | undefined;
     if (!res.ok) {
       const why = body?.errors?.map((e) => e.code ?? e.message).filter(Boolean).join(', ') || `HTTP ${res.status}`;
-      log.error(`Expo's push service refused ${messages.length} push(es): ${why}`, { event: 'push_refused', status: res.status });
+      log.warn(`Expo's push service refused ${messages.length} push(es): ${why}`, { event: 'push_refused', status: res.status });
       return messages.map(() => ({ ok: false, unregistered: false, error: why }));
     }
     const data = body?.data;
@@ -68,17 +73,19 @@ export function expoSender(opts: { accessToken: string; fetch?: typeof fetch; ur
 
 /**
  * Push notifications to konnect's phone app (S4). With an Expo access token, it gives the engine
- * an Expo sender, and for each message sent through this process, once it commits
- * (Kolab.onMessageSent), asks the engine to decide who is pushed it and to queue the job; the
- * outbox worker sends it. A person with a listen stream open in the team on this process is
- * skipped: Kolab runs one server process today, so that is every stream. With more than one, a
- * stream on another process isn't seen, and its person is pushed anyway. Without a token, push is
- * off: it says so once, at boot, to the logger it is given (`kolab serve`'s), and queues nothing.
+ * an Expo sender, which turns push on: each send then queues its push job in its own transaction,
+ * and the outbox worker's push lane decides and sends it (Kolab.pushJob). It tells the engine which
+ * sessions hold a listen stream on this process (`push.listening`): a person with one open in the
+ * message's team is skipped. Kolab runs one server process today, so that is every stream; with
+ * more than one, a stream on another process isn't seen by a job this one runs. The sender stays
+ * set as the server shuts down, so a job running then finishes, and a job left is sent by the next
+ * process. Without a token, push is off: it says so once, at boot, to the logger it is given
+ * (`kolab serve`'s), and queues nothing.
  */
 @Injectable()
 export class PushNotifications implements OnModuleInit, OnModuleDestroy {
-  private unsubscribe?: () => void;
   private sender?: PushSend;
+  private listening?: () => string[];
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -94,15 +101,16 @@ export class PushNotifications implements OnModuleInit, OnModuleDestroy {
     this.sender = expoSender({ accessToken: this.options.accessToken, fetch: this.options.fetch, url: this.options.url });
     this.kolab.push.send = this.sender;
     this.kolab.push.preview = this.options.preview;
-    this.unsubscribe = this.kolab.onMessageSent((m) => {
-      void this.kolab.queuePushes(m, { listening: this.streams.listeningSessions() })
-        .catch((e) => log.error(`could not queue the pushes of message ${m.id} in kolab ${m.kolab}`, { event: 'push_not_queued', kolab: m.kolab, error: e }));
-    });
+    this.listening = () => this.streams.listeningSessions();
+    this.kolab.push.listening = this.listening;
   }
 
+  /**
+   * The sender stays: nulling it would have a job still running, or taken as the worker stops, read
+   * push as off and drop it. Only this process's listen streams go, as they close.
+   */
   onModuleDestroy() {
-    this.unsubscribe?.();
-    if (this.sender && this.kolab.push.send === this.sender) this.kolab.push.send = null;
+    if (this.listening && this.kolab.push.listening === this.listening) this.kolab.push.listening = null;
   }
 }
 

@@ -134,6 +134,9 @@ test('each member\'s login is the GitHub username behind them, as they last sign
   await kolab.grant('hub', 'gh_admin-bot', 'read');
   const logins = Object.fromEntries((await kolab.membersPage(ann)).items.map((m) => [m.actor, m.login]));
   expect(logins).toStrictEqual({ ann: null, 'ann-claude': null, ann_2: 'ann', 'gh_ann-h': 'Ann-H', bo: 'BoGH', 'bo-claude': 'BoGH', gh_admin: 'Admin', 'gh_admin-bot': 'Admin' });
+  // And the account's numeric id beside each, which never changes hands as a login can.
+  const ids = Object.fromEntries((await kolab.membersPage(ann)).items.map((m) => [m.actor, m.github_id]));
+  expect(ids).toStrictEqual({ ann: null, 'ann-claude': null, ann_2: '103', 'gh_ann-h': '101', bo: '104', 'bo-claude': '104', gh_admin: '102', 'gh_admin-bot': '102' });
   // Signing in again with a renamed account updates it.
   await kolab.signInWith({ provider: 'github', subject: '104', login: 'Bo-Renamed' });
   expect((await kolab.membersPage(bo)).items.find((m) => m.actor === 'bo')).toMatchObject({ login: 'Bo-Renamed', you: true });
@@ -145,16 +148,16 @@ test('members are listed by name for any member, with who is here now, and never
   expect(await kolab.membersPage(boAgent)).toStrictEqual({
     kolab: 'hub', next: null,
     items: [
-      { actor: 'ann', kind: 'person', owner: null, login: null, here: true },
-      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, here: false },
-      { actor: 'bo', kind: 'person', owner: null, login: null, here: true },
-      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, here: true, you: true },
+      { actor: 'ann', kind: 'person', owner: null, login: null, github_id: null, here: true },
+      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, github_id: null, here: false },
+      { actor: 'bo', kind: 'person', owner: null, login: null, github_id: null, here: true },
+      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, github_id: null, here: true, you: true },
     ],
   });
   // An agent's label is its own field, so it can be named <owner>/<label>; one named otherwise has none.
   await kolab.addActor('helper', { owner: 'bo' });
   await kolab.grant('hub', 'helper', 'write');
-  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, login: null, here: false });
+  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, login: null, github_id: null, here: false });
   // A page at a time, by name; a cursor from another list is refused.
   const first = await kolab.membersPage(ann, { limit: 3 });
   expect(first.items.map((m) => m.actor)).toStrictEqual(['ann', 'ann-claude', 'bo']);
@@ -266,4 +269,47 @@ test('a message and its receipt are never edited or removed, no session\'s role 
   await kolab.archive({ kolab: 'hub' });
   expect(await rejection(kolab.db.query(`insert into message(id, kolab_id, sent_by, sent_to, body) values ('m2', 'hub', 'ann', 'bo', 'late')`))).toMatch(/archived/);
   expect((await kolab.db.query<{ id: string }>(`select id from message order by id`)).rows.map((r) => r.id)).toStrictEqual([sent.id, waiting.id]);
+});
+
+test('a send repeated with its nonce returns the message it sent, once, for a direct message and a channel message alike; another message with that nonce is refused, and a bad nonce too', async () => {
+  const { kolab, ann, bo, events } = await hub();
+  const first = await kolab.sendMessage(ann, 'bo', 'Lunch at noon?', { nonce: 'a1b2-c3' });
+  events.length = 0;
+  // The app's Retry, its answer lost: the same message, nothing sent, signalled or spent again.
+  expect(await kolab.sendMessage(ann, 'bo', 'Lunch at noon?', { nonce: 'a1b2-c3' })).toStrictEqual(first);
+  // Two at once, as a retry racing the send it repeats: one message.
+  const [x, y] = await Promise.all([1, 2].map(() => kolab.sendMessage(ann, 'bo', 'Coffee?', { nonce: 'n-2' })));
+  expect(x.id).toBe(y.id);
+  expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from message where sent_by = 'ann'`)).rows[0].n).toBe(2);
+  expect(events.filter((e) => 'actor' in e && e.actor === 'bo').length).toBe(1);
+  // The same nonce on another message, to someone else or in other words, is refused; another sender's own nonce is theirs.
+  expect(await rejection(kolab.sendMessage(ann, 'bo', 'Dinner?', { nonce: 'a1b2-c3' }))).toMatch(/LimitError: nonce a1b2-c3 names another message you sent in kolab hub/);
+  expect(await rejection(kolab.sendMessage(ann, 'bo-claude', 'Lunch at noon?', { nonce: 'a1b2-c3' }))).toMatch(/nonce a1b2-c3 names another message/);
+  expect((await kolab.sendMessage(bo, 'ann', 'Lunch at noon?', { nonce: 'a1b2-c3' })).from).toBe('bo');
+  for (const bad of ['', 'has space', 'x'.repeat(101), 'é']) {
+    expect([bad, await rejection(kolab.sendMessage(ann, 'bo', 'hi', { nonce: bad }))]).toStrictEqual([bad, expect.stringMatching(/nonce is your own id for this send/)]);
+  }
+  // A channel message, the same way.
+  const c = await kolab.sendChannelMessage(ann, 'general', 'Standup in 5', { nonce: 'c-1', mentions: ['bo'] });
+  expect(await kolab.sendChannelMessage(ann, '#general', 'Standup in 5', { nonce: 'c-1', mentions: ['bo'] })).toStrictEqual(c);
+  expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from channel_message where sent_by = 'ann'`)).rows[0].n).toBe(1);
+  expect(await rejection(kolab.sendChannelMessage(ann, 'general', 'Standup in 10', { nonce: 'c-1' }))).toMatch(/nonce c-1 names another message/);
+  // No nonce, no idempotence: each send is its own.
+  expect((await kolab.sendMessage(ann, 'bo', 'again')).id).not.toBe((await kolab.sendMessage(ann, 'bo', 'again')).id);
+});
+
+test('a conversation\'s messages are numbered in the order they commit: each later than any already there, whichever of the two sent it', async () => {
+  const { kolab, ann, bo } = await hub();
+  const a = await kolab.sendMessage(ann, 'bo', 'one');
+  // One there already numbered later than now, as a send that took its number first and committed after would be.
+  const ahead = `${a.id.slice(0, 1)}ZZZZZZZZZ${a.id.slice(10)}`;
+  await kolab.db.query(`insert into message(id, kolab_id, sent_by, sent_to, body) values ($1, 'hub', 'bo', 'ann', 'ahead')`, [ahead]);
+  const b = await kolab.sendMessage(ann, 'bo', 'two');
+  expect(b.id > ahead).toBe(true);
+  const c = await kolab.sendMessage(bo, 'ann', 'three');
+  expect(c.id > b.id).toBe(true);
+  // Many at once between the two, both ways: every number distinct, and each later than those before it committed.
+  const sent = await Promise.all(Array.from({ length: 12 }, (_, i) => kolab.sendMessage(i % 2 ? bo : ann, i % 2 ? 'ann' : 'bo', `m${i}`)));
+  expect(new Set(sent.map((m) => m.id)).size).toBe(12);
+  expect(sent.every((m) => m.id > c.id)).toBe(true);
 });
