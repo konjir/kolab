@@ -3,7 +3,7 @@
 // row-level security refusing an expired or rotated token on its own.
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
-import { Kolab, OAuthGrantError, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
+import { Kolab, NATIVE_REDIRECT_URIS, OAuthGrantError, nativeRedirect, onPersonsDevice, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
 import { els, openKolab, people, persistentStore, rejection } from '../src/testing.js';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -92,7 +92,7 @@ test('an archived person does not sign in; an admin links an existing person to 
   expect(await rejection(kolab.signInWith(github('42', 'icedlee337')))).toMatch(/lee is archived, so it can't sign in/);
 });
 
-test('redirect URIs: https, or http only on loopback (any port there); never an app scheme, javascript:, data:, a fragment or credentials', () => {
+test('redirect URIs: https, or http only on loopback (any port there); never another app\'s scheme, javascript:, data:, a fragment or credentials', () => {
   for (const ok of ['https://app.example.com/cb', 'https://xn--bcher-kva.example/cb', 'https://203.0.113.9/cb', 'https://[2001:db8::1]/cb', 'http://127.0.0.1:33418/callback', 'http://localhost/cb', 'http://[::1]:8080/cb']) expect([ok, validRedirectUri(ok)]).toStrictEqual([ok, true]);
   for (const bad of ['http://evil.example/cb', 'javascript:alert(1)', 'data:text/html,x', 'file:///etc/passwd', 'https://a.example/cb#x', 'https://a.example/cb#', 'https://u:p@a.example/cb',
     'http://u@127.0.0.1/cb', 'http://@127.0.0.1/cb', 'myapp:/cb', 'com.example.app:/oauth', 'not a url',
@@ -108,6 +108,51 @@ test('redirect URIs: https, or http only on loopback (any port there); never an 
   // Only the loopback port may vary: never a fragment or credentials (OAuth 2.1 §2.3).
   expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://127.0.0.1:9/cb#x')).toBe(false);
   expect(redirectUriMatches(['http://127.0.0.1/cb'], 'http://u:p@127.0.0.1:9/cb')).toBe(false);
+});
+
+test('konnect\'s own app\'s redirect URIs: exactly <scheme>:/oauth on its three named schemes, matched as strings; no look-alike, other form, case, query, fragment or host', async () => {
+  const native = ['com.konjir.konnect:/oauth', 'com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth'];
+  expect(NATIVE_REDIRECT_URIS).toStrictEqual(native);
+  for (const ok of native) {
+    expect([ok, validRedirectUri(ok), nativeRedirect(ok), redirectUriMatches([ok], ok)]).toStrictEqual([ok, true, true, true]);
+  }
+  for (const bad of [
+    // Look-alike schemes: a suffix, a longer name, another variant, a prefix of one.
+    'com.konjir.konnect.evil:/oauth', 'com.konjir.konnectx:/oauth', 'com.konjir.konnect.devx:/oauth', 'com.konjir:/oauth', 'konnect:/oauth', 'com.konjir.konnect-dev:/oauth',
+    'org.konjir.konnect:/oauth', 'xcom.konjir.konnect:/oauth', ' com.konjir.konnect:/oauth', 'com.konjir.konnect:/oauth ',
+    // Another case: matched as written, as registered.
+    'COM.KONJIR.KONNECT:/oauth', 'Com.Konjir.Konnect:/oauth', 'com.konjir.konnect:/OAUTH',
+    // Other forms: an authority, empty or not, a host, another path.
+    'com.konjir.konnect://oauth', 'com.konjir.konnect:///oauth', 'com.konjir.konnect://evil.com/oauth', 'com.konjir.konnect://u@evil.com/oauth',
+    'com.konjir.konnect:oauth', 'com.konjir.konnect:/oauth/', 'com.konjir.konnect:/oauth/x', 'com.konjir.konnect:/oauth2', 'com.konjir.konnect:/', 'com.konjir.konnect:',
+    'com.konjir.konnect:/./oauth', 'com.konjir.konnect:/x/../oauth', 'com.konjir.konnect:/%6Fauth',
+    // A query, a fragment (even empty), smuggled characters.
+    'com.konjir.konnect:/oauth?x=1', 'com.konjir.konnect:/oauth?', 'com.konjir.konnect:/oauth#x', 'com.konjir.konnect:/oauth#', 'com.konjir.konnect:/oauth\n', 'com.konjir.konnect:/oauth%00',
+  ]) {
+    expect([bad, validRedirectUri(bad), nativeRedirect(bad)]).toStrictEqual([bad, false, false]);
+    // Registered beside the real ones, a look-alike given at authorization is never taken for one.
+    expect([bad, redirectUriMatches(native, bad)]).toStrictEqual([bad, false]);
+  }
+  // One variant's redirect never stands in for another's.
+  expect(redirectUriMatches(['com.konjir.konnect:/oauth'], 'com.konjir.konnect.dev:/oauth')).toBe(false);
+  // Registration takes them, alone or beside others, and refuses a look-alike, naming the ones it takes.
+  const kolab = await openKolab();
+  expect((await kolab.registerClient({ redirectUris: native })).redirectUris).toStrictEqual(native);
+  expect((await kolab.registerClient({ redirectUris: ['com.konjir.konnect:/oauth', 'https://app.example/cb'] })).redirectUris).toHaveLength(2);
+  const e = await kolab.registerClient({ redirectUris: ['com.konjir.konnect.evil:/oauth'] }).catch((x: unknown) => x);
+  expect(e).toBeInstanceOf(OAuthGrantError);
+  expect((e as OAuthGrantError).message).toBe('com.konjir.konnect.evil:/oauth isn\'t a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials; the only app scheme is konnect\'s own, com.konjir.konnect:/oauth, com.konjir.konnect.dev:/oauth, com.konjir.konnect.preview:/oauth');
+});
+
+test('a client is on the person\'s own device when every redirect URI is loopback, or every one is konnect\'s own app\'s; never a mix', () => {
+  expect(onPersonsDevice(['http://127.0.0.1:9/cb', 'http://[::1]:9/cb'])).toBe(true);
+  expect(onPersonsDevice(['com.konjir.konnect:/oauth'])).toBe(true);
+  expect(onPersonsDevice(['com.konjir.konnect:/oauth', 'com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth'])).toBe(true);
+  for (const mixed of [
+    ['com.konjir.konnect:/oauth', 'https://app.example/cb'], ['https://app.example/cb', 'com.konjir.konnect:/oauth'],
+    ['com.konjir.konnect:/oauth', 'http://127.0.0.1:9/cb'], ['http://127.0.0.1:9/cb', 'https://app.example/cb'],
+    ['https://app.example/cb'], ['http://localhost:9/cb'], ['com.konjir.konnect.evil:/oauth'], [],
+  ]) expect([mixed, onPersonsDevice(mixed)]).toStrictEqual([mixed, false]);
 });
 
 test('an access token is a session token that expires; refreshing rotates both tokens and keeps the session, its id, kolab and role', async () => {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Response } from 'express';
-import { setupDigest, type SetupPlan, type TeamIntent, type TeamPlan } from '@konjir/engine';
+import { nativeRedirect, setupDigest, type SetupPlan, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { escapeHtml, standalonePage, standalonePageCss } from '@konjir/brand';
 import type { Access, InvitePreview, PendingInvitation, Role } from '@konjir/types';
 import { worded, type Wording } from '../wording.js';
@@ -42,9 +42,12 @@ const csp = (formTargets: string[]) =>
  * source can't name: loopback http, `http://[::1]:<port>`, or https, `https://[2001:db8::1]/…`
  * (registration takes either). Then the scheme alone, `http:` or `https:` (CSP3 lets `http:` match
  * https too). That is broader, but the page's only form posts to Kolab, and Kolab's 303 goes only
- * to the sign-in's own registered redirect URI. Anything else, none.
+ * to the sign-in's own registered redirect URI. Or it is one of konnect's own app's
+ * (nativeRedirect), which has no origin: then its scheme, `com.konjir.konnect:` say, which matches
+ * that scheme alone. Anything else, none.
  */
 export function formActionSource(redirectUri: string): string | undefined {
+  if (nativeRedirect(redirectUri)) return redirectUri.slice(0, redirectUri.indexOf(':') + 1);
   let u: URL;
   try { u = new URL(redirectUri); } catch { return undefined; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined;
@@ -303,11 +306,13 @@ interface PersonView {
   csrf: string;
   client: string;
   redirect: string;
+  /** The redirect is konnect's own app's (nativeRedirect), on a phone as likely as a computer: the page says "this device". */
+  native?: boolean;
   person: string; login: string; provider: string; created: boolean;
   /** The person is a Konjir admin: the app works as them, with every admin verb (D111), and the page says so. */
   konjirAdmin?: boolean;
   error?: string;
-  /** Why it can't be allowed at all (a scope that names its kolab badly, an app not on this computer): then only Deny. */
+  /** Why it can't be allowed at all (a scope that names its kolab badly, an app not on this device): then only Deny. */
   refused?: string;
 }
 
@@ -329,7 +334,7 @@ export interface TeamView extends PersonView {
 const personHidden = (v: PersonView) => `<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">`;
 const personIntro = (v: PersonView) => `<p class="muted">Signed in with ${esc(v.provider)} as <code>${esc(v.login)}</code>. ${v.created ? `Welcome: you are <code>${esc(v.person)}</code> here, new to Kolab.` : `You are <code>${esc(v.person)}</code> here.`}</p>`;
-const personAsks = (v: PersonView) => `<p><strong>${esc(v.client)}</strong> on this computer asks to work in Kolab as you, <code>${esc(v.person)}</code>, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just started it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.${v.konjirAdmin ? ' <strong>You are a Konjir admin: this app can run every admin verb as you.</strong>' : ''}</p>`;
+const personAsks = (v: PersonView) => `<p><strong>${esc(v.client)}</strong> on this ${v.native ? 'device' : 'computer'} asks to work in Kolab as you, <code>${esc(v.person)}</code>, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself: allow it only if you just started it. It gets a token that lasts 15 minutes and renews itself until you sign out or revoke it.${v.konjirAdmin ? ' <strong>You are a Konjir admin: this app can run every admin verb as you.</strong>' : ''}</p>`;
 const denyOnly = (v: PersonView, why: string) => `<h1>This sign-in can't be allowed</h1>
 ${personIntro(v)}
 <form class="card" method="post" action="/oauth/consent">

@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
+import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, nativeRedirect, onPersonsDevice, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
@@ -534,15 +534,15 @@ export class OAuthController {
 
   /**
    * Why a person's own sign-in that leaves its kolab to the page (personScope) can't be allowed, or
-   * nothing when it can: a scope that names it badly, a client that isn't on the person's own machine
-   * (every redirect URI loopback, as setup's), or, for `team:<name>`, what teamPlan refuses. With the
-   * scope, and a team's plan, for the page.
+   * nothing when it can: a scope that names it badly, a client that isn't on the person's own device
+   * (onPersonsDevice: every redirect URI loopback, as setup's, or every one konnect's own app's), or,
+   * for `team:<name>`, what teamPlan refuses. With the scope, and a team's plan, for the page.
    */
   private async personCheck(person: string, scope: string | null, client: { redirectUris: string[] } | undefined): Promise<{ refused?: string; scope?: { choose: true } | { team: string; intent?: TeamIntent }; plan?: TeamPlan }> {
     const asked = personScope(scope);
     if (!asked) return { refused: 'this sign-in doesn\'t leave its kolab to this page' };
     if ('error' in asked) return { refused: `the app asked for a sign-in Kolab can't do: ${asked.error}. Start it again` };
-    if (!client || !client.redirectUris.every(onLoopback)) return { refused: 'a sign-in that leaves its kolab to this page is only for an app on your own computer, such as konnect, and this one receives its answer elsewhere' };
+    if (!client || !onPersonsDevice(client.redirectUris)) return { refused: 'a sign-in that leaves its kolab to this page is only for an app on your own computer or phone, such as konnect, and this one receives its answer elsewhere' };
     if ('choose' in asked) return { scope: asked };
     const plan = await this.kolab.teamPlan(person, asked.team, asked.intent);
     return { scope: asked, plan, ...(plan.kind === 'refused' ? { refused: plan.refusedForApp } : {}) };
@@ -555,7 +555,7 @@ export class OAuthController {
     const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
     const check = await this.personCheck(person, pending.scope, client);
     const base = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: nativeRedirect(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
       konjirAdmin: await this.kolab.isAdmin(person), error: extra.error,
     };
     const target = formActionSource(pending.redirectUri);

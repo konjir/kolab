@@ -246,8 +246,9 @@ export const PERSON_SIGN_IN_ROLE: Role = 'product';
  *   makes: a taken name is refused with a free one suggested, even one the person is a member of.
  *   An intent only ever narrows what the sign-in may do (TeamIntent).
  * Either way the sign-in is the person's own, never an agent's, in PERSON_SIGN_IN_ROLE, and only for
- * an app on the person's own computer (every redirect URI loopback). Undefined for a scope with
- * neither word; `error` for one that names its kolab badly or mixes them with another sign-in's words.
+ * an app on the person's own device (onPersonsDevice: every redirect URI loopback, or every one
+ * konnect's own app's). Undefined for a scope with neither word; `error` for one that names its
+ * kolab badly or mixes them with another sign-in's words.
  */
 export function personScope(scope: string | null | undefined): { choose: true } | { team: string; intent?: TeamIntent } | { error: string } | undefined {
   const words = (scope ?? '').split(/\s+/).filter(Boolean);
@@ -302,6 +303,36 @@ export function loopbackRedirect(uri: string): boolean {
     const u = new URL(uri);
     return u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === '[::1]');
   } catch { return false; }
+}
+
+/**
+ * The private-use URI schemes of konnect's own iOS and Android app (RFC 8252 §7.1), one per build
+ * variant: reverse-DNS names of konjir.com, Konjir's own domain. Named one by one: no other app's
+ * scheme is ever a redirect URI, and no scheme is allowed for its shape.
+ */
+export const NATIVE_REDIRECT_SCHEMES = ['com.konjir.konnect', 'com.konjir.konnect.dev', 'com.konjir.konnect.preview'] as const;
+
+/**
+ * The one redirect URI each of those schemes may be, `<scheme>:/oauth` (RFC 8252 §7.1's form: a
+ * single slash, no authority), as the app passes it to expo-auth-session's makeRedirectUri as
+ * `native`. Matched as a string, exactly: no other path, no query, no fragment, no `//host`, and
+ * not in another case.
+ */
+export const NATIVE_REDIRECT_URIS: readonly string[] = NATIVE_REDIRECT_SCHEMES.map((s) => `${s}:/oauth`);
+
+/** Whether a redirect URI is konnect's own app's, on the person's own phone or computer: exactly one of NATIVE_REDIRECT_URIS. */
+export function nativeRedirect(uri: string): boolean {
+  return typeof uri === 'string' && NATIVE_REDIRECT_URIS.includes(uri);
+}
+
+/**
+ * Whether a client's redirect URIs are all on the person's own device, so a sign-in that signs the
+ * person in on one button (personScope) may answer there: every one loopback, as konnect's CLI's
+ * are, or every one konnect's own app's (nativeRedirect). A client mixing either with anything
+ * else, or the two together, is not.
+ */
+export function onPersonsDevice(redirectUris: readonly string[]): boolean {
+  return redirectUris.length > 0 && (redirectUris.every(loopbackRedirect) || redirectUris.every(nativeRedirect));
 }
 
 /**
@@ -384,10 +415,13 @@ export function validRedirectHost(host: string): boolean {
 
 /**
  * Whether Kolab may send codes to `uri` (OAuth 2.1 §2.3.1, RFC 8252): an https URL, or http on a
- * loopback address, on a host validRedirectHost allows. Never a fragment or credentials (written as `#`, `user@` or `user:pass@`, even
- * empty), and no other scheme: no app's own scheme, and never javascript:, data:, file: and the like.
+ * loopback address, on a host validRedirectHost allows, or exactly one of konnect's own app's
+ * (NATIVE_REDIRECT_URIS). Never a fragment or credentials (written as `#`, `user@` or `user:pass@`,
+ * even empty), and no other scheme: no other app's own scheme, and never javascript:, data:, file:
+ * and the like.
  */
 export function validRedirectUri(uri: string): boolean {
+  if (nativeRedirect(uri)) return true;
   if (typeof uri !== 'string' || uri.length > 2000 || uri.includes('#')) return false;
   let u: URL;
   try { u = new URL(uri); } catch { return false; }
@@ -2226,7 +2260,7 @@ export class Kolab {
       if (validRedirectUri(u)) continue;
       const shown = u.slice(0, 200);
       if (trailingDotHost(u)) throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: its host ends in a dot, which Kolab doesn't allow (the consent page couldn't name it), so write the host without the trailing dot`);
-      throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials`);
+      throw new OAuthGrantError('invalid_redirect_uri', `${shown} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials; the only app scheme is konnect's own, ${NATIVE_REDIRECT_URIS.join(', ')}`);
     }
     const name = (c.name ?? '').trim().slice(0, 200) || 'An MCP client';
     const id = `kjcl_${randomBytes(18).toString('base64url')}`;
@@ -3860,8 +3894,9 @@ export class Kolab {
   /**
    * The person allows a sign-in that leaves its kolab to the page (personScope; POST /oauth/consent,
    * with the form's `csrf` token), for themselves, never an agent, in PERSON_SIGN_IN_ROLE. Only for a
-   * registered client on the person's own computer (every redirect URI loopback). The scope decides
-   * what the form may choose, and nothing posted widens it:
+   * registered client on the person's own device (onPersonsDevice: every redirect URI loopback, or
+   * every one konnect's own app's). The scope decides what the form may choose, and nothing posted
+   * widens it:
    * - `choose:kolab`: `{ kolab }`, one they are a member of (by their own access, not only because
    *   it is public), or `{ accept }`, an invitation waiting for them, accepted (acceptInvitation) in
    *   the transaction that issues the code.
@@ -3893,8 +3928,8 @@ export class Kolab {
     if (!scope) throw new AccessError('this sign-in doesn\'t leave its kolab to the page');
     if ('error' in scope) throw new AccessError(`this sign-in can't be allowed: ${scope.error}`);
     const client = await this.oauthClient(req.client_id);
-    if (!client || !client.redirectUris.every(loopbackRedirect)) {
-      throw new AccessError('a sign-in that leaves its kolab to the page is only for an app on your own computer, and this one receives its answer elsewhere');
+    if (!client || !onPersonsDevice(client.redirectUris)) {
+      throw new AccessError('a sign-in that leaves its kolab to the page is only for an app on your own computer or phone, and this one receives its answer elsewhere');
     }
     const person = req.actor_id;
     const p = await this.findActor(person);
