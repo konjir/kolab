@@ -10303,6 +10303,40 @@ export class Kolab {
   }
 
   /**
+   * Marks read every message `with` (by name, or an agent as `<owner>/<label>`) sent the session's
+   * actor in its kolab, up to and including the message `upTo` (konjir_mark_messages_read): "read
+   * up to here", as a client scrolls a conversation. `upTo` must be a message between the two of
+   * them there, either way, so a client may name the newest message it shows, its own included;
+   * any other id is refused. Only messages to the caller get receipts, and one already read keeps
+   * its own. `marked` is how many were marked now. The caller's other sessions are signalled when
+   * any were. An archived kolab changes no more, and is refused.
+   */
+  async markMessagesRead(sessionId: string, given: string, upTo: string): Promise<{ with: string; up_to: string; marked: number }> {
+    if (typeof given !== 'string' || !given.trim()) throw new LimitError('name the member whose messages to mark read: with=<member>');
+    if (typeof upTo !== 'string' || !upTo) throw new LimitError('up_to is the id of a message between you and them');
+    const s = await this.session(sessionId);
+    const other = memberName(given);
+    return this.inTransaction(async (tx, signal) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+      await tx.exec('set local role kj_system');
+      // One refusal whether the id is unknown, another kolab's, or between other members.
+      const between = (await tx.query(
+        `select 1 from message where id = $1 and kolab_id = $2 and ((sent_by = $3 and sent_to = $4) or (sent_by = $4 and sent_to = $3))`,
+        [upTo, s.kolab, s.actor_id, other])).rows.length > 0;
+      if (!between) throw new LimitError(`up_to names no message between you and ${other} in kolab ${s.kolab}: give the id of one, as konjir_list_messages with=${given.trim()} lists them`);
+      const marked = (await tx.query(
+        `insert into message_receipt(message_id, kolab_id, actor_id)
+         select m.id, m.kolab_id, m.sent_to from message m
+          where m.kolab_id = $1 and m.sent_to = $2 and m.sent_by = $3 and m.id <= $4
+            and not exists (select 1 from message_receipt r where r.message_id = m.id)
+         on conflict (message_id) do nothing returning message_id`, [s.kolab, s.actor_id, other, upTo])).rows.length;
+      // The actor's other sessions hear that their answers hold fewer unread.
+      if (marked) await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
+      return { with: other, up_to: upTo, marked };
+    });
+  }
+
+  /**
    * One page of the session's actor's messages in its kolab, newest first (konjir_list_messages):
    * the ones sent to it, or with `sent` the ones it sent; with `with`, only those exchanged with
    * that member, both ways (by name, or an agent as `<owner>/<label>`): a direct conversation's
@@ -10668,6 +10702,39 @@ export class Kolab {
         await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
       }
       return { channel: c.name, messages: rows.map(channelMessageOf), more: Math.min(theirs.length - rows.length, UNREAD_COUNT_CEILING) };
+    });
+  }
+
+  /**
+   * Moves the session's actor's read position in one channel of its kolab forward to the message
+   * `upTo` (konjir_mark_channel_read): "read up to here", as a client scrolls. Never back: a
+   * position at or past it stays where it is (`moved` false). `upTo` must be a message of that
+   * channel; any other id is refused. It reads no message, and needs the caller to be a member, as
+   * reading a channel does. The caller's other sessions are signalled when it moved. An archived
+   * kolab changes no more, and is refused.
+   */
+  async markChannelRead(sessionId: string, name: string, upTo: string): Promise<{ channel: string; read_to: string; moved: boolean }> {
+    if (typeof upTo !== 'string' || !upTo) throw new LimitError('up_to is the id of a message of the channel');
+    const s = await this.session(sessionId);
+    return this.inTransaction(async (tx, signal) => {
+      if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+      await this.channelMembers(tx, s);
+      const c = await this.channelIn(tx, s.kolab, name);
+      if (!(await tx.query(`select 1 from channel_message where id = $1 and channel_id = $2`, [upTo, c.id])).rows.length) {
+        throw new LimitError(`up_to names no message of #${c.name} in kolab ${s.kolab}: give the id of one, as konjir_list_channel_messages lists them`);
+      }
+      await tx.exec('set local role kj_system');
+      // Forward only, under the row's lock: of two marks at once, the later id wins, whichever commits last.
+      const moved = (await tx.query(
+        `insert into channel_read(channel_id, kolab_id, actor_id, read_to) values ($1, $2, $3, $4)
+         on conflict (channel_id, actor_id) do update set read_to = excluded.read_to, read_at = clock_timestamp()
+           where channel_read.read_to is null or channel_read.read_to < excluded.read_to
+         returning read_to`, [c.id, s.kolab, s.actor_id, upTo])).rows.length > 0;
+      const at = moved ? upTo : (await tx.query<{ read_to: string }>(
+        `select read_to from channel_read where channel_id = $1 and actor_id = $2`, [c.id, s.actor_id])).rows[0].read_to;
+      // The actor's other sessions hear that their answers hold fewer unread.
+      if (moved) await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
+      return { channel: c.name, read_to: at, moved };
     });
   }
 

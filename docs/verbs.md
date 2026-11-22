@@ -77,6 +77,8 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`list_stale`](#list_stale) | List open dirty marks: what is dirty, why, and the next step. |
 | [`list_work`](#list_work) | The board: your kolab's work packages (a binding's elements with a work field; its decisions are never work), binding by binding, in natural ID order (W1.2 before W1.10), each with its state (todo, in_progress, in_review, done), its assignee and lease_until while In progress, whether it is a milestone, its size, why it is blocked (a work package it depends on that isn't Done, or an open question or case file on it or on an element it serves or relies on), what a milestone not Done waits on (waiting: its members that aren't Done, as blocked names them), at_risk and its revisit (repository, commits, files, pull requests) while an open mark on it says something it serves or relies on changed (a Done package stays Done, PLN10), ready: To do, not blocked, not a milestone, and your session may write the technical layer, and its start and finish, each {at, kind}: actual, from its events, or a forecast with its basis (the size, how many finished durations its median was taken over, and whether from the binding or the kolab), or no_forecast with the reason. |
 | [`make_channel`](#make_channel) | Make a channel in your kolab, open to every member, and follow it. |
+| [`mark_channel_read`](#mark_channel_read) | Move your read position in a channel of your kolab forward to the message up_to, without reading anything: "read up to here", as an app does once you have seen them. |
+| [`mark_messages_read`](#mark_messages_read) | Mark read the messages a member of your kolab sent you, up to and including the message up_to, without reading them: "read up to here", as an app does once you have seen them. |
 | [`open_case`](#open_case) | Open a case file: a disagreement about one element that you and the other side could not settle between yourselves, such as a requirement that code reality says can't be met as written. |
 | [`pull_work`](#pull_work) | Pull work: Kolab gives you the first ready work package of your kolab's binding in natural ID order (never a decision, nor a milestone), makes it In progress for you with a lease (30 minutes unless the kolab sets another), and returns its context and the git trailer to put in each commit for it (Konjir-Work: kj:<kolab>/<binding>#<id>). |
 | [`read_case`](#read_case) | Read one case file of your kolab: the element in dispute, the question, each position with its evidence and verdict, and its ruling once given. |
@@ -1080,6 +1082,32 @@ Make a channel in your kolab, open to every member, and follow it. Others follow
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `channel` | `string` | yes | Its name: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or a digit, unique in your kolab (a # before it is dropped) |
+
+## mark_channel_read
+
+```
+kolab mark_channel_read channel=<string> up_to=<string>
+```
+
+Move your read position in a channel of your kolab forward to the message up_to, without reading anything: "read up to here", as an app does once you have seen them. Never back: a position at or past it stays (moved: false). up_to must be a message of that channel; any other id is refused. Returns { channel, read_to, moved }: read_to is your position now. Your other sessions hear that your answers changed. For members only.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel` | `string` | yes | The channel, by name, with or without its #: general, or one konjir_list_channels lists |
+| `up_to` | `string` | yes | The id of a message of that channel: your read position moves to it, never back |
+
+## mark_messages_read
+
+```
+kolab mark_messages_read with=<string> up_to=<string>
+```
+
+Mark read the messages a member of your kolab sent you, up to and including the message up_to, without reading them: "read up to here", as an app does once you have seen them. up_to is the id of a message between you and them, either way, so it may be the newest one shown, yours included; any other id is refused. Only messages to you are marked; one read already keeps when it was read. Returns { with, up_to, marked }: marked is how many were marked now. Your other sessions hear that your answers changed.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `with` | `string` | yes | The member whose messages to you to mark read: by name, or an agent as <owner>/<label> |
+| `up_to` | `string` | yes | The id of a message between you and them, either way: theirs to you up to and including it are marked read |
 
 ## open_case
 
