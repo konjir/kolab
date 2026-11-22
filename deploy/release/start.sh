@@ -35,5 +35,16 @@ if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJI
   fi
   unset CLI_NPM_SPEC
 fi
+# Expo's access token, for push notifications to konnect's phone app (S4): the SecureString
+# /konjir/<name>/expo-access-token beside the admin token, which Terraform makes as `unset` and Lee
+# fills in. Unset, unreadable or missing, Kolab runs with push off and says so in one line of its
+# own. Like the GitHub app's, it is read here, not in the boot script. The token is never printed.
+if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJIR_EXPO_ACCESS_TOKEN:-}" ]; then
+  if EXPO_TOKEN=$(aws ssm get-parameter --region "$AWS_REGION" --name "${KONJIR_TOKEN_PARAM%/admin-token}/expo-access-token" \
+      --with-decryption --query Parameter.Value --output text 2>/dev/null) && [ -n "$EXPO_TOKEN" ] && [ "$EXPO_TOKEN" != unset ]; then
+    export KONJIR_EXPO_ACCESS_TOKEN="$EXPO_TOKEN"
+  fi
+  unset EXPO_TOKEN
+fi
 # Plain node on the output install.sh compiled: each package's default export is its dist/.
 exec node apps/cli/dist/main.js serve "$@" --quiet

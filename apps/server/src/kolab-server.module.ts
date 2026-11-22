@@ -13,7 +13,8 @@ import { McpClients } from './mcp-clients.js';
 import { McpWording } from './wording.js';
 import { AgentStates } from './agent-states.js';
 import { InstructionsAccess, OperatingInstructions, ReviewerInstructions, SERVER_INSTRUCTIONS } from './instructions.js';
-import { KOLAB, MCP_ROUTE, OAUTH_OPTIONS, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type ServerOptions } from './tokens.js';
+import { KOLAB, MCP_ROUTE, OAUTH_OPTIONS, PUSH_OPTIONS, SERVER_INFO, SERVER_OPTIONS, WEB_OPTIONS, type PushOptions, type ServerOptions } from './tokens.js';
+import { PushNotifications, PushTools } from './push.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { OAuthController } from './oauth/oauth.controller.js';
 import { WebPeople, WebRefresher, WebSessionGuard } from './web/auth.js';
@@ -39,6 +40,8 @@ export interface KolabServerModuleOptions extends ServerOptions {
   webTokenSignIn?: boolean;
   /** The published kolab CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
   cliNpmSpec?: string;
+  /** Push notifications to konnect's app (S4): off without an Expo access token. */
+  push?: PushOptions;
 }
 
 /**
@@ -65,7 +68,7 @@ export class KolabServerModule implements NestModule {
   }
 
   static register(options: KolabServerModuleOptions): DynamicModule {
-    const { kolab, publicHost, webVersionsPollMs, identity, webTokenSignIn, cliNpmSpec, ...serverOptions } = options;
+    const { kolab, publicHost, webVersionsPollMs, identity, webTokenSignIn, cliNpmSpec, push, ...serverOptions } = options;
     if (cliNpmSpec !== undefined && !isPinnedNpmSpec(cliNpmSpec)) throw new Error(`KONJIR_CLI_NPM_SPEC is a package pinned to an exact version, such as @konjir/kolab@1.2.3, not ${JSON.stringify(cliNpmSpec)}`);
     const handIssuedTokens = serverOptions.handIssuedTokens !== false;
     return {
@@ -97,6 +100,7 @@ export class KolabServerModule implements NestModule {
         { provide: KOLAB, useValue: kolab },
         { provide: SERVER_OPTIONS, useValue: { ...serverOptions, handIssuedTokens } },
         { provide: OAUTH_OPTIONS, useValue: { identity, publicHost } },
+        { provide: PUSH_OPTIONS, useValue: push ?? { accessToken: null, preview: true } },
         {
           provide: WEB_OPTIONS,
           useValue: {
@@ -112,6 +116,8 @@ export class KolabServerModule implements NestModule {
         KonjirAuth,
         AgentTools,
         MemberTools,
+        PushTools,
+        PushNotifications,
         AdminTools,
         BreakGlassAudit,
         TenancyTools,

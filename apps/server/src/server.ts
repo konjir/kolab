@@ -2,7 +2,7 @@ import type { Server as HttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import { Kolab } from '@konjir/engine';
-import type { Logger } from '@konjir/log';
+import { log, type Logger } from '@konjir/log';
 import { JsonNestLogger, serverErrors } from './json-logger.js';
 import { MAX_REQUEST_BYTES, MAX_SMALL_REQUEST_BYTES, REFRESH_HEADER } from '@konjir/types';
 import { json, urlencoded, type NextFunction, type Request, type Response } from 'express';
@@ -11,6 +11,8 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { KolabServerModule } from './kolab-server.module.js';
 import type { IdentityProvider } from './oauth/identity.js';
 import { defaultWebRoot, webApp } from './web/static.js';
+import { pushOptionsFromEnv } from './push.js';
+import type { PushOptions } from './tokens.js';
 
 export { INSTRUCTIONS, REVIEWER_INSTRUCTIONS } from './instructions.js';
 export { COMMANDS as WORDED_COMMANDS } from './wording.js';
@@ -20,6 +22,8 @@ export { isPinnedNpmSpec } from './kolab-server.module.js';
 export { log } from '@konjir/log';
 export { JsonNestLogger, serverErrors } from './json-logger.js';
 export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
+export { EXPO_PUSH_URL, expoSender, pushOptionsFromEnv } from './push.js';
+export type { PushOptions } from './tokens.js';
 
 export interface KonjirServer { url: string; kolab: Kolab; close(): Promise<void> }
 
@@ -55,6 +59,11 @@ export async function startServer(opts: {
   agentStateClock?: () => number;
   /** Where each MCP client that connects is logged (event mcp_client): `kolab serve` gives Kolab's logger; none by default. */
   clientLog?: Logger;
+  /**
+   * Push notifications to konnect's app (S4): by default from the environment (pushOptionsFromEnv:
+   * KONJIR_EXPO_ACCESS_TOKEN and KONJIR_PUSH_PREVIEW), off without a token. Tests give their own fetch.
+   */
+  push?: PushOptions;
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
@@ -69,6 +78,8 @@ export async function startServer(opts: {
       kolab, adminToken: opts.adminToken, publicHost: opts.publicHost, webVersionsPollMs: opts.webVersionsPollMs,
       identity: opts.identity, webTokenSignIn: opts.webTokenSignIn, handIssuedTokens: opts.handIssuedTokens,
       cliNpmSpec: opts.cliNpmSpec, agentStateClock: opts.agentStateClock, clientLog: opts.clientLog,
+      // Push off is said in Kolab's own log, by a server that logs (kolab serve gives a clientLog), never by a test's.
+      push: opts.push ?? { ...pushOptionsFromEnv(), ...(opts.clientLog ? { log } : {}) },
     }),
     // Nest's lines, and the server's own Loggers', as Kolab's JSON lines, warn and error only.
     { logger: new JsonNestLogger(), bodyParser: false },

@@ -184,6 +184,28 @@ export const MAX_CHANNELS = 200;
  * read a long channel costs no more to serve than one who has read most of it.
  */
 export const UNREAD_COUNT_CEILING = 1000;
+
+// ---- push notifications to konnect's phone app (migration 0058) ----
+
+/** The platforms a device registers for push from (push_device_platform_check). */
+export const PUSH_PLATFORMS = ['ios', 'android'] as const;
+export type PushPlatform = typeof PUSH_PLATFORMS[number];
+/**
+ * What a person is told of in a team (notification_pref_level_check): `all`, every direct message
+ * and every message in a channel they follow or that mentions them; `mentions_and_dms`, only
+ * direct messages and mentions (the default); `none`, nothing.
+ */
+export const NOTIFICATION_LEVELS = ['all', 'mentions_and_dms', 'none'] as const;
+export type NotificationLevel = typeof NOTIFICATION_LEVELS[number];
+export const DEFAULT_NOTIFICATION_LEVEL: NotificationLevel = 'mentions_and_dms';
+/** An Expo push token, as Expo's SDK gives an app one (push_device_token_check). */
+export const EXPO_PUSH_TOKEN = /^Expo(nent)?PushToken\[[A-Za-z0-9_-]{1,200}\]$/;
+/** Devices one person keeps registered, across their teams: registering one more forgets the one least recently seen. */
+export const MAX_PUSH_DEVICES = 10;
+/** How much of a message a push shows, in characters, when previews are on. */
+export const PUSH_PREVIEW_CHARS = 100;
+/** The most messages one request to Expo's push service carries, as Expo allows. */
+export const PUSH_BATCH = 100;
 /**
  * A lease's name (migration 0054): 1 to 200 letters, digits and `. _ / @ : -`, so a test database,
  * a port or a file's path (`testdb`, `port-3000`, `apps/server/src/x.ts`); compared exactly as given.

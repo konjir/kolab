@@ -106,6 +106,8 @@ module "iam" {
   log_group_arn          = module.monitoring.log_group_arn
   metrics_namespace      = module.monitoring.metrics_namespace
 
+  expo_access_token_param_arn = module.secrets.expo_access_token_param_arn
+
   permissions_boundary_arn = "${local.boundary_prefix}-instance-boundary"
 }
 

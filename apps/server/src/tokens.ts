@@ -40,6 +40,22 @@ export interface OAuthOptions {
   publicHost?: string;
 }
 
+export const PUSH_OPTIONS = Symbol('PUSH_OPTIONS');
+
+/** Push notifications to konnect's phone app through Expo's push service (S4). */
+export interface PushOptions {
+  /** Expo's access token. Null: push is off, and nothing is queued. */
+  accessToken: string | null;
+  /** Whether a push carries the first words of its message (KONJIR_PUSH_PREVIEW); false sends only who and where. */
+  preview: boolean;
+  /** How to reach Expo: global fetch unless a test gives its own. Tests never reach exp.host. */
+  fetch?: typeof fetch;
+  /** Expo's push API's URL: EXPO_PUSH_URL unless a test gives another. */
+  url?: string;
+  /** Where to say, once at boot, that push is off: Kolab's log for `kolab serve` (startServer, given a clientLog); none by default, so a test's output stays its own. */
+  log?: import('@konjir/log').Logger;
+}
+
 export const WEB_OPTIONS = Symbol('WEB_OPTIONS');
 
 /** The web interface's settings (W3.1). */

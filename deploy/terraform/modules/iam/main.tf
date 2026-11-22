@@ -1,6 +1,6 @@
 # The Kolab instance's role: Systems Manager access (no SSH), and reads of its releases and, by
-# name, its admin token, database URL and CLI npm spec, and the GitHub OAuth app's client id and
-# the secret Lee puts by hand (D55). The SecureStrings use the AWS-managed SSM key, whose key policy
+# name, its admin token, database URL and CLI npm spec, the GitHub OAuth app's client id and the
+# secret Lee puts by hand (D55), and Expo's access token for push (S4). The SecureStrings use the AWS-managed SSM key, whose key policy
 # lets the account's principals decrypt through SSM, so no KMS statement is needed.
 # The CloudWatch agent (P11, D68) may write Kolab's log group and put metrics in its one namespace,
 # and nothing more: no other log group, no namespace of anyone else's.
@@ -16,6 +16,12 @@ variable "github_param_arns" {
 }
 
 variable "cli_npm_spec_param_arn" {
+  type    = string
+  default = ""
+}
+
+# Expo's access token for push notifications (S4), which Terraform makes with a placeholder and Lee fills in.
+variable "expo_access_token_param_arn" {
   type    = string
   default = ""
 }
@@ -65,7 +71,7 @@ data "aws_iam_policy_document" "kolab" {
   statement {
     sid       = "ReadAdminTokenAndDatabaseUrl"
     actions   = ["ssm:GetParameter"]
-    resources = concat([var.admin_token_param_arn, var.database_url_param_arn], var.github_param_arns, compact([var.cli_npm_spec_param_arn]))
+    resources = concat([var.admin_token_param_arn, var.database_url_param_arn], var.github_param_arns, compact([var.cli_npm_spec_param_arn, var.expo_access_token_param_arn]))
   }
   # The CloudWatch agent ships the journal's copies into streams of Kolab's log group. Terraform
   # creates the group and sets its retention, so the agent may neither.
