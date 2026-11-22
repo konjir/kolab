@@ -232,7 +232,7 @@ test('a refresh token is used once: again before its successor is used, for up t
   await people(kolab, 'alice');
   const { actor } = await kolab.signInWith(github('8', 'ann'));
   await kolab.grant('test', actor, 'write');
-  expect(kolab.oauth.refreshRetryS).toBe(600);
+  expect(kolab.oauth.refreshRetryS).toBe(120);
   const signIn = async () => {
     const a = await authorized(kolab, actor, { as: { kind: 'self' }, kolab: 'test', role: 'engineer' });
     return { a, t: await a.tokens() };
@@ -250,8 +250,8 @@ test('a refresh token is used once: again before its successor is used, for up t
   expect([again.accessToken, again.refreshToken, again.session, again.scope]).toStrictEqual([r1.accessToken, r1.refreshToken, r1.session, r1.scope]);
   expect(again.expiresIn).toBeGreaterThan(0);
   expect(again.expiresIn).toBeLessThanOrEqual(900);
-  // A phone offline for minutes, the successor still unused: the same answer, up to the bound.
-  await usedAgo(t.refreshToken, 9 * 60);
+  // A phone whose network dropped, the successor still unused: the same answer, up to the bound.
+  await usedAgo(t.refreshToken, 100);
   const later = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
   expect([later.accessToken, later.refreshToken]).toStrictEqual([r1.accessToken, r1.refreshToken]);
   expect(await kolab.sessionOpen(r1.accessToken)).toBe(true);
@@ -292,13 +292,28 @@ test('a refresh token is used once: again before its successor is used, for up t
   expect(ended).toStrictEqual([t.session]);
   expect(await rejection(kolab.refreshGrant({ refreshToken: r2.refreshToken, clientId: a.client }))).toMatch(/revoked|unknown/);
 
+  // The successor's access token presented in a request: the successor is in use, and a retry of the refresh before it is a replay.
+  const u = await signIn();
+  const u1 = await kolab.refreshGrant({ refreshToken: u.t.refreshToken, clientId: u.a.client });
+  expect((await kolab.refreshGrant({ refreshToken: u.t.refreshToken, clientId: u.a.client })).accessToken).toBe(u1.accessToken);
+  expect(await kolab.liveSession(u1.accessToken)).toMatchObject({ granted: true });
+  expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from oauth_refresh_token where grant_id = (select grant_id from oauth_refresh_token where key = $1) and successor is not null`, [sessionKey(u.t.refreshToken)])).rows[0].n).toBe(0);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: u.t.refreshToken, clientId: u.a.client }))).toMatch(/OAuthGrantError/);
+  expect(await kolab.sessionOpen(u1.accessToken)).toBe(false);
+  // So does any engine call made with it.
+  const w = await signIn();
+  const w1 = await kolab.refreshGrant({ refreshToken: w.t.refreshToken, clientId: w.a.client });
+  await kolab.sessionInfo(w1.accessToken);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: w.t.refreshToken, clientId: w.a.client }))).toMatch(/OAuthGrantError/);
+  expect(await kolab.sessionOpen(w1.accessToken)).toBe(false);
+
   // Past the bound, the successor still unused: a replay too.
   const b = await signIn();
   const b1 = await kolab.refreshGrant({ refreshToken: b.t.refreshToken, clientId: b.a.client });
   await usedAgo(b.t.refreshToken, kolab.oauth.refreshRetryS + 1);
   expect(await rejection(kolab.refreshGrant({ refreshToken: b.t.refreshToken, clientId: b.a.client }))).toMatch(/OAuthGrantError/);
   expect(await kolab.sessionOpen(b1.accessToken)).toBe(false);
-  expect(ended).toStrictEqual([t.session, b.t.session]);
+  expect(ended).toStrictEqual([t.session, u.t.session, w.t.session, b.t.session]);
   expect(await rejection(kolab.refreshGrant({ refreshToken: b1.refreshToken, clientId: b.a.client }))).toMatch(/revoked|unknown/);
 });
 

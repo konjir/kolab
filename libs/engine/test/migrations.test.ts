@@ -3127,7 +3127,10 @@ test('a database at 0056 with messages reaches 0057: two indexes for conversatio
   });
 });
 
-const UNDO_0059 = String.raw`alter table notification_pref drop column agents, drop column agents_stuck_pushed;
+const UNDO_0059 = String.raw`drop index channel_mention_in;
+  drop index channel_message_by;
+  drop index oauth_refresh_token_sealed;
+  alter table notification_pref drop column agents, drop column agents_stuck_pushed;
   drop index channel_message_nonce;
   alter table channel_message drop column nonce;
   drop index message_nonce;
@@ -3158,12 +3161,17 @@ end
 $$;
   delete from kj_migration where version = 58;`;
 
-test('a database at 0058 reaches 0059: a used refresh token keeps its sealed successor, and a sender\'s nonce is unique in its kolab, for messages and channel messages alike', async () => {
+test('a database at 0058 reaches 0059: a used refresh token keeps its sealed successor, a sender\'s nonce is unique in its kolab, for messages and channel messages alike, and notification prefs gain each agent\'s choice', async () => {
   const at = MIGRATIONS.findIndex((x) => x.name === 'retries');
   expect(MIGRATIONS[at].version).toBe(59);
   await withDb(async (db) => {
     await migrate(db);
     await db.exec(UNDO_0059);
+    // A person's prefs from before: kept, and given no agent's choice.
+    await db.exec(`insert into account(id, kind, name, created_by) values ('ann', 'user', 'ann', 'ann')`);
+    await db.exec(`insert into actor(id, name, kind, created_by) values ('ann', 'ann', 'person', 'ann')`);
+    await db.exec(`insert into kolab(id, owner_id, title, visibility, created_by) values ('anns', 'ann', 'anns', 'private', 'ann')`);
+    await db.exec(`insert into notification_pref(kolab_id, actor_id, level) values ('anns', 'ann', 'all')`);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [59] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
@@ -3177,6 +3185,10 @@ test('a database at 0058 reaches 0059: a used refresh token keeps its sealed suc
     ]);
     const idx = (await db.query<{ indexname: string; indexdef: string }>(`select indexname, indexdef from pg_indexes where indexname in ('message_nonce', 'channel_message_nonce') order by indexname`)).rows;
     expect(idx.map((i) => [i.indexname, /UNIQUE/.test(i.indexdef), /nonce IS NOT NULL/.test(i.indexdef)])).toStrictEqual([['channel_message_nonce', true, true], ['message_nonce', true, true]]);
+    expect((await db.query(`select level, agents, agents_stuck_pushed from notification_pref`)).rows).toStrictEqual([{ level: 'all', agents: {}, agents_stuck_pushed: {} }]);
+    for (const [col, bad] of [['agents', `'[]'`], ['agents', `'"stuck"'`], ['agents_stuck_pushed', `'1'`]]) {
+      expect([col, bad, await rejection(db.exec(`update notification_pref set ${col} = ${bad}::jsonb`))]).toStrictEqual([col, bad, expect.stringMatching(/notification_pref_agents(_stuck)?_check/)]);
+    }
   });
 });
 
