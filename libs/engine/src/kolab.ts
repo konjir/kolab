@@ -2054,7 +2054,7 @@ export class Kolab {
               (a.kind = 'person' and s.grant_id is not null and exists (select 1 from konjir_admin k where k.actor_id = s.actor_id)) as admin
          from session s join actor a on a.id = s.actor_id where ${LIVE_SESSION}`, [sessionKey(token)]);
     const row = r.rows[0];
-    if (row?.grant_id) await this.accessUsed(row.grant_id);
+    if (row?.grant_id) await this.accessUsed(row.grant_id, token);
     return row && {
       id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted, job: row.job, actor: row.actor, admin: row.admin,
     };
@@ -2064,10 +2064,17 @@ export class Kolab {
    * A grant's access token was presented, in an authenticated request (liveSession, session): its
    * refresh's successor is in use, so the seals that would answer a retry of the refresh before it
    * (refreshGrant, sameRefresh) are cleared, and a retry after this is a replay. One statement,
-   * through 0059's partial index, that finds nothing on almost every call.
+   * through 0059's partial index, that finds nothing on almost every call, and that clears only
+   * while `token` is still the grant's open session's access token, judged in the same statement:
+   * a request with the access token before a refresh, checked before that refresh committed,
+   * clears nothing that refresh sealed.
    */
-  private async accessUsed(grantId: string) {
-    await this.db.query(`update oauth_refresh_token set successor = null where grant_id = $1 and successor is not null`, [grantId]);
+  private async accessUsed(grantId: string, token: string) {
+    await this.db.query(
+      `update oauth_refresh_token t set successor = null
+        where t.grant_id = $1 and t.successor is not null
+          and exists (select 1 from session s where s.grant_id = $1 and s.token_key = $2 and s.ended_at is null)`,
+      [grantId, sessionKey(token)]);
   }
 
   /**
@@ -2095,7 +2102,7 @@ export class Kolab {
         where ${LIVE_SESSION}`, [sessionKey(token)]);
     if (!r.rows[0]) throw new RoleError('no open session for that token');
     const { grant_id: grantId, ...row } = r.rows[0];
-    if (grantId) await this.accessUsed(grantId);
+    if (grantId) await this.accessUsed(grantId, token);
     const s = { ...row, access: await accessIn(this.db, row.actor_id, row.kolab) };
     // Access is computed on each use, so a session narrows the moment its access (or, for an
     // agent, its owner's) does. One that can no longer reach its kolab at all is ended here, if

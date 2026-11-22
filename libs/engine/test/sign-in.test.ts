@@ -317,6 +317,34 @@ test('a refresh token is used once: again before its successor is used, for up t
   expect(await rejection(kolab.refreshGrant({ refreshToken: b1.refreshToken, clientId: b.a.client }))).toMatch(/revoked|unknown/);
 });
 
+test('a request with the access token from before a refresh, checked as the refresh commits, clears nothing the refresh sealed: its lost answer\'s retry still gets the same answer', async () => {
+  const kolab = await openKolab();
+  await people(kolab, 'alice');
+  const { actor } = await kolab.signInWith(github('8', 'ann'));
+  await kolab.grant('test', actor, 'write');
+  const a = await authorized(kolab, actor, { as: { kind: 'self' }, kolab: 'test', role: 'engineer' });
+  const t = await a.tokens();
+  // A request with A1 passes its check; then, before its seals are cleared, the refresh R1 -> A2/R2 commits and seals R1.
+  const query = kolab.db.query.bind(kolab.db);
+  let r1: Awaited<ReturnType<typeof kolab.refreshGrant>> | undefined;
+  kolab.db.query = (async (sql: string, params?: unknown[]) => {
+    if (!r1 && /set successor = null\s+where t\.grant_id/.test(sql)) r1 = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
+    return query(sql, params);
+  }) as typeof kolab.db.query;
+  expect(await kolab.liveSession(t.accessToken)).toMatchObject({ granted: true });
+  kolab.db.query = query;
+  expect(r1).toBeDefined();
+  // R1's seal survived the stale request: the retry is the same answer, nothing revoked.
+  expect((await kolab.db.query<{ successor: string | null }>(`select successor from oauth_refresh_token where key = $1`, [sessionKey(t.refreshToken)])).rows[0].successor).not.toBeNull();
+  const again = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
+  expect([again.accessToken, again.refreshToken]).toStrictEqual([r1!.accessToken, r1!.refreshToken]);
+  expect(await kolab.sessionOpen(r1!.accessToken)).toBe(true);
+  // The new access token's own use clears it, and a retry after that is a replay.
+  await kolab.liveSession(r1!.accessToken);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }))).toMatch(/OAuthGrantError/);
+  expect(await kolab.sessionOpen(r1!.accessToken)).toBe(false);
+});
+
 test('a code is used once, by its client, at its redirect URI, with its PKCE verifier; used again, it revokes what it opened', async () => {
   const kolab = await openKolab();
   await people(kolab, 'alice');
