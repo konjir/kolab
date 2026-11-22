@@ -3,12 +3,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { Composer } from '@/Composer';
 import { Icon } from '@/icons';
 import { markReadUpTo } from '@/kolab/api';
+import { markReader, type MarkReader } from '@/kolab/mark-read';
 import { isAgent, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
 import { handleOf, mentionsIn } from '@/kolab/names';
 import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
@@ -41,8 +42,6 @@ export default function Conversation() {
   const answers = useAnswers(team).data;
   const [pending, setPending] = useState<Msg[]>([]);
   const [replyTo, setReplyTo] = useState<Msg>();
-  const marking = useRef(false);
-  const stalled = useRef<string[] | undefined>(undefined);
 
   const loaded = useMemo(() => convo.data?.pages.flatMap((p) => p.messages) ?? [], [convo.data]);
   const unread = useMemo(() => (kind === 'channel'
@@ -68,22 +67,25 @@ export default function Conversation() {
     }
   };
 
-  const markRead = async (visible: string[]) => {
+  // What is on screen, marked read (S2) up to the newest unread message seen: with this render's
+  // unread and team, which the marker always calls the latest of.
+  const markOnce = async (visible: string[]) => {
     const through = readThrough(unread, visible);
-    if (!through || marking.current) return;
-    marking.current = true;
-    try {
-      // Read up to the newest unread message seen (S2).
-      await markReadUpTo(await auth.client(team), kind, name, unread[through - 1]!);
-      stalled.current = undefined;
-      await qc.invalidateQueries({ queryKey: [team, 'answers'] });
-      await qc.invalidateQueries({ queryKey: [team, 'channels'] });
-    } catch {
-      // Tried again soon with what was last on screen, even if nothing scrolls.
-      stalled.current = visible;
-      setTimeout(() => { if (stalled.current === visible) void markRead(visible); }, 5_000);
-    } finally { marking.current = false; }
+    if (!through) return;
+    await markReadUpTo(await auth.client(team), kind, name, unread[through - 1]!);
+    await qc.invalidateQueries({ queryKey: [team, 'answers'] });
+    await qc.invalidateQueries({ queryKey: [team, 'channels'] });
   };
+  const latestMark = useRef(markOnce);
+  useEffect(() => { latestMark.current = markOnce; });
+  // Retried a few times when Kolab can't be told, and never after the screen closes.
+  const marker = useRef<MarkReader<string[]> | undefined>(undefined);
+  useEffect(() => {
+    const m = markReader<string[]>((visible) => latestMark.current(visible));
+    marker.current = m;
+    return () => { m.dispose(); if (marker.current === m) marker.current = undefined; };
+  }, []);
+  const markRead = (visible: string[]) => marker.current?.run(visible);
 
   const actions = (m: Msg) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -136,7 +138,7 @@ export default function Conversation() {
         onEndReached={() => { if (convo.hasNextPage && !convo.isFetchingNextPage) void convo.fetchNextPage(); }}
         onViewableItemsChanged={({ viewableItems }: { viewableItems: ViewToken<Row>[] }) => {
           const ids = viewableItems.flatMap((v) => (v.item?.type === 'message' ? [v.item.msg.id] : []));
-          void markRead(ids);
+          markRead(ids);
         }}
         ListEmptyComponent={<Text style={[styles.empty, { color: colors['ink-muted'] }]}>{convo.isLoading ? 'Reading…' : convo.isError ? `Couldn't read ${title}: ${(convo.error as Error).message}` : 'No messages yet. Say something.'}</Text>}
       />

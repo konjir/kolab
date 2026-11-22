@@ -101,7 +101,8 @@ The EAS project is `@icedlee337/konnect` (`EAS_PROJECT_ID` and `EAS_OWNER` in `a
 | Target | What it does |
 | --- | --- |
 | `native-check` | Each platform's native fingerprint for `--profile`, and whether a binary exists for it: a git tag `konnect-native/<profile>/<platform>/<fingerprint>`. |
-| `native-tag` | Records the binary just built, by pushing that tag. |
+| `native-verify` | Checks that a built `.ipa` or `.aab` embeds exactly this checkout's fingerprint, in the file expo-updates reads it from at launch: `EXUpdates.bundle/fingerprint` in the app bundle, or the asset `fingerprint` (`base/assets/fingerprint`). Expo.plist and the manifest hold only `file:fingerprint`. |
+| `native-tag` | Records the binary just built, by pushing that tag. The release workflow runs `scripts/native.mjs tag` directly instead, with nothing installed, since that job can write to the repo. |
 | `build-preview-local`, `build-production-local` | `eas build --local` for that profile, with `-- --platform ios\|android --output <file>`. |
 | `build-dev-local`, `build-simulator-local` | A dev client, or one for the iOS simulator, built on this machine. |
 | `submit-preview`, `submit-production` | `eas submit` of a local build, with `-- --platform … --path <file>`. |
@@ -135,8 +136,8 @@ What Lee does, in order, before the release workflows can ship anything. Until t
    - `app-preview`, limited to the `main` branch, holding `EXPO_TOKEN` and `KONNECT_UPDATES_PRIVATE_KEY`.
    - `app-stores`, limited to the `main` branch, with Lee as its required reviewer, holding the same two.
 9. **A tag ruleset.** It lets only GitHub Actions create or move `konnect-native/*` tags, since they tell the release workflow which binaries exist.
-10. **The sign-in link.** Preview and production sign in through `https://www.konjir.com/konnect/app/oauth`, a Universal Link and an App Link, so both need iOS 17.4 or later: the app's deployment target is 17.4 (expo-build-properties). Only the development build uses its private scheme, which Kolab takes only with `KONJIR_APP_DEV_SCHEMES=on`, as local-kolab starts it. www.konjir.com must serve two files naming the app:
-    - an `apple-app-site-association` with Lee's Apple Team ID and both `com.konjir.konnect` and `com.konjir.konnect.preview`
+10. **The sign-in link.** Production signs in through `https://www.konjir.com/konnect/app/oauth` and preview through `https://www.konjir.com/konnect/app/preview/oauth`, each a Universal Link and an App Link for its own app alone (`src/auth/app-links.ts`), so both need iOS 17.4 or later: the app's deployment target is 17.4 (expo-build-properties). On iOS each declares the associated domains `applinks:www.konjir.com` and `webcredentials:www.konjir.com`, which an auth session's https callback needs. Only the development build uses its private scheme, which Kolab takes only with `KONJIR_APP_DEV_SCHEMES=on`, as local-kolab starts it. www.konjir.com must serve two files naming the app:
+    - an `apple-app-site-association` with Lee's Apple Team ID, giving `com.konjir.konnect` and `com.konjir.konnect.preview` each its own path, and listing both under `webcredentials`
     - an `assetlinks.json` with the Play app signing certificate's SHA-256
 
     Both values come from steps 1 and 4.

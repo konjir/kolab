@@ -81,6 +81,20 @@ describe('the one sign-in', () => {
     expect([...m.keys()]).toEqual([]);
     expect(await store.takeLegacy()).toEqual([]);
   });
+
+  test('the client registration is given only for the redirect it was registered with', async () => {
+    const { m, kv } = memoryKV();
+    const store = new LoginStore(kv, URL_);
+    await store.keepClient('kjcl_p', 'https://www.konjir.com/konnect/app/preview/oauth');
+    expect(await store.client('https://www.konjir.com/konnect/app/preview/oauth')).toBe('kjcl_p');
+    // One registered for preview's earlier link is never used for its own.
+    expect(await store.client('https://www.konjir.com/konnect/app/oauth')).toBeNull();
+    // An earlier build's bare id names no redirect: registered again.
+    m.set(`${NS}.client`, 'kjcl_old');
+    expect(await store.client('com.konjir.konnect.dev:/oauth')).toBeNull();
+    await store.forgetClient();
+    expect(m.has(`${NS}.client`)).toBe(false);
+  });
 });
 
 describe('tokens', () => {

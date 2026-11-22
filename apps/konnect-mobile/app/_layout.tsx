@@ -1,5 +1,5 @@
 import * as Linking from 'expo-linking';
-import { router, Stack } from 'expo-router';
+import { router, Stack, type Href } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
@@ -8,6 +8,7 @@ import { Alert } from 'react-native';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { remember } from '@/auth/pending-link';
 import { KolabCache } from '@/kolab/live';
+import { teamShown } from '@/notification-open';
 import { PushManager } from '@/PushManager';
 import { useAppTheme } from '@/theme';
 
@@ -38,7 +39,8 @@ function Gate() {
   useEffect(() => { if (auth.ready) void SplashScreen.hideAsync().catch(() => undefined); }, [auth.ready]);
   useEffect(() => { if (auth.ready && !signedIn) remember(url); }, [auth.ready, signedIn, url]);
   // A new team (switched to, from the switcher or a notification, or moved to by Kolab): back to its
-  // Home, every screen of the team before closed, with what was being written in them.
+  // Home, every screen of the team before closed, with what was being written in them. Then the
+  // conversation a notification's tap was opening in that team, if one waits (notification-open.ts).
   const team = auth.current?.team;
   const shown = useRef(team);
   useEffect(() => {
@@ -47,6 +49,10 @@ function Gate() {
       router.replace('/');
     }
     shown.current = team;
+    const tapped = teamShown(team);
+    if (!tapped) return;
+    const t = setTimeout(() => router.push(tapped as Href), 50);
+    return () => clearTimeout(t);
   }, [team]);
   // Kolab moved the sign-in because the person lost the team: say so.
   const { moved, clearMoved } = auth;

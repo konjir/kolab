@@ -17,7 +17,7 @@ import Storage from 'expo-sqlite/kv-store';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import { useAuth, type Auth } from '@/auth/AuthProvider';
-import { SignedOut } from '@/auth/tokens';
+import { SignedOut, TeamChanged } from '@/auth/tokens';
 import { kolab } from './api';
 
 export const queryClient = new QueryClient({
@@ -27,23 +27,51 @@ export const queryClient = new QueryClient({
 /**
  * The cache on the phone, one per person (their messages among it, for up to 7 days). It is
  * cleared, in memory and on the phone, when the person signs out or Kolab ends the sign-in.
+ *
+ * The persister writes at most every `throttleMs`, so a write can still be waiting when the person
+ * signs out. `retire` ends it: no write of this persister lands after, even one already on its way,
+ * and then the cache is removed.
  */
-const persisterFor = (actor: string) => createAsyncStoragePersister({ storage: Storage, key: `konnect.query-cache.${actor}`, throttleTime: 2_000 });
+export function persisterFor(actor: string, throttleMs = 2_000) {
+  let retired = false;
+  let writing: Promise<unknown> = Promise.resolve();
+  const storage = {
+    getItem: (k: string) => Storage.getItem(k),
+    setItem: async (k: string, v: string) => {
+      if (retired) return;
+      const w = Storage.setItem(k, v);
+      writing = w.catch(() => undefined);
+      await w;
+    },
+    removeItem: (k: string) => Storage.removeItem(k),
+  };
+  const persister = createAsyncStoragePersister({ storage, key: `konnect.query-cache.${actor}`, throttleTime: throttleMs });
+  return {
+    persister,
+    retire: async () => {
+      retired = true;
+      await writing;
+      await persister.removeClient();
+    },
+  };
+}
 
 export function KolabCache({ children }: { children: ReactNode }) {
   const auth = useAuth();
   const actor = auth.current?.actor ?? '';
-  const persister = useMemo(() => persisterFor(actor || 'nobody'), [actor]);
-  const was = useRef(actor);
+  const cache = useMemo(() => persisterFor(actor || 'nobody'), [actor]);
+  // The person's persister before this one, kept so that the one that wrote their cache is the one retired.
+  const was = useRef({ actor, cache });
   useEffect(() => {
-    if (was.current && was.current !== actor) {
-      const gone = persisterFor(was.current);
-      void (async () => { queryClient.clear(); await gone.removeClient(); })();
+    const before = was.current;
+    if (before.actor && before.actor !== actor) {
+      queryClient.clear();
+      void before.cache.retire().catch(() => undefined);
     }
-    was.current = actor;
-  }, [actor]);
+    was.current = { actor, cache };
+  }, [actor, cache]);
   return (
-    <PersistQueryClientProvider key={actor || 'nobody'} client={queryClient} persistOptions={{ persister, maxAge: 7 * 24 * 60 * 60_000, buster: 'v1' }}>
+    <PersistQueryClientProvider key={actor || 'nobody'} client={queryClient} persistOptions={{ persister: cache.persister, maxAge: 7 * 24 * 60 * 60_000, buster: 'v1' }}>
       <LiveStreams />
       {children}
     </PersistQueryClientProvider>
@@ -94,7 +122,8 @@ export function listen(auth: Auth, team: string, onUpdate: () => void): () => vo
       void sub.closed.then(() => { close = undefined; schedule(); });
     } catch (e) {
       close = undefined;
-      if (e instanceof SignedOut) return;
+      // Signed out, or the sign-in moved to another team: this team's stream is over.
+      if (e instanceof SignedOut || e instanceof TeamChanged) return;
       schedule();
     }
   };

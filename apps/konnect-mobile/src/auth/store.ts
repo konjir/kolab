@@ -79,10 +79,21 @@ export class LoginStore {
   /**
    * The client this phone registered with Kolab, kept across sign-ins (signing out revokes the
    * grant, not the registration), so each sign-in doesn't register another: Kolab limits how many
-   * are registered from one place.
+   * are registered from one place. It is kept with the one redirect it was registered with, and
+   * only given for that redirect: Kolab shows a client asking for another an error page, never the
+   * app, so one registered for another link (a build before preview had its own) is never used.
    */
-  client(): Promise<string | null> { return this.kv.get(`${this.ns}.client`); }
-  keepClient(id: string): Promise<void> { return this.serial(() => this.kv.set(`${this.ns}.client`, id)); }
+  async client(redirect: string): Promise<string | null> {
+    const raw = await this.kv.get(`${this.ns}.client`);
+    if (!raw) return null;
+    try {
+      const kept = JSON.parse(raw) as { id?: unknown; redirect?: unknown };
+      return kept.redirect === redirect && typeof kept.id === 'string' ? kept.id : null;
+    } catch {
+      return null; // an earlier build's bare id, for a redirect not known: registered again
+    }
+  }
+  keepClient(id: string, redirect: string): Promise<void> { return this.serial(() => this.kv.set(`${this.ns}.client`, JSON.stringify({ id, redirect }))); }
   forgetClient(): Promise<void> { return this.serial(() => this.kv.remove(`${this.ns}.client`)); }
 
   /**

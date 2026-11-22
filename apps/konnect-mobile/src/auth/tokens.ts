@@ -35,6 +35,9 @@ export interface TokensOptions {
   now?: () => number;
   /** How long before its end an access token is renewed. */
   earlyMs?: number;
+  /** The first wait before a refresh whose answer was lost is sent again; it doubles each time, up to `retryMaxMs`. */
+  retryMs?: number;
+  retryMaxMs?: number;
   /** Told when Kolab ends the sign-in (a refused refresh), after it is forgotten. */
   onSignedOut?: () => void;
   /**
@@ -43,6 +46,8 @@ export interface TokensOptions {
    */
   onTeamMoved?: (from: string, to: string) => void;
 }
+
+type RefreshAnswer = { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error?: string; error_description?: string };
 
 const form = (fields: Record<string, string>) => new URLSearchParams(fields).toString();
 const FORM = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
@@ -55,10 +60,32 @@ export class Tokens {
   private switching = false;
   private readonly now: () => number;
   private readonly earlyMs: number;
+  private readonly retryMs: number;
+  private readonly retryMaxMs: number;
+  /** Counts interruptions: a refresh still retrying when it changes stops (signing out, or in again). */
+  private generation = 0;
+  private wake = new Set<() => void>();
 
   constructor(private readonly o: TokensOptions) {
     this.now = o.now ?? Date.now;
     this.earlyMs = o.earlyMs ?? 60_000;
+    this.retryMs = o.retryMs ?? 1_000;
+    this.retryMaxMs = o.retryMaxMs ?? 30_000;
+  }
+
+  /** Stops a refresh that is retrying, so what comes next (signing out, a new sign-in) needn't wait for Kolab. */
+  private interrupt() {
+    this.generation++;
+    for (const w of this.wake) w();
+    this.wake.clear();
+  }
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); this.wake.delete(done); resolve(); };
+      const timer = setTimeout(done, ms);
+      this.wake.add(done);
+    });
   }
 
   private exclusive<T>(f: () => Promise<T>): Promise<T> {
@@ -98,6 +125,7 @@ export class Tokens {
    * revokes the old one at Kolab, with no refresh or switch in between.
    */
   replace(next: Login): Promise<void> {
+    this.interrupt();
     return this.exclusive(async () => {
       const before = await this.o.store.get();
       await this.o.store.put(next);
@@ -143,11 +171,7 @@ export class Tokens {
       method: 'POST', headers: FORM,
       body: form({ grant_type: 'refresh_token', refresh_token: login.refreshToken, client_id: login.clientId }),
     });
-    // A refresh whose answer was lost on the way is sent again at once: within its grace window
-    // Kolab gives the same successor tokens, rather than refusing a refresh token already used.
-    let res;
-    try { res = await send(); } catch { res = await send(); }
-    const body = await res.json().catch(() => ({})) as { access_token?: string; refresh_token?: string; expires_in?: number; scope?: string; error?: string; error_description?: string };
+    const { res, body } = await this.answer(send);
     if (!res.ok) {
       // The grant is over (revoked, expired, or the token already used): only a new sign-in helps.
       if (body.error === 'invalid_grant' || body.error === 'invalid_client') {
@@ -170,10 +194,35 @@ export class Tokens {
   }
 
   /**
+   * Kolab's answer to a refresh, sent again until one comes back that can be read. An answer lost on
+   * the way (no connection, a timeout, a body cut off, Kolab busy or restarting) is never taken as
+   * the sign-in ending: the same refresh token, kept as it was, is sent again, waiting longer each
+   * time, because Kolab gives a retried refresh the same successor tokens for as long as they are
+   * unused, up to its grace window. Only Kolab's own refusal, or an interruption, ends it.
+   */
+  private async answer(send: () => ReturnType<Fetch>): Promise<{ res: { ok: boolean; status: number }; body: RefreshAnswer }> {
+    const generation = this.generation;
+    for (let attempt = 0; ; attempt++) {
+      if (attempt > 0) await this.pause(Math.min(this.retryMs * 2 ** (attempt - 1), this.retryMaxMs));
+      if (generation !== this.generation) throw new Error('The refresh was stopped');
+      let res;
+      try { res = await send(); } catch { continue; }
+      if (res.status >= 500 || res.status === 429) continue;
+      let body: RefreshAnswer;
+      try { body = (await res.json() ?? {}) as RefreshAnswer; } catch {
+        if (res.ok) continue;
+        body = {};
+      }
+      return { res, body };
+    }
+  }
+
+  /**
    * Signs out: revokes the refresh token at Kolab (RFC 7009), which ends the grant, then forgets the
    * sign-in. It is forgotten even when Kolab can't be reached; `revoked` says whether Kolab heard.
    */
   signOut(): Promise<{ revoked: boolean }> {
+    this.interrupt();
     return this.exclusive(async () => {
       const login = await this.o.store.get();
       if (!login) return { revoked: false };

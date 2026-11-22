@@ -24,4 +24,15 @@ describe('eas update', () => {
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('updates are signed');
   });
+
+  test('is refused with the channel named more than once, however it is written', () => {
+    for (const extra of [['--channel', 'production'], ['--channel=production'], ['--channel', 'preview']]) {
+      const r = eas(['update', '--channel', 'preview', ...extra, '--message', 'x'], { APP_VARIANT: 'preview' });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('name one channel, once');
+    }
+    const r = eas(['update', '--channel=production', '--message', 'x'], { APP_VARIANT: 'preview' });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('must be built with APP_VARIANT=production');
+  });
 });
