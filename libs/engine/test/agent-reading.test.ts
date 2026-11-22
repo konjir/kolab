@@ -249,4 +249,7 @@ test('disclosure: an agent whose owner is a member says owner_reads, and every d
   const convs = await kolab.conversationsPage(claude);
   expect(convs.items.map((c) => [c.with, c.readable_by, c.last.readable_by])).toStrictEqual([['ann', undefined, undefined], ['bo-claude', ['ann', 'bo'], ['ann', 'bo']], ['bo', ['ann'], ['ann']]]);
   expect((await kolab.conversationsPage(bo)).items.map((c) => [c.with, c.readable_by])).toStrictEqual([['ann', undefined], ['ann-claude', ['ann']]]);
+  // An agent no longer a member is read by no one: its owner can't read it there.
+  await kolab.revoke('hub', 'ann-claude');
+  expect((await kolab.messagesPage(bo, { with: 'ann-claude' })).items.map((m) => m.readable_by)).toStrictEqual([undefined]);
 });

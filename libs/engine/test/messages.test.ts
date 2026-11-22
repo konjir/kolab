@@ -283,6 +283,10 @@ test('a send repeated with its nonce returns the message it sent, once, for a di
   expect(x.id).toBe(y.id);
   expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from message where sent_by = 'ann'`)).rows[0].n).toBe(2);
   expect(events.filter((e) => 'actor' in e && e.actor === 'bo').length).toBe(1);
+  // To an agent, the repeat says who else reads it, as the first send did.
+  const toAgent = await kolab.sendMessage(ann, 'bo-claude', 'For your agent', { nonce: 'agent-1' });
+  expect(toAgent.readable_by).toStrictEqual(['bo']);
+  expect(await kolab.sendMessage(ann, 'bo-claude', 'For your agent', { nonce: 'agent-1' })).toStrictEqual(toAgent);
   // The same nonce on another message, to someone else or in other words, is refused; another sender's own nonce is theirs.
   expect(await rejection(kolab.sendMessage(ann, 'bo', 'Dinner?', { nonce: 'a1b2-c3' }))).toMatch(/LimitError: nonce a1b2-c3 names another message you sent in kolab hub/);
   expect(await rejection(kolab.sendMessage(ann, 'bo-claude', 'Lunch at noon?', { nonce: 'a1b2-c3' }))).toMatch(/nonce a1b2-c3 names another message/);

@@ -769,9 +769,10 @@ interface OutboxJob {
  * A push job's payload (0058): the message it is about, by its id and kind, alone; the job reads the
  * message itself, decides who is told, and computes each person's preview and badge when it runs
  * (pushJob), so no message's words wait in the outbox. And the tokens it has sent to so far, so a
- * job retried after a failure part way sends each one once.
+ * job retried after a failure part way sends each one once; and the stuck slots it claimed
+ * (`<owner> <agent>`, agentPushes), so a retry still sends those pushes.
  */
-interface PushPayload { message: string; kind: 'dm' | 'channel'; sent?: string[] }
+interface PushPayload { message: string; kind: 'dm' | 'channel'; sent?: string[]; stuck?: string[] }
 
 /** How many times a push job is tried before it is dropped, its own lane's, not the outbox's (pushJob). */
 export const PUSH_MAX_ATTEMPTS = 5;
@@ -875,8 +876,8 @@ export class Kolab {
   /**
    * Push notifications to konnect's phone app (0058): `send` reaches Expo's push service, and is
    * null while push is off (the server sets it only when it has an access token); with `preview`
-   * false, a push carries no words of its message. `agentRunning` says whether something runs as an
-   * agent in a kolab (the server's AgentStates), for a push that one is stuck; without it, an agent
+   * false, a push carries no words of its message. `agentRunning` says whether an agent said lately
+   * that it runs in a kolab (the server's AgentStates), for a push that one is stuck; an agent also
    * runs while a listen stream of its session is open on this process.
    */
   readonly push: { send: PushSend | null; preview: boolean; listening: (() => string[]) | null; agentRunning: ((kolab: string, agent: string) => boolean) | null } = { send: null, preview: true, listening: null, agentRunning: null };
@@ -2046,16 +2047,27 @@ export class Kolab {
    * open: a Kolab that turns hand-issued tokens off still takes it, and only then.
    */
   async liveSession(token: string): Promise<{ id: string; expiresAt: Date | null; granted: boolean; job: boolean; actor: string; admin: boolean } | undefined> {
-    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean; job: boolean; actor: string; admin: boolean }>(
-      `select s.id, s.expires_at, s.grant_id is not null as granted, s.actor_id as actor,
+    const r = await this.db.query<{ id: string; expires_at: Date | null; granted: boolean; grant_id: string | null; job: boolean; actor: string; admin: boolean }>(
+      `select s.id, s.expires_at, s.grant_id is not null as granted, s.grant_id, s.actor_id as actor,
               exists (select 1 from job j join session r on r.id = j.runner_session_id left join oauth_grant rg on rg.id = r.grant_id
                        where j.session_id = s.id and j.ended_at is null and j.lease_until > now() and ${RUNNER_OPEN}) as job,
               (a.kind = 'person' and s.grant_id is not null and exists (select 1 from konjir_admin k where k.actor_id = s.actor_id)) as admin
          from session s join actor a on a.id = s.actor_id where ${LIVE_SESSION}`, [sessionKey(token)]);
     const row = r.rows[0];
+    if (row?.grant_id) await this.accessUsed(row.grant_id);
     return row && {
       id: row.id, expiresAt: row.expires_at === null ? null : new Date(row.expires_at), granted: row.granted, job: row.job, actor: row.actor, admin: row.admin,
     };
+  }
+
+  /**
+   * A grant's access token was presented, in an authenticated request (liveSession, session): its
+   * refresh's successor is in use, so the seals that would answer a retry of the refresh before it
+   * (refreshGrant, sameRefresh) are cleared, and a retry after this is a replay. One statement,
+   * through 0059's partial index, that finds nothing on almost every call.
+   */
+  private async accessUsed(grantId: string) {
+    await this.db.query(`update oauth_refresh_token set successor = null where grant_id = $1 and successor is not null`, [grantId]);
   }
 
   /**
@@ -2077,12 +2089,14 @@ export class Kolab {
   }
 
   private async session(token: string): Promise<Session> {
-    const r = await this.db.query<Omit<Session, 'access'>>(
-      `select s.id, s.actor_id, s.active_role, s.kolab_id as kolab, a.kind, a.owner_id as owner
+    const r = await this.db.query<Omit<Session, 'access'> & { grant_id: string | null }>(
+      `select s.id, s.actor_id, s.active_role, s.kolab_id as kolab, a.kind, a.owner_id as owner, s.grant_id
          from session s join actor a on a.id = s.actor_id
         where ${LIVE_SESSION}`, [sessionKey(token)]);
     if (!r.rows[0]) throw new RoleError('no open session for that token');
-    const s = { ...r.rows[0], access: await accessIn(this.db, r.rows[0].actor_id, r.rows[0].kolab) };
+    const { grant_id: grantId, ...row } = r.rows[0];
+    if (grantId) await this.accessUsed(grantId);
+    const s = { ...row, access: await accessIn(this.db, row.actor_id, row.kolab) };
     // Access is computed on each use, so a session narrows the moment its access (or, for an
     // agent, its owner's) does. One that can no longer reach its kolab at all is ended here, if
     // no change of access ended it already, and its streams are told (D41).
@@ -2349,12 +2363,12 @@ export class Kolab {
    * The authorization server's lifetimes and limits (D55). An access token lives `accessTtlS`
    * (15 minutes); a grant lives `refreshTtlS` (30 days) past its last refresh; an authorization
    * code `codeTtlS`; a sign-in has `requestTtlS` to be consented to. A refresh token presented
-   * again within `refreshRetryS` (10 minutes) of its use, before its successor is used, is a retry
-   * whose answer was lost, and gets that answer again; after its successor is used, or later, a
-   * replay, which revokes its grant (refreshGrant). A person owns at most `agentsPerPerson` agents
+   * again within `refreshRetryS` (2 minutes) of its use, before its successor is used (its refresh
+   * token or its access token presented), is a retry whose answer was lost, and gets that answer
+   * again; after its successor is used, or later, a replay, which revokes its grant (refreshGrant). A person owns at most `agentsPerPerson` agents
    * they made themselves.
    */
-  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshRetryS: 600, agentsPerPerson: 10 };
+  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshRetryS: 120, agentsPerPerson: 10 };
   /**
    * How long a hand-issued session lasts (openSession, W2.22): 30 days by default
    * (KONJIR_HAND_ISSUED_TOKEN_DAYS for `kolab serve`). Once it expires, its token is refused like
@@ -3098,14 +3112,14 @@ export class Kolab {
    * when none is left. It takes the access lock first, as revokeGrant and switchTeam do.
    *
    * A refresh token used once before and presented again (its answer lost on the way, a phone
-   * offline, or a concurrent request) gets the same successor tokens while the successor refresh
-   * token is unused and they are still the grant's live answer, for up to refreshRetryS from its
-   * use (sameRefresh): RFC 9700's refresh token protection allows it, since reuse matters once
-   * the successor is in use. A successor no longer the grant's live answer for another reason (its session's access
-   * token replaced, the grant revoked or lapsed), or a sealed answer that doesn't open, is refused
-   * without revoking anything. Once the successor has been used, or past refreshRetryS, it is a
-   * replay: the grant is revoked and its session ends (D41). The trade-off: within that window,
-   * whoever holds a just-used refresh token gets the live successor, as its rightful client would.
+   * offline, or a concurrent request) gets the same successor tokens while the successor is unused
+   * (neither its refresh token nor its access token presented: accessUsed) and still the grant's
+   * live answer, for up to refreshRetryS from its use (sameRefresh). A successor no longer the
+   * grant's live answer for another reason (its session's access token replaced, the grant revoked
+   * or lapsed), or a sealed answer that doesn't open, is refused without revoking anything. Once
+   * the successor has been used, or past refreshRetryS, it is a replay: the grant is revoked and its
+   * session ends (D41). The trade-off: for those two minutes, until the successor is used, anyone
+   * who holds a just-used refresh token gets the same live tokens its client got.
    */
   async refreshGrant(p: { refreshToken: string; clientId: string }): Promise<OAuthTokens> {
     const key = sessionKey(p.refreshToken);
@@ -10722,7 +10736,8 @@ export class Kolab {
         where m.kolab_id = $1 and m.sent_by = $2 and m.nonce = $3`, [s.kolab, s.actor_id, nonce])).rows[0];
       if (!m) return undefined;
       if (m.sent_to !== to || m.body !== body || m.reply_to !== (opts.replyTo ?? null)) throw new LimitError(`nonce ${nonce} names another message you sent in kolab ${s.kolab}: give a new nonce for a new message`);
-      return messageOf(m);
+      // As the first send said it: who else reads it.
+      return { ...messageOf(m), ...readableBy(await this.readersAmong(q, s.kolab, [m.sent_by, m.sent_to]), m.sent_by, m.sent_to) };
     };
     const before = await repeat(this.db);
     if (before) return before;
@@ -11003,7 +11018,8 @@ export class Kolab {
 
   /**
    * In `q`, who reads the direct messages of each agent among `ids` beside the two in a
-   * conversation (readableBy): its owner, a person who is a member of `kolab` (holderRows), by agent.
+   * conversation (readableBy): while the agent is a member of `kolab`, its owner, a person who is a
+   * member too (holderRows), by agent.
    * An organization's agent, whose owner is no member, has none. Read for the messages a list shows
    * alone, so a page of people's messages reads one row.
    */
@@ -11011,9 +11027,15 @@ export class Kolab {
     if (!ids.length) return new Map();
     const agents = (await q.query<{ id: string; owner_id: string }>(
       `select id, owner_id from actor where id = any($1::text[]) and kind = 'agent' and owner_id is not null`, [[...new Set(ids)]])).rows;
-    const owners = new Set<string>();
-    for (const o of new Set(agents.map((a) => a.owner_id))) if ((await holderRows(q, kolab, undefined, o)).some((h) => h.rank > 0)) owners.add(o);
-    return new Map(agents.filter((a) => owners.has(a.owner_id)).map((a) => [a.id, a.owner_id]));
+    // Each agent and its owner, a member of the kolab now, as readersOf reads them of membersIn.
+    const member = new Map<string, boolean>();
+    const isMember = async (id: string) => {
+      if (!member.has(id)) member.set(id, (await holderRows(q, kolab, undefined, id)).some((h) => h.rank > 0));
+      return member.get(id)!;
+    };
+    const out = new Map<string, string>();
+    for (const a of agents) if (await isMember(a.owner_id) && await isMember(a.id)) out.set(a.id, a.owner_id);
+    return out;
   }
 
   /**
@@ -11074,15 +11096,21 @@ export class Kolab {
    */
   private async agentActivityRows(kolab: string, agents: string[], before: string | null, limit: number, cap: number): Promise<AgentActivityItem[]> {
     if (!agents.length) return [];
-    const dms = (await this.db.query<MessageRow & { run: number }>(
-      `select ${MESSAGE_COLUMNS}, coalesce(mr.agent_run, 0) as run from message m left join message_receipt r on r.message_id = m.id
-         left join message_run mr on mr.message_id = m.id
-        where m.kolab_id = $1 and (m.sent_by = any($2::text[]) or m.sent_to = any($2::text[])) and ($3::text is null or m.id < $3)
+    // Each side an ordered, limited range of an index (message_by, message_to; channel_message_by,
+    // channel_mention_in), then the newest `limit` of their union.
+    const dms = (await this.db.query<Omit<MessageRow, 'read_at'> & { run: number }>(
+      `select m.id, m.sent_by, m.sent_to, m.body, m.reply_to, m.sent_at, coalesce(mr.agent_run, 0) as run
+         from ((select id from message where kolab_id = $1 and sent_by = any($2::text[]) and ($3::text is null or id < $3) order by id desc limit $4)
+               union
+               (select id from message where kolab_id = $1 and sent_to = any($2::text[]) and ($3::text is null or id < $3) order by id desc limit $4)) z
+         join message m on m.id = z.id left join message_run mr on mr.message_id = m.id
         order by m.id desc limit $4`, [kolab, agents, before, limit])).rows;
     const chans = (await this.db.query<ChannelMessageRow>(
-      `select ${CHANNEL_MESSAGE_COLUMNS} from channel_message m join channel c on c.id = m.channel_id
-        where m.kolab_id = $1 and ($3::text is null or m.id < $3)
-          and (m.sent_by = any($2::text[]) or exists (select 1 from channel_mention x where x.message_id = m.id and x.actor_id = any($2::text[])))
+      `select ${CHANNEL_MESSAGE_COLUMNS}
+         from ((select id from channel_message where kolab_id = $1 and sent_by = any($2::text[]) and ($3::text is null or id < $3) order by id desc limit $4)
+               union
+               (select message_id as id from channel_mention where kolab_id = $1 and actor_id = any($2::text[]) and ($3::text is null or message_id < $3) order by message_id desc limit $4)) z
+         join channel_message m on m.id = z.id join channel c on c.id = m.channel_id
         order by m.id desc limit $4`, [kolab, agents, before, limit])).rows;
     const ours = new Set(agents);
     const items: AgentActivityItem[] = [
@@ -11900,30 +11928,33 @@ export class Kolab {
    * at level none, one push each, the first that applies: with `all`, a direct message to it or a
    * mention of it from someone else; with `all` or `stuck`, that it is stuck, either capped (its run
    * at the kolab's agent_reply_cap) or, the message having reached it, with nothing running as it
-   * (push.agentRunning), at most once an hour for each agent (agents_stuck_pushed, claimed
-   * atomically, and only on the job's first run). `never` pushes nothing.
+   * (agentRunning), at most once an hour for each agent (agents_stuck_pushed, claimed atomically;
+   * the slots this job claimed are `held`, which pushJob keeps on the job, so a retry still sends
+   * them). A channel the owner muted pushes them nothing. `never` pushes nothing.
    */
-  private async agentPushes(m: SentMessage, already: string[], run: 'first' | 'retry'): Promise<PushNotification[]> {
+  private async agentPushes(m: SentMessage, already: string[], held: Set<string>): Promise<PushNotification[]> {
     const concerned = [m.from, ...(m.kind === 'dm' ? [m.to] : m.mentions)];
     const readers = await this.readersAmong(this.db, m.kolab, concerned);
     const owners = [...new Set(readers.values())].filter((o) => o !== m.from && !already.includes(o));
     if (!owners.length) return [];
     const listening = this.push.listening?.() ?? [];
-    const rows = new Map((await this.db.query<{ actor: string; level: NotificationLevel; hide: boolean; agents: Record<string, string>; listening: boolean }>(
+    const rows = new Map((await this.db.query<{ actor: string; level: NotificationLevel; hide: boolean; agents: Record<string, string>; listening: boolean; muted: boolean }>(
       `select a.id as actor, coalesce(p.level, $4) as level, coalesce(p.hide_preview, false) as hide, coalesce(p.agents, '{}'::jsonb) as agents,
+              coalesce($5::text = any(p.muted), false) as muted,
               exists (select 1 from session s left join oauth_grant g on g.id = s.grant_id
                        where s.id = any($3::text[]) and s.actor_id = a.id and s.kolab_id = $1 and ${OPEN_SESSION}) as listening
          from actor a left join notification_pref p on p.kolab_id = $1 and p.actor_id = a.id
         where a.id = any($2::text[]) and a.kind = 'person'
           and exists (select 1 from push_device d left join oauth_grant dg on dg.id = d.grant_id where d.actor_id = a.id and ${LIVE_DEVICE})`,
-      [m.kolab, owners, listening, DEFAULT_NOTIFICATION_LEVEL])).rows.map((r) => [r.actor, r]));
+      [m.kolab, owners, listening, DEFAULT_NOTIFICATION_LEVEL, m.kind === 'channel' ? m.channel_id : null])).rows.map((r) => [r.actor, r]));
     const cap = await this.agentReplyCapIn(this.db, m.kolab);
     const out: PushNotification[] = [];
     const done = new Set<string>();
     for (const agent of [...new Set(concerned)]) {
       const owner = readers.get(agent);
       const r = owner ? rows.get(owner) : undefined;
-      if (!owner || !r || done.has(owner) || r.level === 'none' || r.listening) continue;
+      // A channel the owner muted pushes them nothing of it, of their agents neither.
+      if (!owner || !r || done.has(owner) || r.level === 'none' || r.listening || r.muted) continue;
       const choice = (AGENT_NOTIFY_LEVELS as readonly string[]).includes(r.agents[agent]) ? r.agents[agent] as AgentNotifyLevel : DEFAULT_AGENT_NOTIFY;
       if (choice === 'never') continue;
       const reached = agent !== m.from;
@@ -11932,8 +11963,15 @@ export class Kolab {
       else if (await this.agentCapped(m.kolab, agent, cap)) reason = 'capped';
       else if (reached && !(await this.agentRunning(m.kolab, agent, listening))) reason = 'not_running';
       if (!reason) continue;
-      // Stuck at most once an hour for each agent: the slot is claimed in one statement, so two jobs at once push once.
-      if ((reason === 'capped' || reason === 'not_running') && (run === 'retry' || !(await this.claimStuckPush(m.kolab, owner, agent)))) continue;
+      // Stuck at most once an hour for each agent: the slot is claimed in one statement, so two jobs
+      // at once push once; one this job claimed already (`held`, kept on the job) is its own on a retry.
+      const slot = `${owner} ${agent}`;
+      if (reason === 'capped' || reason === 'not_running') {
+        if (!held.has(slot)) {
+          if (!(await this.claimStuckPush(m.kolab, owner, agent))) continue;
+          held.add(slot);
+        }
+      }
       done.add(owner);
       const name = agentDisplay(agent, owner);
       const words = reason === 'message' || reason === 'mention';
@@ -11966,9 +12004,13 @@ export class Kolab {
     return r && r.chat !== null && BigInt(r.seq) >= BigInt(r.chat) && r.run >= cap ? r.run - cap + 1 : 0;
   }
 
-  /** Whether something runs as `agent` in `kolab`: the server's word (push.agentRunning), or else a listen stream of its open session on this process. */
+  /**
+   * Whether something runs as `agent` in `kolab`, as konjir_list_my_agents_status reads it: it said
+   * so lately (push.agentRunning, the server's AgentStates), or a listen stream of its open session
+   * is open on this process.
+   */
   private async agentRunning(kolab: string, agent: string, listening: string[]): Promise<boolean> {
-    if (this.push.agentRunning) return this.push.agentRunning(kolab, agent);
+    if (this.push.agentRunning?.(kolab, agent)) return true;
     return (await this.db.query(
       `select 1 from session s left join oauth_grant g on g.id = s.grant_id where s.id = any($3::text[]) and s.actor_id = $2 and s.kolab_id = $1 and ${OPEN_SESSION} limit 1`,
       [kolab, agent, listening])).rows.length > 0;
@@ -12015,9 +12057,12 @@ export class Kolab {
     const m = await this.messageForPush(p.message, p.kind ?? 'dm');
     if (!m) return;
     const told = await this.pushNotifications(m);
-    // Then each agent's owner it concerns, under their prefs for that agent, once per person: a
-    // retry (p.sent) claims no new stuck slot for a push it already sent.
-    const notifications = [...told, ...await this.agentPushes(m, told.map((n) => n.actor), p.sent?.length ? 'retry' : 'first')];
+    // Then each agent's owner it concerns, under their prefs for that agent, once per person. The
+    // stuck slots it claims are kept on the job before anything is sent, so a retry sends them still.
+    const held = new Set(p.stuck ?? []);
+    const before = held.size;
+    const notifications = [...told, ...await this.agentPushes(m, told.map((n) => n.actor), held)];
+    if (held.size > before) await this.db.query(`update outbox set payload = jsonb_set(payload, '{stuck}', $2::jsonb) where claim = $1`, [claim.token, JSON.stringify([...held])]);
     if (!notifications.length) return;
     const sent = new Set(p.sent ?? []);
     const devices = (await this.db.query<{ token: string; actor_id: string }>(

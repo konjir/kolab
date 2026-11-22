@@ -236,6 +236,8 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
  * sessions that can no longer reach their kolab, recorded as by `kolab` (session.ended_by),
  * freeing this process's outbox claims as it closes, and renewing the lease on the work a
  * session's own actor holds as it calls Kolab (PLN15, D98), which changes no state and so records
- * no event; and so renewing a job's lease, by its agent's calls or its runner's heartbeat (JOB1). A method that writes only through these needs no entry in WRITE_ACTORS.
+ * no event; and so renewing a job's lease, by its agent's calls or its runner's heartbeat (JOB1);
+ * and clearing a grant's sealed refresh answers once its access token is used (accessUsed, 0059),
+ * which changes no state anyone made. A method that writes only through these needs no entry in WRITE_ACTORS.
  */
-export const SYSTEM_WRITES = ['endUnreachable', 'freeClaims', 'renewLease', 'renewJobLease'] as const;
+export const SYSTEM_WRITES = ['endUnreachable', 'freeClaims', 'renewLease', 'renewJobLease', 'accessUsed'] as const;

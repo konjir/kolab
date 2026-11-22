@@ -634,3 +634,39 @@ test('per-agent prefs: stuck by default, set by label for one\'s own agents only
   await kolab.sendMessage(ann, 'bo-claude', 'anything');
   expect(await agentPushes()).toStrictEqual([]);
 });
+
+test('an agent\'s pushes to its owner: a listening agent runs, a muted channel pushes nothing, and a stuck push whose send failed is sent on the retry', async () => {
+  const { kolab, ann, bo, cy, batches, pushed } = await hub();
+  await kolab.registerPushDevice(bo, token('b'), 'ios');
+  const agentPushes = async (listening: string[] = []) => (await pushed(listening)).messages.filter((m) => m.data.kind === 'agent');
+  const agentSession = (await kolab.db.query<{ id: string }>(`select id from session where actor_id = 'bo-claude' and ended_at is null`)).rows[0].id;
+  // A listen stream of the agent's session is open: it runs, though it said nothing.
+  await kolab.sendMessage(ann, 'bo-claude', 'while it listens');
+  expect(await agentPushes([agentSession])).toStrictEqual([]);
+  // Muted: a mention of the agent in that channel pushes Bo nothing, under all.
+  await kolab.makeChannel(bo, 'deploys');
+  await kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms', muted_channels: ['deploys'], agents: { claude: 'all' } });
+  await kolab.sendChannelMessage(cy, 'deploys', '@bo/claude', { mentions: ['bo/claude'] });
+  expect(await agentPushes()).toStrictEqual([]);
+  await kolab.sendChannelMessage(cy, 'general', '@bo/claude', { mentions: ['bo/claude'] });
+  expect((await agentPushes()).map((m) => m.data.kind === 'agent' && m.data.reason)).toStrictEqual(['mention']);
+  // Stuck, and Expo fails the send: the job keeps its claimed slot, and the retry sends it.
+  await kolab.setNotificationPrefs(bo, { level: 'all', agents: { claude: 'stuck' } });
+  let fail = true;
+  kolab.push.send = async (messages) => {
+    batches.push(messages);
+    if (fail) { fail = false; throw new Error('Expo\'s push service answered 503'); }
+    return messages.map(() => ({ ok: true as const }));
+  };
+  const m = await kolab.sendMessage(ann, 'bo-claude', 'are you there?');
+  batches.length = 0;
+  await kolab.drainOutbox();
+  expect(batches.flat().map((x) => x.data.kind === 'agent' && x.data.reason)).toStrictEqual(['not_running']);
+  const [job] = (await kolab.db.query<{ payload: { stuck?: string[] } }>(`select payload from outbox`)).rows;
+  expect(job.payload.stuck).toStrictEqual(['bo bo-claude']);
+  batches.length = 0;
+  await kolab.db.query(`update outbox set run_after = clock_timestamp()`);
+  await kolab.drainOutbox();
+  expect(batches.flat().map((x) => [x.data.kind === 'agent' && x.data.reason, x.data.message_id])).toStrictEqual([['not_running', m.id]]);
+  expect((await kolab.db.query(`select 1 from outbox`)).rows).toStrictEqual([]);
+});
