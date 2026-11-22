@@ -2533,16 +2533,19 @@ export class Kolab {
   /**
    * The person on an identified authorization's page asks to sign in with another account at the
    * identity provider (konnect's app's *Use a different GitHub account*), from that page's form, with
-   * its token (`csrf`) and the browser's binding: the authorization forgets who signed in, and its
-   * form's token, and takes a new state for the provider, so the provider's next answer, and only
-   * that, names the person; the client, its redirect URI, state, PKCE challenge, scope and expiry
-   * stay. Refused once it is claimed, used, expired, or isn't this browser's. Returns the new state.
+   * its token (`csrf`) and the browser's binding: the authorization forgets who signed in and takes
+   * a new state for the provider, so the provider's next answer, and only that, names the person
+   * (identifyAuthorization, which also gives the form a new token); the client, its redirect URI,
+   * state, PKCE challenge, scope and expiry stay. The form's token stays until then, though it
+   * names no one, so the same form sent again (pressed twice) restarts it again, with another state,
+   * rather than failing; Continue or any other answer on it is refused while no one is signed in.
+   * Refused once it is claimed, used, expired, or isn't this browser's. Returns the new state.
    */
   async restartIdentification(binding: string, csrf: string): Promise<{ state: string }> {
     const state = randomBytes(32).toString('base64url');
     const r = await this.db.query(
-      `update oauth_request set actor_id = null, csrf_key = null, state_key = $3
-        where id = $1 and csrf_key = $2 and actor_id is not null and claimed_at is null and expires_at > now() returning id`,
+      `update oauth_request set actor_id = null, state_key = $3
+        where id = $1 and csrf_key = $2 and claimed_at is null and expires_at > now() returning id`,
       [sessionKey(binding), sessionKey(csrf), sessionKey(state)]);
     if (!r.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
     return { state };
