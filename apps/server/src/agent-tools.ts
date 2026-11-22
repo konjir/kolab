@@ -124,6 +124,10 @@ const readMessages = args({
   limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`),
   from: z.string().optional().describe('Only the unread messages this member sent you, by name, or an agent as <owner>/<label>; the rest stay unread'),
 });
+const markMessagesRead = args({
+  with: z.string().describe('The member whose messages to you to mark read: by name, or an agent as <owner>/<label>'),
+  up_to: z.string().describe('The id of a message between you and them, either way: theirs to you up to and including it are marked read'),
+});
 const channel = z.string().describe('The channel, by name, with or without its #: general, or one konjir_list_channels lists');
 const listChannels = args({ ...paging });
 const makeChannel = args({ channel: z.string().describe('Its name: 1 to 40 lowercase letters, digits and hyphens, starting with a letter or a digit, unique in your kolab (a # before it is dropped)') });
@@ -136,6 +140,7 @@ const sendChannelMessage = args({
 });
 const readChannel = args({ channel, limit: z.number().int().optional().describe(`How many to read: ${MESSAGES_AT_ONCE} by default and at most`) });
 const listChannelMessages = args({ channel, ...paging });
+const markChannelRead = args({ channel, up_to: z.string().describe('The id of a message of that channel: your read position moves to it, never back') });
 const setAgentReplyCap = args({ agent_reply_cap: z.number().int().describe(`How many messages one agent may send in your kolab that could wake an agent (channel messages, and direct messages to an agent), with none from a person anywhere in it, before its further ones wake no agent: 1 to ${MAX_AGENT_REPLY_CAP}; ${DEFAULT_AGENT_REPLY_CAP} by default`) });
 const leaseName = z.string().describe('The thing it is on, as your team names it: 1 to 200 letters, digits and . _ / @ : - (testdb, port-3000, apps/server/src/x.ts), compared exactly as given');
 const claimLease = args({
@@ -774,6 +779,16 @@ export class AgentTools {
   }
 
   @McpTool({
+    name: 'konjir_mark_messages_read',
+    description: 'Mark read the messages a member of your kolab sent you, up to and including the message up_to, without reading them: "read up to here", as an app does once you have seen them. up_to is the id of a message between you and them, either way, so it may be the newest one shown, yours included; any other id is refused. Only messages to you are marked; one read already keeps when it was read. Returns { with, up_to, marked }: marked is how many were marked now. Your other sessions hear that your answers changed.',
+    schema: markMessagesRead,
+    annotations: { idempotentHint: true },
+  })
+  markMessagesRead({ with: other, up_to }: z.infer<typeof markMessagesRead>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.markMessagesRead(s, other, up_to));
+  }
+
+  @McpTool({
     name: 'konjir_list_messages',
     description: `List your messages in your kolab, newest first, read or not, marking nothing: the ones sent to you, or with sent=true the ones you sent, or with with=<member> (by name, or an agent as <owner>/<label>) the whole exchange between you and them, both ways: your direct conversation's history. Only you and they ever see it: not their owner, not an admin. Each says when its recipient read it (read_at; null while unread).${PAGED}`,
     schema: listMessages,
@@ -846,6 +861,16 @@ export class AgentTools {
   })
   readChannel({ channel: name, limit }: z.infer<typeof readChannel>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.readChannel(s, name, { limit }));
+  }
+
+  @McpTool({
+    name: 'konjir_mark_channel_read',
+    description: 'Move your read position in a channel of your kolab forward to the message up_to, without reading anything: "read up to here", as an app does once you have seen them. Never back: a position at or past it stays (moved: false). up_to must be a message of that channel; any other id is refused. Returns { channel, read_to, moved }: read_to is your position now. Your other sessions hear that your answers changed. For members only.',
+    schema: markChannelRead,
+    annotations: { idempotentHint: true },
+  })
+  markChannelRead({ channel: name, up_to }: z.infer<typeof markChannelRead>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.markChannelRead(s, name, up_to));
   }
 
   @McpTool({
