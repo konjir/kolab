@@ -1,5 +1,5 @@
 import { describe, expect, test } from '@jest/globals';
-import { complete, completing, handleOf, mentionsIn, suggestions } from '../src/kolab/names';
+import { complete, completing, displayName, displayOf, handleOf, mentionsIn, suggestions } from '../src/kolab/names';
 import { activityOf, readThrough, unreadOf } from '../src/kolab/unread';
 import { rowsOf, type Msg } from '../src/kolab/thread';
 import type { Answers } from '../src/kolab/api';
@@ -85,5 +85,28 @@ describe('a conversation\'s rows', () => {
     expect(rows.map((r) => (r.type === 'message' ? `${r.msg.id}${r.head ? '*' : ''}` : r.type === 'day' ? `day:${r.label}` : 'new'))).toEqual([
       '5', '4*', 'new', '3*', '2*', 'day:2026-11-21', '1*', 'day:2026-11-20',
     ]);
+  });
+});
+
+describe('how the app names a member', () => {
+  const members = [
+    { actor: 'bo', kind: 'person' as const, owner: null, label: null },
+    { actor: 'bo-builder', kind: 'agent' as const, owner: 'bo', label: 'builder' },
+    { actor: 'acme-bot', kind: 'agent' as const, owner: null, label: null },
+  ];
+  test('an agent as @owner/label, never its actor id; a person by name', () => {
+    // Home's Unreads, DMs and Activity name a DM's sender by actor id, through this.
+    expect(displayName('bo-builder', members)).toBe('@bo/builder');
+    expect(displayName('bo', members)).toBe('bo');
+    expect(displayOf(members[1]!)).toBe('@bo/builder');
+    expect(displayOf(members[2]!)).toBe('@acme-bot');
+  });
+  test('an actor the members list doesn\'t know, as it is', () => {
+    expect(displayName('cy', members)).toBe('cy');
+    expect(displayName('bo-builder', undefined)).toBe('bo-builder');
+  });
+  test('Home\'s Unreads label a DM from an agent by its handle', () => {
+    const unread = unreadOf({ actor: 'ann', messages: { items: [{ id: '1', from: 'bo-builder', message: 'green' }, { id: '2', from: 'bo', message: 'hi' }] } });
+    expect([...unread.dms.keys()].map((p) => displayName(p, members))).toEqual(['@bo/builder', 'bo']);
   });
 });

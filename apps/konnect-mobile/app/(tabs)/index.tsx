@@ -7,7 +7,7 @@ import { useAuth } from '@/auth/AuthProvider';
 import { Icon, type IconName } from '@/icons';
 import { useAgentStatus, useAnswers, useChannels, useConversations, useMembers } from '@/kolab/hooks';
 import { lastLine, needsYouCount } from '@/kolab/your-agents';
-import { handleOf } from '@/kolab/names';
+import { displayName, displayOf, handleOf } from '@/kolab/names';
 import { unreadOf, type Unread } from '@/kolab/unread';
 import { setBadge } from '@/push';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
@@ -56,7 +56,7 @@ export default function Home() {
   const agents = all.filter((m) => m.kind === 'agent' && match(handleOf(m))).sort((x, y) => Number(y.owner === me) - Number(x.owner === me));
   const unreadRows = [
     ...[...unread.channels].filter(([c]) => match(c)).map(([c, u]) => ({ key: `c-${c}`, label: `#${c}`, href: `/c/channel/${c}`, u, icon: 'channel' as IconName })),
-    ...[...unread.dms].filter(([p]) => match(p)).map(([p, u]) => ({ key: `d-${p}`, label: p, href: `/c/dm/${p}`, u, icon: (all.find((m) => m.actor === p)?.kind === 'agent' ? 'agent' : 'person') as IconName })),
+    ...[...unread.dms].filter(([p]) => match(p) || match(displayName(p, all))).map(([p, u]) => ({ key: `d-${p}`, label: displayName(p, all), href: `/c/dm/${p}`, u, icon: (all.find((m) => m.actor === p)?.kind === 'agent' ? 'agent' : 'person') as IconName })),
   ];
   const problem = [channels, members, answers].find((x) => x.error)?.error as Error | undefined;
 
@@ -83,7 +83,7 @@ export default function Home() {
           <Item icon="browseChannels" label="Browse channels" onPress={() => router.push('/browse')} />
         </Section>
         <Section title="Direct messages">
-          {dms.map((c) => <Item key={c.with} icon="person" label={c.with} detail={all.find((m) => m.actor === c.with)?.here ? 'here' : undefined}
+          {dms.map((c) => <Item key={c.with} icon="person" label={displayName(c.with, all)} detail={all.find((m) => m.actor === c.with)?.here ? 'here' : undefined}
             unread={c.unread ? { count: c.unread, mentions: c.unread } : undefined} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: c.with } })} />)}
           {!conversations.isLoading && dms.length === 0 && <Hint>{q ? 'Nobody matches.' : 'No direct messages yet: the pencil starts one.'}</Hint>}
         </Section>
@@ -93,7 +93,7 @@ export default function Home() {
             const s = a.owner === me ? statuses?.find((x) => x.agent === a.actor) : undefined;
             const needs = needsYouCount(s?.needs_you);
             return (
-              <Item key={a.actor} testID={`agent-${a.actor}`} icon={STATE_ICON[s?.state ?? a.state ?? ''] ?? 'stateStopped'} label={handleOf(a)} detail={s?.state ?? a.state ?? 'not running'}
+              <Item key={a.actor} testID={`agent-${a.actor}`} icon={STATE_ICON[s?.state ?? a.state ?? ''] ?? 'stateStopped'} label={displayOf(a)} detail={s?.state ?? a.state ?? 'not running'}
                 sub={a.owner === me ? lastLine(s) : undefined} flag={needs ? 'needs you' : undefined} unread={unread.dms.get(a.actor)}
                 onPress={() => router.push(a.owner === me ? { pathname: '/agent/[actor]', params: { actor: a.actor } } : { pathname: '/profile/[actor]', params: { actor: a.actor } })} />
             );

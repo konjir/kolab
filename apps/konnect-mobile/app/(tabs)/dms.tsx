@@ -2,6 +2,7 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '@/auth/AuthProvider';
 import { Avatar } from '@/Avatar';
 import { useConversations, useMembers } from '@/kolab/hooks';
+import { displayName } from '@/kolab/names';
 import { quoteOf } from '@/kolab/thread';
 import { Hint, Problem, Row, Screen, Section } from '@/ui';
 import { View } from 'react-native';
@@ -34,7 +35,7 @@ export default function DirectMessages() {
             <View key={c.with} style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 14 }}>
               {m && <Avatar member={m} owner={owner} size={32} />}
               <View style={{ flex: 1 }}>
-                <Row testID={`dm-${c.with}`} icon={m?.kind === 'agent' ? 'agent' : 'person'} label={`${c.with}: ${c.last.from === me ? 'you: ' : ''}${quoteOf(c.last.message, 40)}`}
+                <Row testID={`dm-${c.with}`} icon={m?.kind === 'agent' ? 'agent' : 'person'} label={`${displayName(c.with, members)}: ${c.last.from === me ? 'you: ' : ''}${quoteOf(c.last.message, 40)}`}
                   detail={`${unread}${when(c.last_at)}`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: c.with } })} />
               </View>
             </View>

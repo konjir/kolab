@@ -13,6 +13,18 @@ const MENTION = new RegExp(`(^|[^\\w@/])@(${NAME}(?:/${NAME})?)`, 'gi');
 export const handleOf = (m: Pick<Member, 'actor' | 'owner' | 'label'>) => (m.owner && m.label ? `${m.owner}/${m.label}` : m.actor);
 
 /**
+ * How the app shows a member wherever it names one: a person by name (`bo`), an agent as
+ * `@owner/label` (`@bo/builder`), never by its actor id (`bo-builder`).
+ */
+export const displayOf = (m: Pick<Member, 'actor' | 'owner' | 'label' | 'kind'>) => (m.kind === 'agent' ? `@${handleOf(m)}` : m.actor);
+
+/** displayOf for an actor id, through the team's members; an actor they don't list, as it is. */
+export function displayName(actor: string, members: readonly Pick<Member, 'actor' | 'owner' | 'label' | 'kind'>[] | undefined): string {
+  const m = members?.find((x) => x.actor === actor);
+  return m ? displayOf(m) : actor;
+}
+
+/**
  * The members `text` mentions, each once, in the order first written, as Kolab names them: only
  * those who are members, and at most MAX_MENTIONS.
  */

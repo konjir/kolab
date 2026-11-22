@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { useAgentActivity, useAgentStatus, useAnswers, useMembers } from '@/kolab/hooks';
+import { displayName } from '@/kolab/names';
 import { quoteOf } from '@/kolab/thread';
 import { activityOf } from '@/kolab/unread';
 import { at, contextOf, ownAgents, whereOf, yourAgentsActivity } from '@/kolab/your-agents';
@@ -52,7 +53,7 @@ export default function Activity() {
             {items.map(({ kind, item }) => {
               const where = 'channel' in item ? `#${item.channel}` : 'a direct message';
               return (
-                <Row key={`${kind}-${item.id}`} icon={KIND[kind].icon} label={`${item.from} ${KIND[kind].says} in ${where}: ${quoteOf(item.message, 60)}`}
+                <Row key={`${kind}-${item.id}`} icon={KIND[kind].icon} label={`${displayName(item.from, members)} ${KIND[kind].says} in ${where}: ${quoteOf(item.message, 60)}`}
                   onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: 'channel' in item ? { kind: 'channel', name: item.channel } : { kind: 'dm', name: item.from } })} />
               );
             })}

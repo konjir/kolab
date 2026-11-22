@@ -13,7 +13,7 @@ import { markReader, type MarkReader } from '@/kolab/mark-read';
 import { isAgent, useAgentConversation, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
 import { agentsIn, at, disclosureOf, onlyAgent, ownAgents, readOnlyBanner } from '@/kolab/your-agents';
 import { Button } from '@/ui';
-import { handleOf, mentionsIn } from '@/kolab/names';
+import { displayName, handleOf, mentionsIn } from '@/kolab/names';
 import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
 import { readThrough } from '@/kolab/unread';
 import { Markdown } from '@/markdown';
@@ -119,7 +119,7 @@ export default function Conversation() {
       <Pressable testID={`msg-${m.id}`} onLongPress={() => actions(m)} style={[styles.msg, item.head && styles.head]}>
         {item.head && (
           <View style={styles.meta}>
-            <Text onPress={() => router.push({ pathname: '/profile/[actor]', params: { actor: m.from } })} style={[styles.from, { color: colors.ink }]}>{m.from}{agent ? ' · agent' : ''}</Text>
+            <Text onPress={() => router.push({ pathname: '/profile/[actor]', params: { actor: m.from } })} style={[styles.from, { color: colors.ink }]}>{displayName(m.from, members)}{agent ? ' · agent' : ''}</Text>
             <Text style={[styles.time, { color: colors['ink-muted'] }]}>{time(m.sent_at)}</Text>
           </View>
         )}
@@ -138,7 +138,7 @@ export default function Conversation() {
   };
 
   const people = (members ?? []).filter((m) => m.actor !== me).map(handleOf);
-  const title = kind === 'channel' ? `#${name}` : name;
+  const title = kind === 'channel' ? `#${name}` : displayName(name, members);
   const agentHandle = readOnly ? at(as!, members) : '';
   const otherHandle = at(name, members);
   // Who else can read a DM with an agent, from Kolab's fields: said under the header, always.
