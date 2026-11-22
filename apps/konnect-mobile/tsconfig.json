@@ -1,0 +1,12 @@
+{
+  // The app, as Metro bundles it: no Node globals. tsconfig.config.json checks app.config.ts, which runs in Node.
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    // react-native's condition, as Expo's base has it, and the repo's libraries' TypeScript source.
+    "customConditions": ["react-native", "@konjir/source"],
+    "paths": { "@/*": ["./src/*"] }
+  },
+  "include": ["app", "src", "test", ".expo/types/**/*.ts", "expo-env.d.ts"]
+}

@@ -1,0 +1,14 @@
+# The four tabs open, each saying sign-in isn't there yet. APP_ID comes from scripts/e2e.mjs (APP_VARIANT).
+appId: ${APP_ID}
+---
+- launchApp
+- assertVisible: "Channels"
+- assertVisible: "Sign-in comes next.*"
+- tapOn: "DMs"
+- assertVisible: "Every conversation with people and agents.*"
+- tapOn: "Activity"
+- assertVisible: "Mentions of you.*"
+- tapOn: "You"
+- assertVisible: "Variant"
+- tapOn: "Home"
+- assertVisible: "Agents"

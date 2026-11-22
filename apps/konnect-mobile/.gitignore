@@ -1,0 +1,19 @@
+# Continuous Native Generation: expo prebuild writes these from app.config.ts
+/ios/
+/android/
+
+# Expo's local state, and what typed routes and expo-env.d.ts are generated into
+.expo/
+expo-env.d.ts
+
+# expo export (bundle-scan) and local builds
+/dist/
+*.ipa
+*.apk
+*.aab
+
+# Metro
+.metro-health-check*
+
+# A local Kolab's state and tokens (scripts/local-kolab.ts)
+/.konjir-dev/
