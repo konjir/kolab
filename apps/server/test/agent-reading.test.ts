@@ -52,11 +52,11 @@ test('the owner reads their agent over MCP: its conversations, its messages, the
   expect((await tool(mcp, ann, 'konjir_agent_activity')).ok).toMatchObject({ items: [{ kind: 'dm', agent: 'ann-claude', from: 'bo', to: 'ann-claude' }], next: null });
 
   // Nothing runs as it (it said nothing, and no stream of it listens): it has unread, so it needs Ann.
-  const status = async () => ((await tool(mcp, ann, 'konjir_list_my_agents_status')).ok!.agents as { state: string | null; needs_you: { not_running_with_unread: boolean } }[])[0];
-  expect(await status()).toMatchObject({ agent: 'ann-claude', label: 'claude', state: null, here: true, unread: 1, needs_you: { mentioned_unread: 0, capped: false, not_running_with_unread: true } });
+  const status = async () => ((await tool(mcp, ann, 'konjir_list_my_agents_status')).ok!.agents as { state: string | null; needs_you: { not_running_with_unread: number } }[])[0];
+  expect(await status()).toMatchObject({ agent: 'ann-claude', label: 'claude', state: null, here: true, unread: 1, needs_you: { mentioned_unread: 0, capped: 0, not_running_with_unread: 1 } });
   // Once it says it is idle, it runs.
   expect((await tool(mcp, agent, 'konjir_say_state', { state: 'idle' })).error).toBeUndefined();
-  expect(await status()).toMatchObject({ state: 'idle', needs_you: { not_running_with_unread: false } });
+  expect(await status()).toMatchObject({ state: 'idle', needs_you: { not_running_with_unread: 0 } });
   // Reading left it unread.
   expect((await tool(mcp, agent, 'konjir_read_messages')).ok!.messages).toMatchObject([{ from: 'bo', readable_by: ['ann'] }]);
 

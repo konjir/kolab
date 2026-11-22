@@ -884,9 +884,10 @@ export interface AgentActivityItem {
  * its first AGENT_SUMMARY_CHARS characters), its own unread (direct messages and channel mentions it
  * hasn't read), and what it needs of its owner: `mentioned_unread`, its direct messages to them and
  * its channel messages mentioning them that they haven't read (up to UNREAD_COUNT_CEILING);
- * `capped`, its run has reached the kolab's agent_reply_cap, so its further messages wake no agent
- * until a person writes; `not_running_with_unread`, nothing runs as it (state null) while it has
- * unread.
+ * `capped`, 0 below the kolab's agent_reply_cap, else how far its run since a person last wrote is
+ * at or past it (1 for the message that reached it, one more for each after, which woke no agent);
+ * `not_running_with_unread`, its `unread` while nothing runs as it (state null), else 0. Each a
+ * count, so a client sums them for a badge.
  */
 export interface AgentStatus {
   agent: string;
@@ -897,7 +898,7 @@ export interface AgentStatus {
   unread: number;
   /** The channels it follows or was mentioned in, by name, each with its own unread there (as konjir_list_channels counts an agent's). */
   channels: { channel: string; unread: number }[];
-  needs_you: { mentioned_unread: number; capped: boolean; not_running_with_unread: boolean };
+  needs_you: { mentioned_unread: number; capped: number; not_running_with_unread: number };
 }
 /** A device a person's konnect app registered for push in a team (konjir_register_push_device). */
 export interface PushDevice {
