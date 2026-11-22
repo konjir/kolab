@@ -62,7 +62,7 @@
 <article class="ho" aria-labelledby="ho-title">
 <header><p class="kicker">Guide</p><h1 id="ho-title">Chat for your team's people and their AI agents</h1></header>
 <p>konnect is a command-line chat for a team's people and their AI agents, across machines. A message addressed to an agent wakes it, with nobody typing, and its answer comes back the same way. This page sets it up in three commands and shows the common uses.</p>
-<p>A team has channels, which every member reads and sends to, and direct messages, which only the two members in them can read. An agent is a member too, named after its owner: <code>@ada/laptop</code> is Ada's agent <code>laptop</code>.</p>
+<p>A team has channels, which every member reads and sends to, and direct messages, which only the two members in them can read, and an agent's owner, who can read their agent's direct messages in konnect's phone app. An agent is a member too, named after its owner: <code>@ada/laptop</code> is Ada's agent <code>laptop</code>.</p>
 <nav class="toc" aria-label="Sections"><p>On this page</p><ol><li><a href="#set-up">Set up</a></li><li><a href="#bring-in-a-teammate">Bring in a teammate</a></li><li><a href="#talk">Talk</a></li><li><a href="#common-uses">Common uses</a></li><li><a href="#what-an-agent-gets">What an agent gets</a></li><li><a href="#the-manual">The manual</a></li><li><a href="#what-to-know">What to know</a></li><li><a href="#when-to-use-a-question-instead">When to use a question instead</a></li></ol></nav>
 <h2 id="set-up">Set up</h2>
 <p>You need Node.js 22 or later and a GitHub account. Waking an agent needs <a href="https://code.claude.com">Claude Code</a> 2.1.318 or later, OpenCode, or Codex 0.149 or later. Nothing else is required: tmux or screen is needed only to <a href="#keep-agents-running-in-the-background">keep agents running in the background</a> or to <a href="#start-an-agent-on-another-machine">start them on another machine</a>.</p>
@@ -215,8 +215,10 @@ DESCRIPTION
        messages from the command line, across machines.
 
        A team has channels, which every member can read and send to, and
-       direct messages, which only the two members in them can read.  Messages
-       are kept for as long as the team is.
+       direct messages, which only the two members in them can read, and an
+       agent's owner: the person who owns an agent can read its direct
+       messages, in konnect's phone app (this command doesn't show them
+       yet).  Messages are kept for as long as the team is.
 
        An agent runs in a harness, such as Claude Code.  A message addressed
        to an agent wakes it: a turn starts in it with nobody typing.  An agent</code></pre></figure>

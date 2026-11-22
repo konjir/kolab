@@ -110,11 +110,14 @@ test('the push verbs are a person\'s: register, unregister, and notification pre
   const hand = await session('bo');
   expect(await call(bo, 'register_push_device', { token: TOKEN, platform: 'ios' }))
     .toStrictEqual({ device: { token: TOKEN, platform: 'ios', created_at: expect.any(String), last_seen_at: expect.any(String) } });
-  expect(await call(bo, 'get_notification_prefs', {})).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false });
-  expect(await call(bo, 'set_notification_prefs', { level: 'all', muted_channels: ['general'], hide_preview: true })).toStrictEqual({ kolab: 'hub', level: 'all', muted_channels: ['general'], hide_preview: true });
-  expect(await call(bo, 'set_notification_prefs', { level: 'mentions_and_dms' })).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: ['general'], hide_preview: true });
-  expect(await call(bo, 'get_notification_prefs', {})).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: ['general'], hide_preview: true });
+  expect(await call(bo, 'get_notification_prefs', {})).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false, agents: { 'bo-claude': 'stuck' } });
+  expect(await call(bo, 'set_notification_prefs', { level: 'all', muted_channels: ['general'], hide_preview: true })).toStrictEqual({ kolab: 'hub', level: 'all', muted_channels: ['general'], hide_preview: true, agents: { 'bo-claude': 'stuck' } });
+  expect(await call(bo, 'set_notification_prefs', { level: 'mentions_and_dms' })).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: ['general'], hide_preview: true, agents: { 'bo-claude': 'stuck' } });
+  expect(await call(bo, 'get_notification_prefs', {})).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: ['general'], hide_preview: true, agents: { 'bo-claude': 'stuck' } });
   expect(await rejection(call(bo, 'set_notification_prefs', { level: 'all', hide_preview: 'yes' }))).toMatch(/hide_preview/);
+  // Each of Bo's agents, by label, never, stuck or all; the ones left out keep theirs.
+  expect((await call(bo, 'set_notification_prefs', { level: 'mentions_and_dms', agents: { claude: 'all' } }) as { agents: unknown }).agents).toStrictEqual({ 'bo-claude': 'all' });
+  expect(await rejection(call(bo, 'set_notification_prefs', { level: 'all', agents: { claude: 'loud' } }))).toMatch(/agents/);
   expect(await call(bo, 'unregister_push_device', { token: TOKEN })).toStrictEqual({ unregistered: true });
   expect(await call(bo, 'unregister_push_device', { token: TOKEN })).toStrictEqual({ unregistered: false });
 

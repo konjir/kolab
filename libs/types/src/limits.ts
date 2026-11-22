@@ -204,6 +204,19 @@ export const EXPO_PUSH_TOKEN = /^Expo(nent)?PushToken\[[A-Za-z0-9_-]{1,200}\]$/;
 export const MAX_PUSH_DEVICES = 10;
 /** How much of a message a push shows, in characters, when previews are on. */
 export const PUSH_PREVIEW_CHARS = 100;
+/** How much of an agent's newest message konjir_list_my_agents_status shows its owner, in characters. */
+export const AGENT_SUMMARY_CHARS = 100;
+/**
+ * What a person is pushed of one of their own agents in a team (notification_pref.agents, 0059):
+ * never; stuck (the default), only when it is stuck (capped, or nothing runs as it while a direct
+ * message or a mention waits for it), at most once an hour for each agent; all, besides, each
+ * direct message to it and each mention of it from someone else.
+ */
+export const AGENT_NOTIFY_LEVELS = ['never', 'stuck', 'all'] as const;
+export type AgentNotifyLevel = (typeof AGENT_NOTIFY_LEVELS)[number];
+export const DEFAULT_AGENT_NOTIFY: AgentNotifyLevel = 'stuck';
+/** The least time between two pushes saying one agent is stuck, to its owner, in seconds. */
+export const AGENT_STUCK_PUSH_EVERY_S = 3600;
 /** The most messages one request to Expo's push service carries, as Expo allows. */
 export const PUSH_BATCH = 100;
 /**

@@ -22,7 +22,7 @@ import {
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Conversation, type Channel, type PushDevice, type NotificationPrefs, type PushNotification, type PushData, type SentMessage, type NotificationLevel, type PushPlatform, PUSH_PLATFORMS, NOTIFICATION_LEVELS, DEFAULT_NOTIFICATION_LEVEL, EXPO_PUSH_TOKEN, MAX_PUSH_DEVICES, PUSH_PREVIEW_CHARS, PUSH_BATCH, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Conversation, type AgentActivityItem, type AgentStatus, AGENT_SUMMARY_CHARS, AGENT_NOTIFY_LEVELS, DEFAULT_AGENT_NOTIFY, AGENT_STUCK_PUSH_EVERY_S, type AgentNotifyLevel, type Channel, type PushDevice, type NotificationPrefs, type PushNotification, type PushData, type SentMessage, type NotificationLevel, type PushPlatform, PUSH_PLATFORMS, NOTIFICATION_LEVELS, DEFAULT_NOTIFICATION_LEVEL, EXPO_PUSH_TOKEN, MAX_PUSH_DEVICES, PUSH_PREVIEW_CHARS, PUSH_BATCH, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
@@ -875,9 +875,11 @@ export class Kolab {
   /**
    * Push notifications to konnect's phone app (0058): `send` reaches Expo's push service, and is
    * null while push is off (the server sets it only when it has an access token); with `preview`
-   * false, a push carries no words of its message.
+   * false, a push carries no words of its message. `agentRunning` says whether something runs as an
+   * agent in a kolab (the server's AgentStates), for a push that one is stuck; without it, an agent
+   * runs while a listen stream of its session is open on this process.
    */
-  readonly push: { send: PushSend | null; preview: boolean; listening: (() => string[]) | null } = { send: null, preview: true, listening: null };
+  readonly push: { send: PushSend | null; preview: boolean; listening: (() => string[]) | null; agentRunning: ((kolab: string, agent: string) => boolean) | null } = { send: null, preview: true, listening: null, agentRunning: null };
   /**
    * Which redirect URIs are konnect's own app's (appRedirect): always APP_HTTPS_REDIRECT_URIS, and, with
    * `devSchemes`, its development builds' private-use schemes, for local-kolab and tests
@@ -10660,7 +10662,9 @@ export class Kolab {
    * app can show their avatar: a person's own, as their GitHub identity has it (the login they last
    * signed in with, which their actor id was made from, D55), an agent's its owner's; null for one
    * with no GitHub identity (an organization's agent, or a person an admin made and never linked).
-   * Not what each holds: that is for the kolab's Admins (listAccess). A page at a time, by name (W2.21).
+   * An agent whose owner is a person who is a member here says `owner_reads`: its owner reads its
+   * direct messages (agentMessagesPage). Not what each holds: that is for the kolab's Admins
+   * (listAccess). A page at a time, by name (W2.21).
    */
   async membersPage(sessionId: string, page: PageOpts = {}): Promise<{ kolab: string; items: Member[]; next: string | null }> {
     const s = await this.session(sessionId);
@@ -10689,6 +10693,8 @@ export class Kolab {
         login: logins.get(behind(h) ?? '')?.login ?? null,
         github_id: logins.get(behind(h) ?? '')?.subject ?? null,
         here: here.has(h.id),
+        // Its owner, a person who is a member here, reads its direct messages (konjir_list_agent_messages).
+        ...(h.kind === 'agent' && h.owner_id !== null && names.has(h.owner_id) ? { owner_reads: true as const } : {}),
         ...(h.id === s.actor_id ? { you: true as const } : {}),
       })),
     };
@@ -10755,8 +10761,14 @@ export class Kolab {
         [id, s.kolab, s.actor_id, to, body, opts.replyTo ?? null, nonce])).rows[0];
       if (run) await tx.query(`insert into message_run(message_id, kolab_id, agent_run) values ($1, $2, $3)`, [id, s.kolab, run]);
       await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
-      queued = await this.enqueuePush(tx, { kind: 'dm', kolab: s.kolab, id, recipients: [to] });
-      return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
+      // The owner of an agent at either end reads it (agentMessagesPage): their answers are signalled
+      // too, unchanged, so an open listen stream of theirs hears that their agents' traffic moved.
+      const readers = readersOf(members);
+      const owners = [...new Set([readers.get(s.actor_id), readers.get(to)])].filter((o): o is string => !!o);
+      for (const owner of owners) if (owner !== to) await signal({ inbox: 'actor', kolab: s.kolab, actor: owner });
+      // Their owners may be pushed of it too (agentPushes), so the job is queued for them as well.
+      queued = await this.enqueuePush(tx, { kind: 'dm', kolab: s.kolab, id, recipients: [to, ...owners] });
+      return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null, ...readableBy(readers, s.actor_id, to) };
     }, undefined, { access: true })).catch(async (e: unknown) => {
       if (e instanceof Repeated) return e.message as Message;
       // The same nonce sent at once to another conversation, under another lock: the index refuses
@@ -10789,7 +10801,8 @@ export class Kolab {
     const unread = rows.length < MESSAGES_AT_ONCE ? rows.length : (await this.db.query<{ n: number }>(
       `select count(*)::int as n from message m where m.kolab_id = $1 and m.sent_to = $2
           and not exists (select 1 from message_receipt r where r.message_id = m.id)`, [s.kolab, s.actor_id])).rows[0].n;
-    return { unread, items: rows.map((m) => ({ ...messageOf(m), ...(m.agent_run > cap ? { capped: true as const } : {}) })) };
+    const readers = await this.readersAmong(this.db, s.kolab, rows.flatMap((m) => [m.sent_by, m.sent_to]));
+    return { unread, items: rows.map((m) => ({ ...messageOf(m), ...readableBy(readers, m.sent_by, m.sent_to), ...(m.agent_run > cap ? { capped: true as const } : {}) })) };
   }
 
   /**
@@ -10839,7 +10852,10 @@ export class Kolab {
       const left = (await tx.query<{ n: number }>(`select count(*)::int as n from message m where ${unread}`, [s.kolab, s.actor_id, from])).rows[0].n;
       // The actor's other sessions hear that their answers hold fewer unread.
       if (ids.length && !archived) await signal({ inbox: 'actor', kolab: s.kolab, actor: s.actor_id });
-      return { messages: rows.map(messageOf), more: archived ? Math.max(0, left - ids.length) : left };
+      return { rows, more: archived ? Math.max(0, left - ids.length) : left };
+    }).then(async ({ rows, more }) => {
+      const readers = await this.readersAmong(this.db, s.kolab, rows.flatMap((m) => [m.sent_by, m.sent_to]));
+      return { messages: rows.map((m) => ({ ...messageOf(m), ...readableBy(readers, m.sent_by, m.sent_to) })), more };
     });
   }
 
@@ -10856,8 +10872,17 @@ export class Kolab {
    */
   async conversationsPage(sessionId: string, page: PageOpts = {}): Promise<{ items: Conversation[]; next: string | null }> {
     const s = await this.session(sessionId);
+    return this.conversationsOf(s.kolab, s.actor_id, page, scoped('conversations', { kolab: s.kolab, actor: s.actor_id }));
+  }
+
+  /**
+   * One page of `actor`'s direct conversations in `kolab`, paged under `list` (conversationsPage, and
+   * an owner's agentConversationsPage): `unread` is `actor`'s own. Each says who else reads it
+   * (readable_by: an agent's owner).
+   */
+  private async conversationsOf(kolab: string, actor: string, page: PageOpts, list: string): Promise<{ items: Conversation[]; next: string | null }> {
+    const s = { kolab, actor_id: actor };
     const size = pageSize(page.limit);
-    const list = scoped('conversations', { kolab: s.kolab, actor: s.actor_id });
     const [before] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
     const rows = (await this.db.query<MessageRow & { other: string; unread: number; scanned: number; edge_unread: boolean | null }>(
       `with recursive senders(other) as (
@@ -10894,13 +10919,15 @@ export class Kolab {
         order by m.id desc`,
       [s.kolab, s.actor_id, before ?? null, size + 1, UNREAD_SCAN])).rows;
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
+    const readers = await this.readersAmong(this.db, kolab, shown.flatMap((r) => [r.sent_by, r.sent_to]));
     return {
       next,
       items: shown.map((r) => ({
-        with: r.other, last: messageOf(r),
+        with: r.other, last: { ...messageOf(r), ...readableBy(readers, r.sent_by, r.sent_to) },
         // More past the ceiling, or past the scan when the oldest it read is unread too, so older ones may be.
         unread: Math.min(r.unread, UNREAD_COUNT_CEILING), unread_more: r.unread > UNREAD_COUNT_CEILING || (r.scanned >= UNREAD_SCAN && !!r.edge_unread),
         last_at: iso(r.sent_at)!,
+        ...readableBy(readers, actor, r.other),
       })),
     };
   }
@@ -10943,16 +10970,21 @@ export class Kolab {
    * One page of the session's actor's messages in its kolab, newest first (konjir_list_messages):
    * the ones sent to it, or with `sent` the ones it sent; with `with`, only those exchanged with
    * that member, both ways (by name, or an agent as `<owner>/<label>`): a direct conversation's
-   * history. Only the two of them ever see a message between them: the query names the caller as
-   * one end, so no third member, an agent's owner or an admin reads it here. Read or not, and it
-   * marks nothing.
+   * history. The query names the caller as one end, so no third member or admin reads it here; an
+   * agent's owner reads its agent's with agentMessagesPage, and each message says so (readable_by).
+   * Read or not, and it marks nothing.
    */
   async messagesPage(sessionId: string, given: { sent?: boolean; with?: string } = {}, page: PageOpts = {}): Promise<{ items: Message[]; next: string | null }> {
     const s = await this.session(sessionId);
-    const size = pageSize(page.limit);
     // `with` by name, or an agent as <owner>/<label>, as konjir_read_messages takes `from`.
     const filter = { ...given, with: typeof given.with === 'string' ? memberName(given.with) : undefined };
-    const list = scoped('messages', { kolab: s.kolab, actor: s.actor_id, sent: filter.sent || undefined, with: filter.with });
+    return this.messagesOf(s.kolab, s.actor_id, filter, page, scoped('messages', { kolab: s.kolab, actor: s.actor_id, sent: filter.sent || undefined, with: filter.with }));
+  }
+
+  /** One page of `actor`'s messages in `kolab`, newest first, paged under `list` (messagesPage, and an owner's agentMessagesPage). */
+  private async messagesOf(kolab: string, actor: string, filter: { sent?: boolean; with?: string }, page: PageOpts, list: string): Promise<{ items: Message[]; next: string | null }> {
+    const s = { kolab, actor_id: actor };
+    const size = pageSize(page.limit);
     const [after] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
     const whose = filter.with !== undefined
       ? `((m.sent_by = $2 and m.sent_to = $3) or (m.sent_by = $3 and m.sent_to = $2)) and ($4::boolean is null or (m.sent_by = $2) = $4::boolean)`
@@ -10963,7 +10995,175 @@ export class Kolab {
         order by m.id desc limit $6`,
       [s.kolab, s.actor_id, filter.with ?? null, filter.with !== undefined ? filter.sent ?? null : !!filter.sent, after ?? null, size + 1])).rows;
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
-    return { items: shown.map(messageOf), next };
+    const readers = await this.readersAmong(this.db, kolab, shown.flatMap((m) => [m.sent_by, m.sent_to]));
+    return { items: shown.map((m) => ({ ...messageOf(m), ...readableBy(readers, m.sent_by, m.sent_to) })), next };
+  }
+
+  // ---- a person reads their own agents' messages (Lee, 2026-11-22, PR #211) ---------
+
+  /**
+   * In `q`, who reads the direct messages of each agent among `ids` beside the two in a
+   * conversation (readableBy): its owner, a person who is a member of `kolab` (holderRows), by agent.
+   * An organization's agent, whose owner is no member, has none. Read for the messages a list shows
+   * alone, so a page of people's messages reads one row.
+   */
+  private async readersAmong(q: Q, kolab: string, ids: string[]): Promise<Map<string, string>> {
+    if (!ids.length) return new Map();
+    const agents = (await q.query<{ id: string; owner_id: string }>(
+      `select id, owner_id from actor where id = any($1::text[]) and kind = 'agent' and owner_id is not null`, [[...new Set(ids)]])).rows;
+    const owners = new Set<string>();
+    for (const o of new Set(agents.map((a) => a.owner_id))) if ((await holderRows(q, kolab, undefined, o)).some((h) => h.rank > 0)) owners.add(o);
+    return new Map(agents.filter((a) => owners.has(a.owner_id)).map((a) => [a.id, a.owner_id]));
+  }
+
+  /**
+   * The session's person and their own agent `given` names, `<owner>/<label>` or one of their labels
+   * (or its name), a member of the session's kolab, as they are too: for reading its messages
+   * (agentConversationsPage, agentMessagesPage, agentActivity). A person's session only, any of
+   * theirs there; an agent is refused. An organization's agent is refused (reading those is later),
+   * and so is any agent not theirs, or not a member here, with one refusal.
+   */
+  private async ownAgent(sessionId: string, given: unknown) {
+    const { s, members, mine } = await this.ownAgents(sessionId);
+    if (typeof given !== 'string' || !given.trim()) throw new LimitError('name the agent: agent=<label>, or <you>/<label>');
+    const n = given.trim().replace(/^@/, '');
+    const h = n.includes('/') ? members.find((x) => x.id === memberName(n)) : members.find((x) => x.id === `${s.actor_id}-${n}`) ?? members.find((x) => x.id === n);
+    if (h?.kind === 'agent' && h.owner_id !== null && h.owner_id !== s.actor_id && (await this.findAccount(h.owner_id))?.kind === 'organization') {
+      throw new AccessError(`${n} is an organization's agent: reading an organization's agents' messages isn't open yet`);
+    }
+    if (!h || !mine.includes(h.id)) throw new AccessError(`${n} names no agent of yours in kolab ${s.kolab}: only an agent's owner reads its messages, and only where both are members (konjir_list_members)`);
+    return { s, members, agent: h.id };
+  }
+
+  /** The session's person, the kolab's members, and the person's own agents among them, by name. A person's session only. */
+  private async ownAgents(sessionId: string) {
+    const s = await this.session(sessionId);
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person reads their own agents' messages, from their own session`);
+    const members = await this.membersIn(this.db, s.kolab);
+    if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
+    const mine = members.filter((h) => h.kind === 'agent' && h.owner_id === s.actor_id).map((h) => h.id).sort();
+    return { s, members, mine };
+  }
+
+  /**
+   * One page of the direct conversations of the caller's own agent `agent` in the session's kolab
+   * (konjir_list_agent_conversations), as conversationsPage gives the agent's own: `unread` is what
+   * the agent hasn't read. It reads only: no receipt, read position, wake or budget moves.
+   */
+  async agentConversationsPage(sessionId: string, agent: string, page: PageOpts = {}): Promise<{ agent: string; items: Conversation[]; next: string | null }> {
+    const { s, agent: a } = await this.ownAgent(sessionId, agent);
+    return { agent: a, ...await this.conversationsOf(s.kolab, a, page, scoped('agent-conversations', { kolab: s.kolab, actor: s.actor_id, agent: a })) };
+  }
+
+  /**
+   * One page of the direct messages between the caller's own agent `agent` and the member `with`
+   * (by name, or an agent as `<owner>/<label>`) in the session's kolab, both ways, newest first, as
+   * messagesPage gives the agent its own (konjir_list_agent_messages). It reads only.
+   */
+  async agentMessagesPage(sessionId: string, agent: string, given: string, page: PageOpts = {}): Promise<{ agent: string; with: string; items: Message[]; next: string | null }> {
+    if (typeof given !== 'string' || !given.trim()) throw new LimitError('name the member the agent talks with: with=<member>');
+    const { s, agent: a } = await this.ownAgent(sessionId, agent);
+    const other = memberName(given);
+    return { agent: a, with: other, ...await this.messagesOf(s.kolab, a, { with: other }, page, scoped('agent-messages', { kolab: s.kolab, actor: s.actor_id, agent: a, with: other })) };
+  }
+
+  /**
+   * In this.db, the newest messages, before `before`, that any of `agents` sent or received in
+   * `kolab`: direct messages to or from one, and channel messages one sent or that mention one; at
+   * most `limit`, newest first, each once (agentActivity, myAgentsStatus).
+   */
+  private async agentActivityRows(kolab: string, agents: string[], before: string | null, limit: number, cap: number): Promise<AgentActivityItem[]> {
+    if (!agents.length) return [];
+    const dms = (await this.db.query<MessageRow & { run: number }>(
+      `select ${MESSAGE_COLUMNS}, coalesce(mr.agent_run, 0) as run from message m left join message_receipt r on r.message_id = m.id
+         left join message_run mr on mr.message_id = m.id
+        where m.kolab_id = $1 and (m.sent_by = any($2::text[]) or m.sent_to = any($2::text[])) and ($3::text is null or m.id < $3)
+        order by m.id desc limit $4`, [kolab, agents, before, limit])).rows;
+    const chans = (await this.db.query<ChannelMessageRow>(
+      `select ${CHANNEL_MESSAGE_COLUMNS} from channel_message m join channel c on c.id = m.channel_id
+        where m.kolab_id = $1 and ($3::text is null or m.id < $3)
+          and (m.sent_by = any($2::text[]) or exists (select 1 from channel_mention x where x.message_id = m.id and x.actor_id = any($2::text[])))
+        order by m.id desc limit $4`, [kolab, agents, before, limit])).rows;
+    const ours = new Set(agents);
+    const items: AgentActivityItem[] = [
+      ...dms.map((m): AgentActivityItem => ({
+        kind: 'dm', agent: ours.has(m.sent_by) ? m.sent_by : m.sent_to, id: m.id, from: m.sent_by, to: m.sent_to, message: m.body, reply_to: m.reply_to,
+        sent_at: iso(m.sent_at)!, ...(m.run > cap ? { capped: true as const } : {}),
+      })),
+      ...chans.map((m): AgentActivityItem => {
+        const mentions = m.mentions ?? [];
+        return {
+          kind: 'channel', agent: ours.has(m.sent_by) ? m.sent_by : mentions.find((x) => ours.has(x))!, id: m.id, from: m.sent_by, channel: m.channel, message: m.body,
+          reply_to: m.reply_to, mentions, sent_at: iso(m.sent_at)!, ...(m.agent_run > cap ? { capped: true as const } : {}),
+        };
+      }),
+    ];
+    return items.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)).slice(0, limit);
+  }
+
+  /**
+   * One timeline, newest first, of what the caller's own agents in the session's kolab (or only
+   * `agent`, named as ownAgent takes it) sent and received there (konjir_agent_activity): their
+   * direct messages either way, and channel messages they sent or that mention them, each once
+   * (AgentActivityItem), paged by id. A person's session only. It reads only.
+   */
+  async agentActivity(sessionId: string, opts: { agent?: string | null } = {}, page: PageOpts = {}): Promise<{ items: AgentActivityItem[]; next: string | null }> {
+    const agents = opts.agent === undefined || opts.agent === null ? (await this.ownAgents(sessionId)).mine : [(await this.ownAgent(sessionId, opts.agent)).agent];
+    const s = await this.session(sessionId);
+    const size = pageSize(page.limit);
+    const list = scoped('agent-activity', { kolab: s.kolab, actor: s.actor_id, agent: opts.agent ? agents[0] : undefined });
+    const [before] = (keyOf(list, page.cursor, ['text']) ?? [undefined]) as [string | undefined];
+    const rows = await this.agentActivityRows(s.kolab, agents, before ?? null, size + 1, await this.agentReplyCapIn(this.db, s.kolab));
+    const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
+    return { items: shown, next };
+  }
+
+  /**
+   * For each of the caller's own agents in the session's kolab, by name, what konnect's app's Home
+   * shows of it (konjir_list_my_agents_status, AgentStatus): `here`, its newest message either way,
+   * its own unread, and what it needs of its owner. `state` is the server's to fill in, from what the
+   * agent says (null here), and with it `not_running_with_unread`. A person's session only. It reads only.
+   */
+  async myAgentsStatus(sessionId: string): Promise<{ kolab: string; agents: AgentStatus[] }> {
+    const { s, members, mine } = await this.ownAgents(sessionId);
+    const cap = await this.agentReplyCapIn(this.db, s.kolab);
+    const here = new Set((await this.db.query<{ actor_id: string }>(
+      `select distinct s.actor_id from session s left join oauth_grant g on g.id = s.grant_id
+        where s.kolab_id = $1 and s.actor_id = any($2::text[]) and ${OPEN_SESSION}`, [s.kolab, mine])).rows.map((r) => r.actor_id));
+    const agents: AgentStatus[] = [];
+    for (const a of mine) {
+      const [last] = await this.agentActivityRows(s.kolab, [a], null, 1, cap);
+      const toYou = (await this.db.query<{ dms: number; mentions: number }>(
+        `select (select count(*)::int from (select 1 from message m where m.kolab_id = $1 and m.sent_by = $2 and m.sent_to = $3
+                   and not exists (select 1 from message_receipt r where r.message_id = m.id) limit $4) z) as dms,
+                (select count(*)::int from (select 1 from channel_message m join channel_mention x on x.message_id = m.id and x.actor_id = $3
+                   left join channel_read r on r.channel_id = m.channel_id and r.actor_id = $3
+                  where m.kolab_id = $1 and m.sent_by = $2 and m.id > coalesce(r.read_to, '') limit $4) z) as mentions`,
+        [s.kolab, a, s.actor_id, UNREAD_COUNT_CEILING])).rows[0];
+      const dms = (await this.db.query<{ n: number }>(
+        `select count(*)::int as n from (select 1 from message m where m.kolab_id = $1 and m.sent_to = $2
+            and not exists (select 1 from message_receipt r where r.message_id = m.id) limit $3) z`, [s.kolab, a, UNREAD_COUNT_CEILING])).rows[0].n;
+      const counts = await this.channelCounts(this.db, { kolab: s.kolab, actor_id: a, kind: 'agent' } as Session);
+      const mentions = counts.reduce((n, c) => n + counted(c).mentions, 0);
+      // Its channels: those it follows, and those it was ever mentioned in, each with its own unread there.
+      const mentionedIn = new Set((await this.db.query<{ channel_id: string }>(
+        `select distinct x.channel_id from channel_mention x where x.kolab_id = $1 and x.actor_id = $2`, [s.kolab, a])).rows.map((r) => r.channel_id));
+      const channels = counts.filter((c) => c.following || mentionedIn.has(c.id)).map((c) => ({ channel: c.name, unread: counted(c).unread }));
+      const h = members.find((x) => x.id === a)!;
+      agents.push({
+        agent: a, label: agentLabel(h), state: null, here: here.has(a),
+        last: last ? { kind: last.kind, at: last.sent_at, summary: [...last.message].slice(0, AGENT_SUMMARY_CHARS).join('') } : null,
+        unread: Math.min(dms + mentions, UNREAD_COUNT_CEILING),
+        channels,
+        needs_you: {
+          mentioned_unread: Math.min(toYou.dms + toYou.mentions, UNREAD_COUNT_CEILING),
+          // Its run since the last person's message anywhere in the kolab has reached the cap (countRun).
+          capped: await this.agentCapped(s.kolab, a, cap),
+          not_running_with_unread: false,
+        },
+      });
+    }
+    return { kolab: s.kolab, agents };
   }
 
   // ---- channels in a kolab (migration 0052) -----------------------------------
@@ -11229,7 +11429,12 @@ export class Kolab {
           signalled.push(h.id);
         }
       }
-      queued = await this.enqueuePush(tx, { kind: 'channel', kolab: s.kolab, id, recipients: signalled });
+      // The owner of the agent that sent it, or of an agent it mentions, reads it in their agents'
+      // activity (agentActivity): their answers are signalled too, unchanged, when nothing else did.
+      const readers = readersOf(members);
+      const owners = [...new Set([s.actor_id, ...mentions].map((x) => readers.get(x)))].filter((o): o is string => !!o && o !== s.actor_id);
+      for (const owner of owners) if (!signalled.includes(owner)) await signal({ inbox: 'actor', kolab: s.kolab, actor: owner });
+      queued = await this.enqueuePush(tx, { kind: 'channel', kolab: s.kolab, id, recipients: [...new Set([...signalled, ...owners])] });
       return {
         sent: { id, channel: c.name, from: s.actor_id, message: body, reply_to: opts.replyTo ?? null, mentions, sent_at: iso(sent.sent_at)! },
         channelId: c.id, recipients: signalled,
@@ -11486,12 +11691,16 @@ export class Kolab {
   }
 
   /** In `q`, a person's notification prefs in a kolab, the default without a row, muted channels by name. */
-  private async prefsIn(q: Q, kolab: string, actor: string): Promise<NotificationPrefs> {
-    const row = (await q.query<{ level: NotificationLevel; muted: string[]; hide_preview: boolean }>(
-      `select level, muted, hide_preview from notification_pref where kolab_id = $1 and actor_id = $2`, [kolab, actor])).rows[0];
+  private async prefsIn(q: Q, kolab: string, actor: string, members?: { id: string; kind: ActorKind; owner_id: string | null }[]): Promise<NotificationPrefs> {
+    const row = (await q.query<{ level: NotificationLevel; muted: string[]; hide_preview: boolean; agents: Record<string, string> }>(
+      `select level, muted, hide_preview, agents from notification_pref where kolab_id = $1 and actor_id = $2`, [kolab, actor])).rows[0];
     const muted = row?.muted.length ? (await q.query<{ name: string }>(
       `select name from channel where kolab_id = $1 and id = any($2::text[]) order by name collate "C"`, [kolab, row.muted])).rows.map((r) => r.name) : [];
-    return { kolab, level: row?.level ?? DEFAULT_NOTIFICATION_LEVEL, muted_channels: muted, hide_preview: row?.hide_preview ?? false };
+    // Each of their own agents in the kolab, by name, with its default where they chose nothing.
+    const mine = (members ?? await this.membersIn(q, kolab)).filter((h) => h.kind === 'agent' && h.owner_id === actor).map((h) => h.id).sort();
+    const chosen = (row?.agents ?? {}) as Record<string, AgentNotifyLevel>;
+    const agents = Object.fromEntries(mine.map((a) => [a, (AGENT_NOTIFY_LEVELS as readonly string[]).includes(chosen[a]) ? chosen[a] : DEFAULT_AGENT_NOTIFY]));
+    return { kolab, level: row?.level ?? DEFAULT_NOTIFICATION_LEVEL, muted_channels: muted, hide_preview: row?.hide_preview ?? false, agents };
   }
 
   /**
@@ -11500,8 +11709,10 @@ export class Kolab {
    * ones muted before; and when given, hide_preview, whether their pushes carry none of a message's
    * words. Left out, each stays as it was (no muted channel, previews shown, at first). A muted
    * channel pushes nothing, a mention there included. Every name must be a channel of the kolab.
+   * `agents`, when given, sets for each of their own agents it names (`<label>`, `<you>/<label>` or
+   * its name) what they are pushed of it (AGENT_NOTIFY_LEVELS); the agents it leaves out keep theirs.
    */
-  async setNotificationPrefs(sessionId: string, prefs: { level: string; muted_channels?: string[] | null; hide_preview?: boolean | null }): Promise<NotificationPrefs> {
+  async setNotificationPrefs(sessionId: string, prefs: { level: string; muted_channels?: string[] | null; hide_preview?: boolean | null; agents?: Record<string, string> | null }): Promise<NotificationPrefs> {
     if (!(NOTIFICATION_LEVELS as readonly string[]).includes(prefs.level)) throw new LimitError(`level is one of ${NOTIFICATION_LEVELS.join(', ')}`);
     const hide = prefs.hide_preview ?? null;
     if (hide !== null && typeof hide !== 'boolean') throw new LimitError('hide_preview is true or false');
@@ -11509,6 +11720,9 @@ export class Kolab {
     if (asked !== null && (!Array.isArray(asked) || asked.some((c) => typeof c !== 'string'))) throw new LimitError('muted_channels is a list of channels\' names');
     if (asked !== null && asked.length > MAX_CHANNELS) throw new LimitError(`muted_channels names at most ${MAX_CHANNELS} channels, as many as a kolab holds`);
     const names = asked === null ? null : [...new Set(asked.map(channelName))];
+    const agentsAsked = prefs.agents ?? null;
+    if (agentsAsked !== null && (typeof agentsAsked !== 'object' || Array.isArray(agentsAsked))) throw new LimitError('agents maps each of your agents, by label, to never, stuck or all');
+    for (const v of Object.values(agentsAsked ?? {})) if (!(AGENT_NOTIFY_LEVELS as readonly string[]).includes(v)) throw new LimitError(`each agent's choice is one of ${AGENT_NOTIFY_LEVELS.join(', ')}`);
     const s = await this.session(sessionId);
     this.personsOwn(s, 'chooses what they are told of');
     await this.appSession(this.db, sessionId, { does: 'chooses what they are told of', doing: 'choosing what you are told of', instead: 'sign in with konnect\'s app' });
@@ -11521,14 +11735,29 @@ export class Kolab {
         if (missing.length) throw new LimitError(`kolab ${s.kolab} has no channel ${missing.map((n) => `#${n}`).join(', ')}: konjir_list_channels lists its channels`);
         muted = found.map((c) => c.id).sort();
       }
+      // Each agent named must be the person's own, a member here: by label, <you>/<label> or its name.
+      let agents: Record<string, string> | null = null;
+      // Read before the role below, which reads no access.
+      const members = await this.membersIn(tx, s.kolab);
+      if (agentsAsked !== null) {
+        const mine = new Set(members.filter((h) => h.kind === 'agent' && h.owner_id === s.actor_id).map((h) => h.id));
+        agents = {};
+        for (const [given, v] of Object.entries(agentsAsked)) {
+          const n = given.trim().replace(/^@/, '');
+          const id = n.includes('/') ? memberName(n) : mine.has(`${s.actor_id}-${n}`) ? `${s.actor_id}-${n}` : n;
+          if (!mine.has(id)) throw new LimitError(`${n} names no agent of yours in kolab ${s.kolab}: agents maps your own agents here, by label`);
+          agents[id] = v;
+        }
+      }
       await tx.exec('set local role kj_system');
       await tx.query(
-        `insert into notification_pref(kolab_id, actor_id, level, muted, hide_preview) values ($1, $2, $3, coalesce($4::text[], '{}'), coalesce($5::boolean, false))
+        `insert into notification_pref(kolab_id, actor_id, level, muted, hide_preview, agents) values ($1, $2, $3, coalesce($4::text[], '{}'), coalesce($5::boolean, false), coalesce($6::jsonb, '{}'))
          on conflict (kolab_id, actor_id) do update set level = excluded.level,
            muted = case when $4::text[] is null then notification_pref.muted else excluded.muted end,
-           hide_preview = coalesce($5::boolean, notification_pref.hide_preview), updated_at = clock_timestamp()`,
-        [s.kolab, s.actor_id, prefs.level, muted, hide]);
-      return this.prefsIn(tx, s.kolab, s.actor_id);
+           hide_preview = coalesce($5::boolean, notification_pref.hide_preview),
+           agents = notification_pref.agents || coalesce($6::jsonb, '{}'), updated_at = clock_timestamp()`,
+        [s.kolab, s.actor_id, prefs.level, muted, hide, agents === null ? null : JSON.stringify(agents)]);
+      return this.prefsIn(tx, s.kolab, s.actor_id, members);
     });
   }
 
@@ -11664,6 +11893,93 @@ export class Kolab {
   }
 
   /**
+   * The pushes about one message that its agents' owners get (pushJob), under each owner's prefs
+   * for that agent (notification_pref.agents, DEFAULT_AGENT_NOTIFY): for each agent the message is
+   * from, to (a direct message) or mentions, whose owner is a person who is a member, with a live
+   * device, not its sender, not told of it already (`already`), not listening in the team, and not
+   * at level none, one push each, the first that applies: with `all`, a direct message to it or a
+   * mention of it from someone else; with `all` or `stuck`, that it is stuck, either capped (its run
+   * at the kolab's agent_reply_cap) or, the message having reached it, with nothing running as it
+   * (push.agentRunning), at most once an hour for each agent (agents_stuck_pushed, claimed
+   * atomically, and only on the job's first run). `never` pushes nothing.
+   */
+  private async agentPushes(m: SentMessage, already: string[], run: 'first' | 'retry'): Promise<PushNotification[]> {
+    const concerned = [m.from, ...(m.kind === 'dm' ? [m.to] : m.mentions)];
+    const readers = await this.readersAmong(this.db, m.kolab, concerned);
+    const owners = [...new Set(readers.values())].filter((o) => o !== m.from && !already.includes(o));
+    if (!owners.length) return [];
+    const listening = this.push.listening?.() ?? [];
+    const rows = new Map((await this.db.query<{ actor: string; level: NotificationLevel; hide: boolean; agents: Record<string, string>; listening: boolean }>(
+      `select a.id as actor, coalesce(p.level, $4) as level, coalesce(p.hide_preview, false) as hide, coalesce(p.agents, '{}'::jsonb) as agents,
+              exists (select 1 from session s left join oauth_grant g on g.id = s.grant_id
+                       where s.id = any($3::text[]) and s.actor_id = a.id and s.kolab_id = $1 and ${OPEN_SESSION}) as listening
+         from actor a left join notification_pref p on p.kolab_id = $1 and p.actor_id = a.id
+        where a.id = any($2::text[]) and a.kind = 'person'
+          and exists (select 1 from push_device d left join oauth_grant dg on dg.id = d.grant_id where d.actor_id = a.id and ${LIVE_DEVICE})`,
+      [m.kolab, owners, listening, DEFAULT_NOTIFICATION_LEVEL])).rows.map((r) => [r.actor, r]));
+    const cap = await this.agentReplyCapIn(this.db, m.kolab);
+    const out: PushNotification[] = [];
+    const done = new Set<string>();
+    for (const agent of [...new Set(concerned)]) {
+      const owner = readers.get(agent);
+      const r = owner ? rows.get(owner) : undefined;
+      if (!owner || !r || done.has(owner) || r.level === 'none' || r.listening) continue;
+      const choice = (AGENT_NOTIFY_LEVELS as readonly string[]).includes(r.agents[agent]) ? r.agents[agent] as AgentNotifyLevel : DEFAULT_AGENT_NOTIFY;
+      if (choice === 'never') continue;
+      const reached = agent !== m.from;
+      let reason: 'message' | 'mention' | 'capped' | 'not_running' | undefined;
+      if (choice === 'all' && reached) reason = m.kind === 'dm' ? 'message' : 'mention';
+      else if (await this.agentCapped(m.kolab, agent, cap)) reason = 'capped';
+      else if (reached && !(await this.agentRunning(m.kolab, agent, listening))) reason = 'not_running';
+      if (!reason) continue;
+      // Stuck at most once an hour for each agent: the slot is claimed in one statement, so two jobs at once push once.
+      if ((reason === 'capped' || reason === 'not_running') && (run === 'retry' || !(await this.claimStuckPush(m.kolab, owner, agent)))) continue;
+      done.add(owner);
+      const name = agentDisplay(agent, owner);
+      const words = reason === 'message' || reason === 'mention';
+      const body = words ? (this.push.preview && !r.hide ? [...m.message].slice(0, PUSH_PREVIEW_CHARS).join('') : undefined)
+        : reason === 'capped' ? 'It has reached the reply cap: its messages wake no agent until a person writes in the team.'
+          : 'A message waits for it, and nothing is running as it.';
+      const title = reason === 'message' ? `${m.from} to ${name}` : reason === 'mention' ? `${m.from} in #${(m as { channel: string }).channel}, to ${name}`
+        : reason === 'capped' ? `${name} is stuck` : `${name} isn't running`;
+      out.push({
+        actor: owner, title, ...(body === undefined ? {} : { body }), badge: await this.badgeOf(owner),
+        data: { team: m.kolab, kind: 'agent', agent, reason, message_id: m.id, ...(m.kind === 'dm' ? { with: agent === m.from ? m.to : m.from } : { channel: m.channel }) },
+      });
+    }
+    return out;
+  }
+
+  /** Whether `agent`'s run in `kolab` since a person last wrote there has reached `cap` (countRun), so its further messages wake no agent. */
+  private async agentCapped(kolab: string, agent: string, cap: number): Promise<boolean> {
+    const r = (await this.db.query<{ run: number; seq: string; chat: string | null }>(
+      `select a.run, a.person_seq::text as seq, (select c.person_seq::text from kolab_chat c where c.kolab_id = a.kolab_id) as chat
+         from kolab_chat_agent a where a.kolab_id = $1 and a.actor_id = $2`, [kolab, agent])).rows[0];
+    return !!r && r.chat !== null && BigInt(r.seq) >= BigInt(r.chat) && r.run >= cap;
+  }
+
+  /** Whether something runs as `agent` in `kolab`: the server's word (push.agentRunning), or else a listen stream of its open session on this process. */
+  private async agentRunning(kolab: string, agent: string, listening: string[]): Promise<boolean> {
+    if (this.push.agentRunning) return this.push.agentRunning(kolab, agent);
+    return (await this.db.query(
+      `select 1 from session s left join oauth_grant g on g.id = s.grant_id where s.id = any($3::text[]) and s.actor_id = $2 and s.kolab_id = $1 and ${OPEN_SESSION} limit 1`,
+      [kolab, agent, listening])).rows.length > 0;
+  }
+
+  /** Claims, for `owner`, the hour's one push that `agent` is stuck (AGENT_STUCK_PUSH_EVERY_S): whether it was free. */
+  private async claimStuckPush(kolab: string, owner: string, agent: string): Promise<boolean> {
+    return this.inTransaction(async (tx) => {
+      await tx.exec('set local role kj_system');
+      return (await tx.query(
+        `insert into notification_pref(kolab_id, actor_id, level, agents_stuck_pushed) values ($1, $2, $4, jsonb_build_object($3::text, clock_timestamp()))
+         on conflict (kolab_id, actor_id) do update set agents_stuck_pushed = notification_pref.agents_stuck_pushed || jsonb_build_object($3::text, clock_timestamp())
+          where notification_pref.agents_stuck_pushed->>$3 is null
+             or (notification_pref.agents_stuck_pushed->>$3)::timestamptz < clock_timestamp() - make_interval(secs => $5)
+         returning 1`, [kolab, owner, agent, DEFAULT_NOTIFICATION_LEVEL, AGENT_STUCK_PUSH_EVERY_S])).rows.length > 0;
+    });
+  }
+
+  /**
    * A push job's work, in the outbox's push lane (drainOutbox): the message it names read again
    * (messageForPush), who is told and what decided now (pushNotifications), and each person's push
    * to each of their live devices, through `push.send`, PUSH_BATCH at a time. A device whose token
@@ -11690,7 +12006,10 @@ export class Kolab {
     }
     const m = await this.messageForPush(p.message, p.kind ?? 'dm');
     if (!m) return;
-    const notifications = await this.pushNotifications(m);
+    const told = await this.pushNotifications(m);
+    // Then each agent's owner it concerns, under their prefs for that agent, once per person: a
+    // retry (p.sent) claims no new stuck slot for a push it already sent.
+    const notifications = [...told, ...await this.agentPushes(m, told.map((n) => n.actor), p.sent?.length ? 'retry' : 'first')];
     if (!notifications.length) return;
     const sent = new Set(p.sent ?? []);
     const devices = (await this.db.query<{ token: string; actor_id: string }>(
@@ -15459,6 +15778,23 @@ function nonceOf(nonce: unknown): string | null {
   if (typeof nonce !== 'string' || !/^[A-Za-z0-9._:-]{1,100}$/.test(nonce)) throw new LimitError('nonce is your own id for this send, 1 to 100 letters, digits and . _ : -, such as a UUID');
   return nonce;
 }
+
+/**
+ * Who reads each agent's direct messages beside it (Lee's decision, 2026-11-22): of a kolab's
+ * `members` (membersIn), each agent whose owner is a person who is a member too, to that owner. An
+ * organization's agent, never a member, has none.
+ */
+const readersOf = (members: { id: string; kind: ActorKind; owner_id: string | null }[]): Map<string, string> => {
+  const names = new Set(members.map((h) => h.id));
+  return new Map(members.filter((h) => h.kind === 'agent' && h.owner_id !== null && names.has(h.owner_id)).map((h) => [h.id, h.owner_id!]));
+};
+/** An agent as its owner names it in a push: `<owner>/<label>`, or its name when it has no label. */
+const agentDisplay = (agent: string, owner: string) => (agent.startsWith(`${owner}-`) && agent.length > owner.length + 1 ? `${owner}/${agent.slice(owner.length + 1)}` : agent);
+/** A direct message's, or a conversation's, `readable_by`: the readers (readersOf) of either end, but the two in it; nothing when none. */
+const readableBy = (readers: Map<string, string>, a: string, b: string): { readable_by?: string[] } => {
+  const v = [...new Set([readers.get(a), readers.get(b)])].filter((x): x is string => !!x && x !== a && x !== b).sort();
+  return v.length ? { readable_by: v } : {};
+};
 
 /** The advisory lock class of a conversation's sends (sendMessage), apart from every single-key lock. */
 const CONVERSATION_LOCK = 5901;

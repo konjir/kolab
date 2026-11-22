@@ -3127,7 +3127,8 @@ test('a database at 0056 with messages reaches 0057: two indexes for conversatio
   });
 });
 
-const UNDO_0059 = String.raw`drop index channel_message_nonce;
+const UNDO_0059 = String.raw`alter table notification_pref drop column agents, drop column agents_stuck_pushed;
+  drop index channel_message_nonce;
   alter table channel_message drop column nonce;
   drop index message_nonce;
   alter table message drop column nonce;

@@ -11,17 +11,27 @@
 --                                  a replay, and nothing in the database alone opens it: Kolab
 --                                  keeps only the token's sha256, as it always has. Cleared once the
 --                                  successor is used in turn, and null for every token before.
+--   notification_pref.agents       what the person is pushed of each of their own agents in the kolab
+--                                  (Lee, 2026-11-22): by the agent's name, never, stuck (the default,
+--                                  without a key) or all (AGENT_NOTIFY_LEVELS); a JSON object.
+--   notification_pref.agents_stuck_pushed
+--                                  when each agent's owner was last pushed that it is stuck, by the
+--                                  agent's name, so it is at most once an hour (AGENT_STUCK_PUSH_EVERY_S).
 --   message.nonce,                 a client's own id for a send (konjir_send_message,
 --   channel_message.nonce          konjir_send_channel_message), unique for its sender in its kolab,
 --                                  so a send repeated with the same nonce returns the message it
 --                                  sent instead of sending it twice. Null for every message before,
 --                                  and for any send that gives none.
 --
--- Three new nullable columns and two partial unique indexes. No row that exists changes, so it
--- needs no preflight. The message tables stay append-only (0050, 0052): a nonce is written once,
+-- Three new nullable columns, two with defaults, and two partial unique indexes. No row that exists
+-- changes but to take the defaults, so it needs no preflight. The message tables stay append-only (0050, 0052): a nonce is written once,
 -- with its message.
 
 alter table oauth_refresh_token add column successor text;
+
+alter table notification_pref
+  add column agents jsonb not null default '{}' constraint notification_pref_agents_check check (jsonb_typeof(agents) = 'object'),
+  add column agents_stuck_pushed jsonb not null default '{}' constraint notification_pref_agents_stuck_check check (jsonb_typeof(agents_stuck_pushed) = 'object');
 
 alter table message add column nonce text constraint message_nonce_form check (nonce is null or (length(nonce) between 1 and 100));
 create unique index message_nonce on message(kolab_id, sent_by, nonce) where nonce is not null;
