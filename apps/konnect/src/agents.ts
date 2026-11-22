@@ -13,8 +13,10 @@
  *    Codex as `-c mcp_servers.…`, OpenCode in OPENCODE_CONFIG_CONTENT.
  * 4. The harness is started in this folder. Claude Code is also passed, in --settings, the hook that
  *    wakes its idle session when a message comes for the agent (cmd-wake.ts) and leave to call the
- *    agent's own tools, and the agent's system prompt (--append-system-prompt). Codex and OpenCode
- *    aren't woken, and receive at the start of each turn.
+ *    agent's own tools, and the agent's system prompt (--append-system-prompt). Codex 0.149 or
+ *    later is woken by `konnect mcp` itself, which queues a notice for its session with `codex queue`
+ *    (mcp.ts), and an earlier Codex receives at the start of each turn. OpenCode is woken by the
+ *    konnect that started it, from beside it (opencode.ts).
  */
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';

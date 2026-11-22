@@ -206,7 +206,11 @@ export async function logOut(ctx: Ctx, rest: string[]) {
   if (rest.length > 1) throw new UsageError(`konnect logout [<team>]: unknown ${printable(rest.slice(1).join(' '))}`);
   if (rest[0] !== undefined && ctx.args.team !== undefined && rest[0] !== ctx.args.team) throw new UsageError(`konnect logout ${printable(rest[0])} was given --team ${printable(ctx.args.team)}: name the team once`);
   const name = rest[0] !== undefined ? checkName(rest[0]) : ctx.team();
-  const r = await logout(ctx.url, { path: teamFile(name, ctx.env), forget: ctx.args.forget }).catch((e: unknown) => { throw said(e, name, ctx.url); });
+  const command = `konnect logout ${name}`;
+  // logout's own refusal names this command, and says the login is kept and how to drop it: said as it is.
+  const r = await logout(ctx.url, { path: teamFile(name, ctx.env), forget: ctx.args.forget, command }).catch((e: unknown) => {
+    throw String((e as Error)?.message ?? e).includes(`${command} --forget`) ? e : said(e, name, ctx.url);
+  });
   ctx.print({ team: name, had: r.had, revoked: r.revoked }, () => (!r.had ? `You weren't logged in to team ${name}.`
     : r.revoked ? `Logged out of team ${name}.` : `Logged out of team ${name} here; the service couldn't be told, so the login lapses within 30 days unused.`));
 }
