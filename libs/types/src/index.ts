@@ -807,6 +807,18 @@ export interface Message {
   /** When its recipient read it (konjir_read_messages); null while it is unread. */
   read_at: string | null;
 }
+/**
+ * One of a member's direct conversations (konjir_list_conversations): the member they talk with,
+ * the newest message between them either way, how many of theirs the caller hasn't read (counted up
+ * to UNREAD_COUNT_CEILING, with unread_more true past it), and when that newest message was sent.
+ */
+export interface Conversation {
+  with: string;
+  last: Message;
+  unread: number;
+  unread_more: boolean;
+  last_at: string;
+}
 /** A member of a kolab, as another member sees them: who they can send a message to. */
 export interface Member {
   actor: string; kind: ActorKind;
