@@ -1,11 +1,19 @@
-# Make a team from the phone through Kolab's page, see it on Home, then sign out of it. Against the
-# local Kolab (scripts/local-kolab.mts), signed out, as sign-in.yaml. TEAM names the new team; a
-# second run needs another name, since Kolab refuses one that's taken.
+# Make a second team from the You tab, switch between the two on Home, and sign out of both back to
+# the sign-in screen. Against the local Kolab, signed out, as sign-in.yaml. TEAM names the new team;
+# a second run against the same Kolab needs another name, since Kolab refuses one that's taken.
 appId: ${APP_ID}
 tags: [local-kolab]
 env:
   TEAM: phone-made
 ---
+- tapOn: "Sign in with GitHub"
+- extendedWaitUntil:
+    visible: "Sign in to hub"
+    timeout: 30000
+- tapOn: "Sign in to hub"
+- extendedWaitUntil:
+    visible: "general"
+    timeout: 30000
 - tapOn: "You"
 - tapOn:
     id: "new-team"
@@ -23,12 +31,18 @@ env:
     visible: "Made ${TEAM}, and signed in."
     timeout: 30000
 - tapOn: "Home"
-- extendedWaitUntil:
-    visible: "general"
-    timeout: 20000
-- assertVisible: "ann, you"
+- assertVisible: "${TEAM}.*"
+- tapOn:
+    id: "team-switcher"
+- tapOn:
+    id: "switch-hub"
+- assertVisible: "hub.*"
 - tapOn: "You"
+- tapOn: "Sign out of hub"
+- extendedWaitUntil:
+    visible: "Signed out of hub."
+    timeout: 20000
 - tapOn: "Sign out of ${TEAM}"
 - extendedWaitUntil:
-    visible: "Signed out of ${TEAM}."
+    visible: "Sign in with GitHub"
     timeout: 20000

@@ -1,11 +1,10 @@
 import type { Channel, Member } from '@konjir/types';
-import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { RefreshControl } from 'react-native';
 import { useAuth, type Auth } from '@/auth/AuthProvider';
 import { SignedOut } from '@/auth/tokens';
 import type { IconName } from '@/icons';
-import { Button, Hint, Notice, Problem, Row, Screen, Section } from '@/ui';
+import { Hint, Notice, Problem, Row, Screen, Section } from '@/ui';
 
 type TeamView = { team: string; channels: Channel[]; people: Member[]; agents: Member[] } | { team: string; problem: string };
 
@@ -34,7 +33,6 @@ async function readTeam(auth: Auth, team: string): Promise<TeamView> {
  */
 export default function Home() {
   const auth = useAuth();
-  const router = useRouter();
   const [view, setView] = useState<TeamView>();
   const [refreshing, setRefreshing] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -56,14 +54,8 @@ export default function Home() {
   };
 
   if (!auth.ready) return <Screen title="Home" testID="home"><Hint>…</Hint></Screen>;
-  if (!team) {
-    return (
-      <Screen title="Home" testID="home">
-        <Notice>You aren&apos;t signed in to a team. Sign in to see its channels, people and agents.</Notice>
-        <Button testID="home-sign-in" label="Sign in on the You tab" onPress={() => router.navigate('/you')} />
-      </Screen>
-    );
-  }
+  // The root layout's gate shows the sign-in screen while no team is signed in.
+  if (!team) return null;
   const shown = view?.team === team ? view : undefined;
 
   return (
