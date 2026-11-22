@@ -216,43 +216,79 @@ test('an access token is a session token that expires; refreshing rotates both t
   expect(await kolab.liveSessions([t.session])).toStrictEqual(new Set([t.session]));
 });
 
-test('a refresh token is used once: again within the grace window it gets the same answer while that is still the grant\'s, refused otherwise; again later is a replay, which revokes the grant and ends its session', async () => {
+test('a refresh token is used once: again before its successor is used, for up to refreshRetryS, it gets the same answer while that is still the grant\'s, refused otherwise; again after its successor is used, or later, is a replay, which revokes the grant and ends its session', async () => {
   const kolab = await openKolab();
   await people(kolab, 'alice');
   const { actor } = await kolab.signInWith(github('8', 'ann'));
   await kolab.grant('test', actor, 'write');
-  const a = await authorized(kolab, actor, { as: { kind: 'self' }, kolab: 'test', role: 'engineer' });
-  const t = await a.tokens();
+  expect(kolab.oauth.refreshRetryS).toBe(600);
+  const signIn = async () => {
+    const a = await authorized(kolab, actor, { as: { kind: 'self' }, kolab: 'test', role: 'engineer' });
+    return { a, t: await a.tokens() };
+  };
   const ended: string[] = [];
   kolab.onEvent((e) => { if ('session' in e) ended.push(e.id); });
+  const usedAgo = (token: string, s: number) => kolab.db.query(`update oauth_refresh_token set used_at = now() - make_interval(secs => $2) where key = $1`, [sessionKey(token), s]);
+
+  const { a, t } = await signIn();
   const r1 = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
   // Another client can't use it.
   expect(await rejection(kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: 'kjcl_someoneelse0000000000' }))).toMatch(/invalid|unknown/);
-  // Again within the grace window (its answer lost on the way, or a concurrent request): the same answer, nothing revoked and nothing new.
+  // Again at once (its answer lost on the way, or a concurrent request): the same answer, nothing revoked and nothing new.
   const again = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
   expect([again.accessToken, again.refreshToken, again.session, again.scope]).toStrictEqual([r1.accessToken, r1.refreshToken, r1.session, r1.scope]);
   expect(again.expiresIn).toBeGreaterThan(0);
   expect(again.expiresIn).toBeLessThanOrEqual(900);
+  // A phone offline for minutes, the successor still unused: the same answer, up to the bound.
+  await usedAgo(t.refreshToken, 9 * 60);
+  const later = await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client });
+  expect([later.accessToken, later.refreshToken]).toStrictEqual([r1.accessToken, r1.refreshToken]);
   expect(await kolab.sessionOpen(r1.accessToken)).toBe(true);
   // What it keeps to answer the same is sealed: no token is in the database as written.
   const rows = JSON.stringify((await kolab.db.query(`select * from oauth_refresh_token`)).rows);
   for (const secret of [r1.accessToken, r1.refreshToken]) expect(rows).not.toContain(secret);
   expect((await kolab.db.query<{ n: number }>(`select count(*)::int as n from oauth_refresh_token where successor is not null`)).rows[0].n).toBe(1);
-  // Once its successor is used in turn, the first token gets nothing again: refused, still nothing revoked.
-  const r2 = await kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: a.client });
+  // A successor no longer the grant's live answer (its access token replaced) is never given out again, and revokes nothing.
+  await kolab.db.query(`update session set token_key = $2 where id = $1`, [r1.session, sessionKey('kjs_replaced')]);
   expect(await rejection(kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }))).toMatch(/invalid_grant|refresh token is unknown/);
+  await kolab.db.query(`update session set token_key = $2 where id = $1`, [r1.session, sessionKey(r1.accessToken)]);
+  expect(await kolab.sessionOpen(r1.accessToken)).toBe(true);
+  // A sealed answer tampered with, or moved to another row, opens nothing: refused, nothing revoked.
+  const sealed = (await kolab.db.query<{ successor: string }>(`select successor from oauth_refresh_token where key = $1`, [sessionKey(t.refreshToken)])).rows[0].successor;
+  const [v, iv, body, tag] = sealed.split('.');
+  const flipped = Buffer.from(body, 'base64url');
+  flipped[0] ^= 1;
+  for (const bad of [`${v}.${iv}.${flipped.toString('base64url')}.${tag}`, `${v}.${iv}.${body}.${Buffer.from(tag, 'base64url').subarray(0, 12).toString('base64url')}`, `${v}.${iv}.${body}`, `${sealed}.x`]) {
+    await kolab.db.query(`update oauth_refresh_token set successor = $2 where key = $1`, [sessionKey(t.refreshToken), bad]);
+    expect(await rejection(kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }))).toMatch(/invalid_grant|refresh token is unknown/);
+  }
+  expect(await kolab.sessionOpen(r1.accessToken)).toBe(true);
+  // Another row's sealed answer, copied into a used token's row, opens nothing there either.
+  const other = await signIn();
+  const o1 = await kolab.refreshGrant({ refreshToken: other.t.refreshToken, clientId: other.a.client });
+  await kolab.db.query(`update oauth_refresh_token set successor = $2 where key = $1`, [sessionKey(other.t.refreshToken), sealed]);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: other.t.refreshToken, clientId: other.a.client }))).toMatch(/invalid_grant|refresh token is unknown/);
+  expect(await kolab.sessionOpen(o1.accessToken)).toBe(true);
+  await kolab.db.query(`update oauth_refresh_token set successor = $2 where key = $1`, [sessionKey(t.refreshToken), sealed]);
+  expect((await kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client })).refreshToken).toBe(r1.refreshToken);
+  expect(ended).toStrictEqual([]);
+
+  // Once its successor is used in turn, the first token again is a replay: the grant is revoked, and its session ends.
+  const r2 = await kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: a.client });
   expect(await kolab.sessionOpen(r2.accessToken)).toBe(true);
-  // And a successor no longer the grant's live answer (its access token replaced) is never given out again.
-  await kolab.db.query(`update session set token_key = $2 where id = $1`, [r2.session, sessionKey('kjs_replaced')]);
-  expect(await rejection(kolab.refreshGrant({ refreshToken: r1.refreshToken, clientId: a.client }))).toMatch(/invalid_grant|refresh token is unknown/);
-  await kolab.db.query(`update session set token_key = $2 where id = $1`, [r2.session, sessionKey(r2.accessToken)]);
-  expect(await kolab.sessionOpen(r1.accessToken)).toBe(false);
-  // Later: a replay, which revokes the grant.
-  await kolab.db.query(`update oauth_refresh_token set used_at = now() - interval '1 minute' where key = $1`, [sessionKey(t.refreshToken)]);
   expect(await rejection(kolab.refreshGrant({ refreshToken: t.refreshToken, clientId: a.client }))).toMatch(/OAuthGrantError/);
   expect(await kolab.sessionOpen(r2.accessToken)).toBe(false);
   expect(ended).toStrictEqual([t.session]);
   expect(await rejection(kolab.refreshGrant({ refreshToken: r2.refreshToken, clientId: a.client }))).toMatch(/revoked|unknown/);
+
+  // Past the bound, the successor still unused: a replay too.
+  const b = await signIn();
+  const b1 = await kolab.refreshGrant({ refreshToken: b.t.refreshToken, clientId: b.a.client });
+  await usedAgo(b.t.refreshToken, kolab.oauth.refreshRetryS + 1);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: b.t.refreshToken, clientId: b.a.client }))).toMatch(/OAuthGrantError/);
+  expect(await kolab.sessionOpen(b1.accessToken)).toBe(false);
+  expect(ended).toStrictEqual([t.session, b.t.session]);
+  expect(await rejection(kolab.refreshGrant({ refreshToken: b1.refreshToken, clientId: b.a.client }))).toMatch(/revoked|unknown/);
 });
 
 test('a code is used once, by its client, at its redirect URI, with its PKCE verifier; used again, it revokes what it opened', async () => {

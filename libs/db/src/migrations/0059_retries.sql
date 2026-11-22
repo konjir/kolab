@@ -5,9 +5,10 @@
 --
 --   oauth_refresh_token.successor  the tokens a refresh gave in place of this one, sealed with a key
 --                                  only this refresh token derives (AES-256-GCM under HKDF-SHA256 of
---                                  it, Kolab.refreshGrant), so the same refresh retried within the
---                                  grace window (refreshGraceS) gets the same answer instead of
---                                  being refused, and nothing in the database alone opens it: Kolab
+--                                  it, bound to the row's key and grant, Kolab.refreshGrant), so the
+--                                  same refresh retried before its successor is used, within
+--                                  refreshRetryS of its use, gets the same answer instead of being
+--                                  a replay, and nothing in the database alone opens it: Kolab
 --                                  keeps only the token's sha256, as it always has. Cleared once the
 --                                  successor is used in turn, and null for every token before.
 --   message.nonce,                 a client's own id for a send (konjir_send_message,
