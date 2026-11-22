@@ -265,6 +265,63 @@ test('a sign-in that leaves the kolab to the page is only for an app on the pers
   expect(admin.html).toContain('You are a Konjir admin: this app can run every admin verb as you.');
 });
 
+test('konnect\'s own app, every redirect URI on its schemes, may sign the person in on these pages too; a client mixing its scheme with any other redirect gets only Deny', async () => {
+  const kolab = await openKolab();
+  const { base, idp } = await serve(kolab);
+  const { inv } = await world(kolab);
+  const APP = 'com.konjir.konnect:/oauth';
+  const app = await register(base, [APP, 'com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth']);
+  const exchange = async (code: string, redirect: string) => {
+    const r = await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: app, redirect_uri: redirect, code_verifier: VERIFIER }).toString() });
+    return { status: r.status, body: await r.json() as Record<string, string> };
+  };
+
+  // choose:kolab: the page, on "this device", may lead to the app's scheme; accepting the invitation signs in there.
+  const p = await page(base, idp, app, 'konjir choose:kolab', BOB, APP);
+  expect(p.res.status).toBe(200);
+  expect(p.res.headers.get('content-security-policy')).toContain(`form-action 'self' com.konjir.konnect:;`);
+  expect(p.html).toContain(`<strong>konnect</strong> on this device asks to work in Kolab as you, <code>bob</code>, and gets its answer at <code>${APP}</code>`);
+  expect(buttons(p.html)).toStrictEqual(['pick=kolab:bobs', `pick=accept:${inv.id}`, `pick=decline:${inv.id}`, 'decision=deny']);
+  const done = await p.post({ pick: `accept:${inv.id}` });
+  expect(done.res.status).toBe(303);
+  expect(done.left!.toString()).toMatch(/^com\.konjir\.konnect:\/oauth\?code=kjc_[^&]+&state=st&iss=/);
+  const code = done.left!.searchParams.get('code')!;
+  const t = await exchange(code, APP);
+  expect([t.status, t.body.scope]).toStrictEqual([200, 'konjir kolab:anns role:product']);
+  expect((await kolab.sessionInfo(t.body.access_token)).actor).toBe('bob');
+  // Replayed, the code is refused, and the grant it opened revoked.
+  expect((await exchange(code, APP)).body.error).toBe('invalid_grant');
+  expect(await kolab.sessionOpen(t.body.access_token)).toBe(false);
+
+  // team:<name> intent:create, from the preview build's scheme: made, and signed in.
+  const PREVIEW = 'com.konjir.konnect.preview:/oauth';
+  const make = await page(base, idp, app, 'konjir team:acme intent:create', BOB, PREVIEW);
+  expect(make.res.headers.get('content-security-policy')).toContain(`form-action 'self' com.konjir.konnect.preview:;`);
+  expect(buttons(make.html)).toStrictEqual(['decision=allow', 'decision=deny']);
+  const made = await make.post({ decision: 'allow', shown: 'make' });
+  expect(made.left!.protocol).toBe('com.konjir.konnect.preview:');
+  expect((await exchange(made.left!.searchParams.get('code')!, PREVIEW)).body.scope).toBe('konjir kolab:acme role:product');
+  // team:<name> intent:join, from the dev build's.
+  const DEV = 'com.konjir.konnect.dev:/oauth';
+  const join = await page(base, idp, app, 'konjir team:acme intent:join', BOB, DEV);
+  const joined = await join.post({ decision: 'allow', shown: 'member' });
+  expect((await exchange(joined.left!.searchParams.get('code')!, DEV)).body.scope).toBe('konjir kolab:acme role:product');
+
+  // Its scheme beside anything else, https or loopback, is no app on the person's own device: only Deny, and Allow forced is refused.
+  for (const [other, redirect] of [['https://app.example/cb', APP], ['https://app.example/cb', 'https://app.example/cb'], [CB, APP], [CB, CB]]) {
+    const mixed = await register(base, [APP, other]);
+    for (const scope of ['konjir choose:kolab', 'konjir team:mixed', 'konjir team:bobs intent:join', 'konjir team:mixed intent:create']) {
+      const m = await page(base, idp, mixed, scope, BOB, redirect);
+      expect([other, redirect, scope, buttons(m.html)]).toStrictEqual([other, redirect, scope, ['decision=deny']]);
+      expect(m.html).toContain('only for an app on your own computer or phone, such as konnect');
+      const forced = await m.post({ pick: 'kolab:bobs', decision: 'allow', shown: scope.includes('bobs') ? 'member' : 'make' });
+      expect(forced.left!.searchParams.get('code')).toBeNull();
+      expect(forced.left!.searchParams.get('error_description')).toMatch(/^the sign-in can't be allowed: a sign-in that leaves its kolab to this page is only for an app on your own computer or phone/);
+    }
+  }
+  expect(await kolab.kolabRow('mixed')).toBeUndefined();
+});
+
 test('GitHub\'s lookup asks GET /users/<login> as the OAuth app, for the account\'s numeric id and whether it is a person\'s; a 404 is no account, and nothing but a username reaches the path', async () => {
   const asked: { url: string; auth: string | null }[] = [];
   const fake = async (input: string | URL | Request, init?: RequestInit) => {

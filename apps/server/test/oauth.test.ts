@@ -497,6 +497,55 @@ test('redirect URIs: registered ones only, exactly, so nothing is sent to an add
   expect([target.res.status, target.left, (await target.res.text()).includes('issues tokens for')]).toStrictEqual([400, undefined, true]);
 });
 
+test('konnect\'s own app signs in at its private-use scheme, <scheme>:/oauth (RFC 8252 §7.1): authorize, consent, the 303 to the app with the code, and the code exchanged once, with PKCE; a look-alike is refused at registration and at authorization', async () => {
+  const { kolab } = await setup();
+  const { base, mcp, idp } = await serve(kolab);
+  const APP = 'com.konjir.konnect:/oauth';
+  for (const bad of ['com.konjir.konnect.evil:/oauth', 'com.konjir.konnectx:/oauth', 'COM.KONJIR.KONNECT:/oauth', 'com.konjir.konnect://evil.com/oauth', 'com.konjir.konnect:///oauth',
+    'com.konjir.konnect:/oauth#x', 'com.konjir.konnect:/oauth?x=1']) {
+    expect([bad, await register(base, [bad])]).toMatchObject([bad, { status: 400, body: { error: 'invalid_redirect_uri' } }]);
+  }
+  const reg = await register(base, [APP, 'com.konjir.konnect.dev:/oauth']);
+  expect(reg).toMatchObject({ status: 201, body: { redirect_uris: [APP, 'com.konjir.konnect.dev:/oauth'] } });
+  const client = reg.body.client_id;
+  // At authorization only a registered one, exactly: a look-alike gets a page, never a redirect.
+  for (const redirect of ['com.konjir.konnect.evil:/oauth', 'com.konjir.konnect.preview:/oauth', 'com.konjir.konnect:/oauth?x=1', 'com.konjir.konnect://oauth', 'com.konjir.konnect:/oauth/']) {
+    const { res, left } = await new Browser(base).go(authorizeUrl(base, client, { redirect }));
+    expect([redirect, res.status, left]).toStrictEqual([redirect, 400, undefined]);
+  }
+
+  await kolab.grant('test', 'alice', 'write');
+  idp.next({ subject: '530', login: 'pia' });
+  const browser = new Browser(base);
+  const verifier = randomBytes(32).toString('base64url');
+  const { res } = await browser.go(authorizeUrl(base, client, { verifier, redirect: APP }));
+  expect(res.status).toBe(200);
+  // The page shows the app's redirect whole, and its form may lead to the app's scheme, and no other:
+  // a browser holds the 303 that follows the form to form-action.
+  expect(res.headers.get('content-security-policy')).toContain(`form-action 'self' com.konjir.konnect:;`);
+  const html = await res.text();
+  expect(html).toContain(`gets its answer at <code>${APP}</code>`);
+  await kolab.grant('test', 'pia', 'write');
+  const done = await browser.consent({ csrf: csrfOf(html), decision: 'allow', as: 'new-agent', agent_label: 'phone', kolab: 'kolab:test', role: 'engineer' });
+  expect(done.res.status).toBe(303);
+  expect(done.left!.toString()).toMatch(/^com\.konjir\.konnect:\/oauth\?code=kjc_[A-Za-z0-9_-]+&state=client-state&iss=/);
+  expect(done.left!.searchParams.get('iss')).toBe(base);
+  const code = done.left!.searchParams.get('code')!;
+
+  // Exchanged only at the redirect URI it was issued for, with its verifier.
+  const at = (redirect_uri: string, code_verifier: string) => token(base, { grant_type: 'authorization_code', client_id: client, code, redirect_uri, code_verifier, resource: `${base}/mcp` });
+  expect((await at('com.konjir.konnect.dev:/oauth', verifier)).body.error).toBe('invalid_grant');
+  expect((await at(APP, randomBytes(32).toString('base64url'))).body.error).toBe('invalid_grant');
+  const t = await at(APP, verifier);
+  expect(t.status).toBe(200);
+  expect(t.body).toMatchObject({ token_type: 'Bearer', scope: 'konjir kolab:test role:engineer' });
+  expect(await kolab.sessionInfo(t.body.access_token)).toMatchObject({ actor: 'pia-phone', kind: 'agent', owner: 'pia' });
+  expect((await initialize(mcp, t.body.access_token)).status).toBe(200);
+  // Replayed, the code is refused, and the grant it opened revoked.
+  expect((await at(APP, verifier)).body.error).toBe('invalid_grant');
+  expect(await kolab.sessionOpen(t.body.access_token)).toBe(false);
+});
+
 test('state and CSRF: the provider\'s answer counts only in the browser that asked, with its state; consent only from Kolab\'s page, with its token', async () => {
   const { kolab } = await setup();
   const { base, idp } = await serve(kolab);
@@ -816,6 +865,13 @@ test('the consent page\'s form-action names the client\'s redirect URI, so a bro
   expect(formActionSource('http://[::1]:7000/cb')).toBe('http:');   // a CSP source can't name an IPv6 host: the scheme alone
   expect(formActionSource('https://[2001:db8::1]/cb')).toBe('https:');   // any IPv6 literal, not only loopback
   expect(formActionSource('com.example.app:/cb')).toBeUndefined();   // never registered (validRedirectUri)
+  // konnect's own app's: its scheme alone, which matches no other scheme.
+  expect(formActionSource('com.konjir.konnect:/oauth')).toBe('com.konjir.konnect:');
+  expect(formActionSource('com.konjir.konnect.dev:/oauth')).toBe('com.konjir.konnect.dev:');
+  expect(formActionSource('com.konjir.konnect.preview:/oauth')).toBe('com.konjir.konnect.preview:');
+  for (const bad of ['com.konjir.konnect.evil:/oauth', 'com.konjir.konnectx:/oauth', 'COM.KONJIR.KONNECT:/oauth', 'com.konjir.konnect://evil.com/oauth', 'com.konjir.konnect:/oauth?x=1']) {
+    expect([bad, formActionSource(bad)]).toStrictEqual([bad, undefined]);
+  }
   expect(formActionSource('https://a_b.example/cb')).toBeUndefined();   // nor this: registration refuses it
   expect(formActionSource('not a uri')).toBeUndefined();
   const { kolab } = await setup();

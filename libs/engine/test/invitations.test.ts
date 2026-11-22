@@ -305,6 +305,29 @@ test('a person\'s own sign-in that leaves the kolab to the page is only for an a
   expect(await rejection(kolab.consentPerson(local.binding, local.csrf, { team: 'acme', shown: 'member' }))).toMatch(/expired or was already used/);
 });
 
+test('konnect\'s own app, every redirect URI on its schemes, signs the person in as konnect\'s CLI does; a client mixing its scheme with any other redirect is refused, nothing made', async () => {
+  const kolab = await openKolab();
+  const native = ['com.konjir.konnect:/oauth', 'com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth'];
+  for (const mixed of [['com.konjir.konnect:/oauth', 'https://app.example/cb'], ['com.konjir.konnect:/oauth', CB]]) {
+    const m = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir team:acme', mixed);
+    expect([mixed, await rejection(kolab.consentPerson(m.binding, m.csrf, { team: 'acme', shown: 'make' }))])
+      .toStrictEqual([mixed, 'AccessError: a sign-in that leaves its kolab to the page is only for an app on your own computer or phone, and this one receives its answer elsewhere']);
+  }
+  expect(await kolab.kolabRow('acme')).toBeUndefined();
+  const app = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir team:acme', native);
+  const r = await kolab.consentPerson(app.binding, app.csrf, { team: 'acme', shown: 'make' });
+  expect([r.kolab, r.made, r.redirectUri]).toStrictEqual(['acme', true, 'com.konjir.konnect:/oauth']);
+  const t = await app.exchange(r.code);
+  expect([t.actor, t.kolab, t.role, t.scope]).toStrictEqual([app.person, 'acme', 'product', 'konjir kolab:acme role:product']);
+  // The code is good once: used again, it is refused, and the grant it issued is revoked.
+  expect(await kolab.sessionOpen(t.accessToken)).toBe(true);
+  expect(await rejection(app.exchange(r.code))).toMatch(/unknown, expired, already used/);
+  expect(await kolab.sessionOpen(t.accessToken)).toBe(false);
+  // choose:kolab too, from the dev build's scheme alone.
+  const dev = await signingIn(kolab, { subject: '22', login: 'bob' }, 'konjir choose:kolab', ['com.konjir.konnect.dev:/oauth']);
+  expect((await kolab.consentPerson(dev.binding, dev.csrf, { kolab: 'acme' })).kolab).toBe('acme');
+});
+
 test('an invitation whose maker no longer owns the kolab, or is archived, waits for no one: it isn\'t listed or counted, and a new owner\'s invitation of the same account replaces it', async () => {
   const kolab = await openKolab();
   const { actor: amy } = await kolab.signInWith(github('11', 'amy'));
