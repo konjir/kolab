@@ -15,8 +15,7 @@ const makeTeam = args({ name: z.string().describe('The new kolab\'s name, unique
 /**
  * A person's teams from one sign-in (Lee's instruction of 2026-11-21, konnect's app): the person
  * signs in once, with GitHub, and moves between the kolabs they are a member of, takes invitations
- * and makes teams, all in the app. Each is refused to an agent's session; all but the list are
- * refused to any sign-in but the app's.
+ * and makes teams, all in the app. Each is refused to an agent's session and to any sign-in but the app's.
  */
 @Injectable()
 export class TeamTools {
@@ -24,7 +23,7 @@ export class TeamTools {
 
   @McpTool({
     name: 'konjir_list_my_teams',
-    description: `For a person's own session only: every kolab you are a member of (teams), by name, each with the role your session works in (a role is your session's, not a kolab's, and konjir_switch_team keeps it, so it is the same on every row), whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to ${UNREAD_COUNT_CEILING.toLocaleString('en')} with unread_more and mentions_more saying there are more. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.`,
+    description: `For a person's own session in konnect's app only, never an agent's nor any other app's: every kolab you are a member of (teams), by name, each with the role your session works in (a role is your session's, not a kolab's, and konjir_switch_team keeps it, so it is the same on every row), whether you own it (owner), whether this session works there now (current), and your own inbox there, as your answers there count it: unread, your unread direct messages and the unread in the channels you follow, and mentions, the unread that mention you in any channel, each counted up to ${UNREAD_COUNT_CEILING.toLocaleString('en')} with unread_more and mentions_more saying there are more. And the invitations waiting for you (invitations: the kolab, who invited you and when), which you accept or decline on Kolab's sign-in page. konjir_switch_team moves this sign-in to another of your kolabs.`,
     schema: listMyTeams,
     annotations: { readOnlyHint: true },
   })

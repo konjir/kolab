@@ -129,7 +129,7 @@ export class PushTools {
 
   @McpTool({
     name: 'konjir_register_push_device',
-    description: `For a person's own session only, never an agent's: register your phone's konnect app for push notifications, by its Expo push token and platform, from whichever of your kolabs this session is in. The device is yours, not this kolab's: it is pushed messages from every kolab you are a member of, each under your prefs there (konjir_set_notification_prefs). Idempotent: registering again renews it. A token someone else registered (the same phone, signed in as them) moves to you. A device registered from a sign-in gets nothing once that sign-in is revoked or lapses, so register again after signing in. You keep at most ${MAX_PUSH_DEVICES} devices: one more forgets the one least recently seen. A push says who sent a message and, for a channel, which; its first ${PUSH_PREVIEW_CHARS} characters, unless this Kolab sends no previews or you hide them; what to open, data.team naming its kolab; and, as the badge, your unread across all your kolabs. Returns { device: { token, platform, created_at, last_seen_at } }.`,
+    description: `For a person's own session in konnect's app only, never an agent's nor any other app's: register your phone's konnect app for push notifications, by its Expo push token and platform, from whichever of your kolabs this session is in. The device is yours, not this kolab's: it is pushed messages from every kolab you are a member of, each under your prefs there (konjir_set_notification_prefs). Idempotent: registering again renews it. A token someone else registered (the same phone, signed in as them) moves to you. One device for each sign-in: registering a token forgets any other registered from the same sign-in. A device gets nothing once its sign-in is revoked, lapses or has no open session, so register again after signing in. You keep at most ${MAX_PUSH_DEVICES} devices: one more forgets the one least recently seen. A push says who sent a message and, for a channel, which; its first ${PUSH_PREVIEW_CHARS} characters, unless this Kolab sends no previews or you hide them; what to open, data.team naming its kolab; and, as the badge, your unread across all your kolabs. Returns { device: { token, platform, created_at, last_seen_at } }.`,
     schema: registerPushDevice,
     annotations: { idempotentHint: true },
   })
@@ -139,7 +139,7 @@ export class PushTools {
 
   @McpTool({
     name: 'konjir_unregister_push_device',
-    description: 'For a person\'s own session only, never an agent\'s: stop push notifications to one of your devices, from every kolab, by its Expo push token, as the app does when it signs out. Returns { unregistered }: false when you had no such device.',
+    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: stop push notifications to one of your devices, from every kolab, by its Expo push token, as the app does when it signs out. Returns { unregistered }: false when you had no such device.',
     schema: unregisterPushDevice,
     annotations: { idempotentHint: true },
   })
@@ -149,7 +149,7 @@ export class PushTools {
 
   @McpTool({
     name: 'konjir_set_notification_prefs',
-    description: 'For a person\'s own session only, never an agent\'s: choose what this kolab, the one this session is in, pushes to your devices; each of your kolabs has its own. level is all, mentions_and_dms (the default) or none; muted_channels, when given, replaces the channels you mute, by name, which push nothing, mentions included; hide_preview, when given, true keeps every word of a message out of your pushes, which then say only who sent it and where. Nothing from this kolab is pushed while a listen stream of yours is open in it. Returns { kolab, level, muted_channels, hide_preview }.',
+    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: choose what this kolab, the one this session is in, pushes to your devices; each of your kolabs has its own. level is all, mentions_and_dms (the default) or none; muted_channels, when given, replaces the channels you mute, by name, which push nothing, mentions included; hide_preview, when given, true keeps every word of a message out of your pushes, which then say only who sent it and where. Nothing from this kolab is pushed while a listen stream of yours is open in it. Returns { kolab, level, muted_channels, hide_preview }.',
     schema: setNotificationPrefs,
     annotations: { idempotentHint: true },
   })
@@ -159,7 +159,7 @@ export class PushTools {
 
   @McpTool({
     name: 'konjir_get_notification_prefs',
-    description: 'For a person\'s own session only, never an agent\'s: what your kolab pushes to your devices, as konjir_set_notification_prefs set it: { kolab, level, muted_channels, hide_preview }, mentions_and_dms, none muted and previews shown until you choose.',
+    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: what your kolab pushes to your devices, as konjir_set_notification_prefs set it: { kolab, level, muted_channels, hide_preview }, mentions_and_dms, none muted and previews shown until you choose.',
     schema: noArgs,
     annotations: { readOnlyHint: true },
   })

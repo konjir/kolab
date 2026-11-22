@@ -3,7 +3,7 @@
 import { expect, test } from '@jest/globals';
 import { expoSender, pushOptionsFromEnv, startServer } from '@konjir/server';
 import { connect, call } from '../src/cli.js';
-import { closeAtEnd, rejection, testStore } from '@konjir/engine/testing';
+import { appSignIn, closeAtEnd, rejection, testStore } from '@konjir/engine/testing';
 
 const ADMIN = 'test-admin-token';
 
@@ -27,7 +27,11 @@ async function until(what: string, check: () => boolean | Promise<boolean>, ms =
   }
 }
 
-/** Ann owns `hub`; Bo writes there, and so does his agent bo-claude. Each has a session there. */
+/**
+ * Ann owns `hub`; Bo writes there, and so does his agent bo-claude. Ann and Bo are signed in through
+ * konnect's app, whose sign-in alone takes the push verbs; `app` signs one in again, as another phone;
+ * the agent has a hand-issued session.
+ */
 async function hub(opts: Partial<Parameters<typeof startServer>[0]> = {}) {
   const server = await startServer({ adminToken: ADMIN, ...(await testStore()), ...opts });
   const admin = await connect(server.url, ADMIN);
@@ -43,7 +47,12 @@ async function hub(opts: Partial<Parameters<typeof startServer>[0]> = {}) {
     closeAtEnd(client);
     return client;
   };
-  return { server, admin, session, ann: await session('ann'), bo: await session('bo'), agent: await session('bo-claude') };
+  const app = async (actor: string, kolab = 'hub') => {
+    const client = await connect(server.url, (await appSignIn(server.kolab, actor, kolab)).access);
+    closeAtEnd(client);
+    return client;
+  };
+  return { server, admin, session, app, ann: await app('ann'), bo: await app('bo'), agent: await session('bo-claude') };
 }
 
 type Sent = { sent: { id: string } };
@@ -97,7 +106,8 @@ test('list_members gives each member the GitHub login behind them, an agent its 
 const TOKEN = 'ExponentPushToken[bo-phone]';
 
 test('the push verbs are a person\'s: register, unregister, and notification prefs; an agent is refused each, and arguments are checked', async () => {
-  const { bo, agent } = await hub();
+  const { bo, agent, session } = await hub();
+  const hand = await session('bo');
   expect(await call(bo, 'register_push_device', { token: TOKEN, platform: 'ios' }))
     .toStrictEqual({ device: { token: TOKEN, platform: 'ios', created_at: expect.any(String), last_seen_at: expect.any(String) } });
   expect(await call(bo, 'get_notification_prefs', {})).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false });
@@ -111,6 +121,8 @@ test('the push verbs are a person\'s: register, unregister, and notification pre
   for (const [verb, a] of [['register_push_device', { token: TOKEN, platform: 'ios' }], ['unregister_push_device', { token: TOKEN }],
     ['set_notification_prefs', { level: 'all' }], ['get_notification_prefs', {}]] as const) {
     expect(await rejection(call(agent, verb, a))).toMatch(/AccessError: bo-claude is an agent: only a person/);
+    // Not from a hand-issued session of his, nor any app's sign-in but konnect's.
+    expect(await rejection(call(hand, verb, a))).toMatch(/this session is no sign-in through an app/);
   }
   expect(await rejection(call(bo, 'register_push_device', { token: TOKEN, platform: 'web' }))).toMatch(/platform/);
   expect(await rejection(call(bo, 'register_push_device', { token: 'nope', platform: 'ios' }))).toMatch(/token is an Expo push token/);
@@ -120,9 +132,10 @@ test('the push verbs are a person\'s: register, unregister, and notification pre
 
 test('with an Expo access token, a message to a person with a device is pushed through Expo\'s API, once; a token Expo no longer knows is forgotten', async () => {
   const expo = fakeExpo((p) => (p.to === 'ExponentPushToken[gone]' ? { status: 'error', message: 'gone', details: { error: 'DeviceNotRegistered' } } : { status: 'ok', id: 'r1' }));
-  const { server, ann, bo } = await hub({ push: { accessToken: 'expo-test-token', preview: true, fetch: expo.fetch, url: 'https://expo.invalid/push' } });
+  const { server, ann, bo, app } = await hub({ push: { accessToken: 'expo-test-token', preview: true, fetch: expo.fetch, url: 'https://expo.invalid/push' } });
   await call(bo, 'register_push_device', { token: TOKEN, platform: 'ios' });
-  await call(bo, 'register_push_device', { token: 'ExponentPushToken[gone]', platform: 'android' });
+  // His second phone: one device for each sign-in.
+  await call(await app('bo'), 'register_push_device', { token: 'ExponentPushToken[gone]', platform: 'android' });
   const sent = (await call(ann, 'send_message', { to: 'bo', message: 'Lunch at noon?' }) as Sent).sent.id;
   await until('the push to reach Expo', () => expo.requests.length === 1);
   const [r] = expo.requests;
