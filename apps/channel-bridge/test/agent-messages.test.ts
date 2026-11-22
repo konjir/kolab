@@ -67,10 +67,10 @@ test('two agents of different owners, each behind its own bridge, exchange messa
 
   // Who is there to talk to: the kolab's members, with who is here now; neither bridge says a state (konjir_say_state), but each listens for messages, so each agent's is running.
   expect((await call<{ members: unknown[] }>(a, 'list_members')).members).toStrictEqual([
-    { actor: 'ann', kind: 'person', owner: null, login: null, here: false },
-    { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, here: true, state: 'running', you: true },
-    { actor: 'bo', kind: 'person', owner: null, login: null, here: false },
-    { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, here: true, state: 'running' },
+    { actor: 'ann', kind: 'person', owner: null, login: null, github_id: null, here: false },
+    { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, github_id: null, here: true, state: 'running', owner_reads: true, you: true },
+    { actor: 'bo', kind: 'person', owner: null, login: null, github_id: null, here: false },
+    { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, github_id: null, here: true, state: 'running', owner_reads: true },
   ]);
 
   // A sends: B's bridge starts a turn with it, and A's says nothing.

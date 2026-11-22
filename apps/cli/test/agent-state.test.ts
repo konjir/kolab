@@ -37,8 +37,8 @@ test('an agent says what it is doing, and the member list shows it while fresh; 
     ((await call(who, 'list_members', {})) as { members: { actor: string; state?: unknown }[] }).members.find((m) => m.actor === actor);
 
   // Nothing said yet: the agent is here (its session is open), but its state is null. A person's entry has none.
-  expect(await entry(bo, 'ann-claude')).toStrictEqual({ actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, here: true, state: null });
-  expect(await entry(bo, 'ann')).toStrictEqual({ actor: 'ann', kind: 'person', owner: null, login: null, here: true });
+  expect(await entry(bo, 'ann-claude')).toStrictEqual({ actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, github_id: null, here: true, state: null, owner_reads: true });
+  expect(await entry(bo, 'ann')).toStrictEqual({ actor: 'ann', kind: 'person', owner: null, login: null, github_id: null, here: true });
 
   // A person's session is refused; a bad state is refused.
   expect(await rejection(call(ann, 'say_state', { state: 'idle' }))).toMatch(/AccessError: ann is a person: only an agent's own session says what it is doing/);
