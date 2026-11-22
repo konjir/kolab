@@ -217,7 +217,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(vars.KONNECT_ANDROID == 'on' && '["ios","android"]' || '["ios"]') }}
+        # The first leg is the one an update-only run publishes from (below).
+        platform: ${{ fromJSON(vars.KONNECT_ANDROID == 'on' && '["android","ios"]' || '["ios"]') }}
     runs-on: ${{ matrix.platform == 'ios' && 'macos-15' || 'ubuntu-24.04' }}
     timeout-minutes: 90
     environment: app-stores
@@ -268,9 +269,10 @@ jobs:
           FINGERPRINT: ${{ steps.build.outputs.fingerprint }}
         run: echo "$PLATFORM=$FINGERPRINT" >> "$GITHUB_OUTPUT"
       - name: Update the production channel (signed)
-        # Once, from one leg (Android's, on the cheaper runner, once it ships): an update carries
-        # both platforms' bundles.
-        if: inputs.update-only && matrix.platform == (vars.KONNECT_ANDROID == 'on' && 'android' || 'ios')
+        # Once, from the matrix's first leg (Android's, on the cheaper runner, once it ships; iOS's
+        # until then): an update carries both platforms' bundles. Chosen from the matrix itself, not
+        # by reading KONNECT_ANDROID again, so the two can never disagree and publish nothing.
+        if: inputs.update-only && strategy.job-index == 0
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
           KONNECT_UPDATES_PRIVATE_KEY: ${{ secrets.KONNECT_UPDATES_PRIVATE_KEY }}
