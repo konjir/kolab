@@ -53,7 +53,7 @@ export function useConversation(team: string, kind: ConversationKind, name: stri
     queryFn: async ({ pageParam }) => {
       const k = await api(team);
       const page = kind === 'channel' ? await k.channelMessages(name, pageParam) : await k.directMessages(name, pageParam);
-      return { messages: page.messages.map(toMsg), next: page.next ?? undefined, readableBy: readersOf(page) };
+      return { messages: page.messages.map(toMsg), next: page.next ?? undefined, readableBy: readersOf(page.messages as { readable_by?: string[] }[]) };
     },
     getNextPageParam: (last) => last.next,
   });

@@ -13,6 +13,7 @@ import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import { AndroidImportance } from 'expo-notifications';
 import { Platform } from 'react-native';
+import type { AgentNotifyLevel, NotificationPrefs } from '@konjir/types';
 import { call } from './kolab/api';
 
 /** Where the phone keeps its push token, and what happened when it registered it (kv-store). */
@@ -20,25 +21,40 @@ export const PUSH_TOKEN_KEY = 'konnect.push.token';
 export const PUSH_STATUS_KEY = 'konnect.push.status';
 
 export type NotifyLevel = 'all' | 'mentions_and_dms' | 'none';
-export interface NotifyPrefs { level: NotifyLevel; muted: string[]; hidePreview: boolean }
-export const DEFAULT_PREFS: NotifyPrefs = { level: 'mentions_and_dms', muted: [], hidePreview: false };
+/** `agents`: what the person is pushed of each of their own agents, by its name; one left out is `stuck`. */
+export interface NotifyPrefs { level: NotifyLevel; muted: string[]; hidePreview: boolean; agents: Record<string, AgentNotifyLevel> }
+export const DEFAULT_PREFS: NotifyPrefs = { level: 'mentions_and_dms', muted: [], hidePreview: false, agents: {} };
 
 /**
  * The arguments of konjir_set_notification_prefs for `prefs`: channels by name, each once, sorted.
  * Hiding the words is Kolab's to do (it sends the push), so it goes to Kolab too.
  */
-export function prefsArgs(prefs: NotifyPrefs): { level: NotifyLevel; muted_channels: string[]; hide_preview: boolean } {
+export function prefsArgs(prefs: NotifyPrefs): { level: NotifyLevel; muted_channels: string[]; hide_preview: boolean; agents?: Record<string, AgentNotifyLevel> } {
   const muted = [...new Set(prefs.muted.map((c) => c.replace(/^#/, '').toLowerCase()).filter(Boolean))].sort();
-  return { level: prefs.level, muted_channels: prefs.level === 'none' ? [] : muted, hide_preview: prefs.hidePreview };
+  // Kolab merges `agents` per agent: those named are set, the rest keep theirs.
+  const agents = Object.keys(prefs.agents ?? {}).length ? { agents: prefs.agents } : {};
+  return { level: prefs.level, muted_channels: prefs.level === 'none' ? [] : muted, hide_preview: prefs.hidePreview, ...agents };
 }
 
-/** What a push carries, as S4 sends it: the team, and the conversation the message is in. */
-export interface PushData { team?: string; channel?: string; with?: string; message?: string }
+/**
+ * What a push carries, as S4 sends it: the team, and the conversation the message is in; or, for
+ * one of the person's own agents (`kind: 'agent'`), the agent, and its DM partner or channel.
+ */
+export interface PushData { team?: string; kind?: string; agent?: string; reason?: string; channel?: string; with?: string; message?: string }
 
-/** The screen a notification opens, and its team; nothing for one that names no conversation. */
+/**
+ * The screen a notification opens, and its team; nothing for one that names no team. One about
+ * your agent opens its DM read-only (`with`), the channel on its messages (`channel`), or its screen.
+ */
 export function routeOf(data: unknown): { team: string; path: string } | undefined {
   const d = (data ?? {}) as PushData;
   if (!d.team) return undefined;
+  if (d.kind === 'agent' && d.agent) {
+    const agent = encodeURIComponent(d.agent);
+    if (d.with) return { team: d.team, path: `/c/dm/${encodeURIComponent(d.with)}?as=${agent}` };
+    if (d.channel) return { team: d.team, path: `/c/channel/${encodeURIComponent(d.channel)}?only=${agent}` };
+    return { team: d.team, path: `/agent/${agent}` };
+  }
   if (d.channel) return { team: d.team, path: `/c/channel/${encodeURIComponent(d.channel)}` };
   if (d.with) return { team: d.team, path: `/c/dm/${encodeURIComponent(d.with)}` };
   return { team: d.team, path: '/' };
@@ -74,12 +90,14 @@ export async function unregisterDevice(client: Client, token: string) {
 
 /** The team's prefs as Kolab keeps them (konjir_get_notification_prefs). */
 export async function getPrefs(client: Client): Promise<NotifyPrefs> {
-  const r = await call<{ level: NotifyLevel; muted_channels: string[]; hide_preview: boolean }>(client, 'konjir_get_notification_prefs');
-  return { level: r.level, muted: r.muted_channels, hidePreview: r.hide_preview };
+  const r = await call<NotificationPrefs>(client, 'konjir_get_notification_prefs');
+  return { level: r.level, muted: r.muted_channels, hidePreview: r.hide_preview, agents: r.agents ?? {} };
 }
 
-export async function setPrefs(client: Client, prefs: NotifyPrefs) {
-  await call(client, 'konjir_set_notification_prefs', prefsArgs(prefs));
+/** Sets the team's prefs at Kolab, and gives what Kolab keeps now. */
+export async function setPrefs(client: Client, prefs: NotifyPrefs): Promise<NotifyPrefs> {
+  const r = await call<NotificationPrefs>(client, 'konjir_set_notification_prefs', prefsArgs(prefs));
+  return { level: r.level, muted: r.muted_channels, hidePreview: r.hide_preview, agents: r.agents ?? {} };
 }
 
 /** The app's badge: everything unread in the team shown. */

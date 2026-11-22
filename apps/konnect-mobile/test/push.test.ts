@@ -9,9 +9,12 @@ const { prefsArgs, routeOf, DEFAULT_PREFS } = jest.requireActual<typeof import('
 
 describe('push', () => {
   test('prefs become konjir_set_notification_prefs\' arguments: channels once each, sorted, none when nothing notifies', () => {
-    expect(prefsArgs({ level: 'all', muted: ['#Design', 'releases', 'design', ''], hidePreview: true })).toEqual({ level: 'all', muted_channels: ['design', 'releases'], hide_preview: true });
-    expect(prefsArgs({ level: 'none', muted: ['design'], hidePreview: false })).toEqual({ level: 'none', muted_channels: [], hide_preview: false });
+    expect(prefsArgs({ level: 'all', muted: ['#Design', 'releases', 'design', ''], hidePreview: true, agents: {} })).toEqual({ level: 'all', muted_channels: ['design', 'releases'], hide_preview: true });
+    expect(prefsArgs({ level: 'none', muted: ['design'], hidePreview: false, agents: {} })).toEqual({ level: 'none', muted_channels: [], hide_preview: false });
     expect(DEFAULT_PREFS.level).toBe('mentions_and_dms');
+    // Each agent's choice goes to Kolab, which merges them per agent; none named, none sent.
+    expect(prefsArgs({ ...DEFAULT_PREFS, agents: { 'ann-helper': 'all' } })).toMatchObject({ agents: { 'ann-helper': 'all' } });
+    expect(prefsArgs(DEFAULT_PREFS)).not.toHaveProperty('agents');
   });
 
   test('a notification opens its conversation in its team, as Kolab\'s push data names it', () => {
@@ -20,6 +23,12 @@ describe('push', () => {
     expect(routeOf({ team: 'hub' })).toEqual({ team: 'hub', path: '/' });
     expect(routeOf({ channel: 'general' })).toBeUndefined();
     expect(routeOf(undefined)).toBeUndefined();
+  });
+
+  test('one about your agent opens its DM read-only, the channel on its messages, or its screen', () => {
+    expect(routeOf({ team: 'hub', kind: 'agent', agent: 'ann-helper', reason: 'message', message_id: 'm', with: 'bo' })).toEqual({ team: 'hub', path: '/c/dm/bo?as=ann-helper' });
+    expect(routeOf({ team: 'hub', kind: 'agent', agent: 'ann-helper', reason: 'mention', message_id: 'm', channel: 'general' })).toEqual({ team: 'hub', path: '/c/channel/general?only=ann-helper' });
+    expect(routeOf({ team: 'hub', kind: 'agent', agent: 'ann-helper', reason: 'not_running', message_id: 'm' })).toEqual({ team: 'hub', path: '/agent/ann-helper' });
   });
 
   test('each tap opens once, however often the app is shown it (the listener, the launch, a re-render)', () => {

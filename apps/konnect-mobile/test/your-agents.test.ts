@@ -1,8 +1,8 @@
 import { describe, expect, test } from '@jest/globals';
-import { normalizeStatus, readersOf, type AgentActivityItem, type AgentStatus } from '../src/kolab/agents';
+import { readersOf, type AgentActivityItem, type AgentStatus } from '../src/kolab/agents';
 import {
-  agentChannels, agentNotifyOf, agentsIn, ago, at, contextOf, disclosureOf, lastLine, needsYouCount, needsYouWords,
-  onlyAgent, ownAgents, readOnlyBanner, whereOf, withAgentNotify, yourAgentsActivity,
+  agentChannels, agentNotifyOf, agentsIn, ago, at, contextOf, disclosureOf, lastLine, legacyAgentNotify, needsYouCount, needsYouWords,
+  onlyAgent, ownAgents, readOnlyBanner, whereOf, yourAgentsActivity,
 } from '../src/kolab/your-agents';
 
 const NOW = Date.parse('2026-11-22T12:00:00Z');
@@ -13,20 +13,15 @@ const members = [
   { actor: 'ann-reviewer', kind: 'agent' as const, owner: 'ann', label: 'reviewer', owner_reads: true },
   { actor: 'bo-builder', kind: 'agent' as const, owner: 'bo', label: 'builder', owner_reads: true },
 ];
-const status = (agent: string, over: Partial<AgentStatus> = {}): AgentStatus => normalizeStatus({ agent, ...over });
+const status = (agent: string, over: Partial<AgentStatus> = {}): AgentStatus => ({
+  agent, label: null, state: null, here: false, last: null, unread: 0, channels: [], needs_you: { mentioned_unread: 0, capped: 0, not_running_with_unread: 0 }, ...over,
+});
 const item = (over: Partial<AgentActivityItem>): AgentActivityItem => ({ kind: 'dm', agent: 'ann-helper', id: 'm1', from: 'bo', to: 'ann-helper', message: 'hi', reply_to: null, sent_at: '2026-11-22T11:58:00Z', ...over });
 
 describe('Kolab\'s owner tools, as the app reads them', () => {
-  test('a status fills what Kolab left out, and counts nothing below zero', () => {
-    expect(normalizeStatus({ agent: 'ann-helper' })).toEqual({ agent: 'ann-helper', label: null, state: null, here: false, last: null, needs_you: { mentioned_unread: 0, capped: 0, not_running_with_unread: 0 } });
-    expect(normalizeStatus({ agent: 'a', here: true, state: 'idle', last: { kind: 'channel', at: '2026-11-22T11:58:00Z', summary: 'replied to @bo in #general' }, needs_you: { mentioned_unread: 2, capped: -1, not_running_with_unread: 0 } }))
-      .toMatchObject({ here: true, state: 'idle', last: { summary: 'replied to @bo in #general' }, needs_you: { mentioned_unread: 2, capped: 0 } });
-  });
-
-  test('who else can read a DM, under whichever name the result gives it', () => {
-    expect(readersOf({ messages: [], readable_by: ['ann'] })).toEqual(['ann']);
-    expect(readersOf({ readers: ['ann', 3] })).toEqual(['ann']);
-    expect(readersOf({ messages: [] })).toEqual([]);
+  test('who else can read a DM: everyone its messages\' readable_by name, once each', () => {
+    expect(readersOf([{ readable_by: ['ann'] }, {}, { readable_by: ['ann', 'bo'] }])).toEqual(['ann', 'bo']);
+    expect(readersOf([{}, {}])).toEqual([]);
   });
 });
 
@@ -64,10 +59,10 @@ describe('the agent screen', () => {
     expect(contextOf(item({ from: 'ann-helper', to: 'bo' }))).toEqual({ kind: 'dm', name: 'bo', as: 'ann-helper' });
   });
 
-  test('its channels: Kolab\'s, with the backlog, most first; else those its activity names', () => {
+  test('its channels: Kolab\'s, with the backlog, most first; until its status is read, those its activity names', () => {
     expect(agentChannels(status('a', { channels: [{ channel: 'design', unread: 1 }, { channel: 'general', unread: 4 }] }), [])).toEqual([{ channel: 'general', unread: 4 }, { channel: 'design', unread: 1 }]);
     const items = [item({ kind: 'channel', channel: 'general', sent_at: 'b' }), item({ id: 'm2' }), item({ id: 'm3', kind: 'channel', channel: 'general', sent_at: 'a' }), item({ id: 'm4', kind: 'channel', channel: 'design', sent_at: 'c' })];
-    expect(agentChannels(status('a'), items)).toEqual([{ channel: 'general', last: 'b' }, { channel: 'design', last: 'c' }]);
+    expect(agentChannels(undefined, items)).toEqual([{ channel: 'general', last: 'b' }, { channel: 'design', last: 'c' }]);
   });
 
   test('the read-only banner names both sides', () => {
@@ -124,15 +119,15 @@ describe('the disclosure in a DM with an agent', () => {
 });
 
 describe('notifications for your agents', () => {
-  test('stuck or capped by default; each agent its own; only what differs is kept', () => {
-    expect(agentNotifyOf(null, 'ann-helper')).toBe('stuck');
-    let kept = withAgentNotify(null, 'ann-helper', 'all');
-    kept = withAgentNotify(kept, 'ann-reviewer', 'never');
-    expect(agentNotifyOf(kept, 'ann-helper')).toBe('all');
-    expect(agentNotifyOf(kept, 'ann-reviewer')).toBe('never');
-    kept = withAgentNotify(kept, 'ann-helper', 'stuck');
-    expect(JSON.parse(kept)).toEqual({ 'ann-reviewer': 'never' });
-    expect(agentNotifyOf('not json', 'ann-helper')).toBe('stuck');
-    expect(agentNotifyOf('{"ann-helper":"loud"}', 'ann-helper')).toBe('stuck');
+  test('stuck or capped by default, else what Kolab\'s prefs say', () => {
+    expect(agentNotifyOf(undefined, 'ann-helper')).toBe('stuck');
+    expect(agentNotifyOf({ 'ann-helper': 'all' }, 'ann-helper')).toBe('all');
+    expect(agentNotifyOf({ 'ann-helper': 'all' }, 'ann-reviewer')).toBe('stuck');
+  });
+  test('what an earlier build kept on the phone is read for moving to Kolab, the valid choices only', () => {
+    expect(legacyAgentNotify('{"ann-helper":"all","ann-reviewer":"never","x":"loud"}')).toEqual({ 'ann-helper': 'all', 'ann-reviewer': 'never' });
+    expect(legacyAgentNotify('not json')).toEqual({});
+    expect(legacyAgentNotify('[1]')).toEqual({});
+    expect(legacyAgentNotify(null)).toEqual({});
   });
 });

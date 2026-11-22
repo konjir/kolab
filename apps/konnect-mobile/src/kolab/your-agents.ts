@@ -3,7 +3,7 @@
  * an agent's messages was, the Activity tab's "Your agents" filter, a channel's "Only @you/bot"
  * filter, and the line in a DM with an agent that says its owner can read it. Pure, so tested.
  */
-import type { Member } from '@konjir/types';
+import { AGENT_NOTIFY_LEVELS, DEFAULT_AGENT_NOTIFY, type AgentNotifyLevel, type Member } from '@konjir/types';
 import type { AgentActivityItem, AgentStatus, NeedsYou } from './agents';
 import { handleOf } from './names';
 
@@ -64,9 +64,9 @@ export function contextOf(item: AgentActivityItem): { kind: 'channel' | 'dm'; na
   return { kind: 'dm', name: otherOf(item, item.agent), as: item.agent };
 }
 
-/** The channels an agent is active in: Kolab's list with its backlog when it sends one, else those its activity names. */
+/** The channels an agent is active in: Kolab's, with its unread there, most first; until its status is read, those its activity names. */
 export function agentChannels(status: Pick<AgentStatus, 'channels'> | undefined, items: readonly AgentActivityItem[]): { channel: string; unread?: number; last?: string }[] {
-  if (status?.channels) return [...status.channels].sort((a, b) => b.unread - a.unread || a.channel.localeCompare(b.channel));
+  if (status) return [...status.channels].sort((a, b) => b.unread - a.unread || a.channel.localeCompare(b.channel));
   const seen = new Map<string, string>();
   for (const i of items) if (i.kind === 'channel' && i.channel && !seen.has(i.channel)) seen.set(i.channel, i.sent_at);
   return [...seen].map(([channel, last]) => ({ channel, last }));
@@ -128,28 +128,25 @@ export function disclosureOf(agent: (Named & { kind?: string; owner_reads?: bool
 /** The banner over one of your agent's DMs. */
 export const readOnlyBanner = (agentHandle: string, otherHandle: string) => `${agentHandle}'s conversation with ${otherHandle} · read-only`;
 
-/** When an agent's messages notify you: never, when it is stuck or capped (the default), or every message to it. */
-export type AgentNotify = 'never' | 'stuck' | 'all';
-export const AGENT_NOTIFY_DEFAULT: AgentNotify = 'stuck';
+/** When an agent's messages notify you (Kolab's prefs' `agents`): never, when it is stuck or capped (the default), or every message to it. */
+export type AgentNotify = AgentNotifyLevel;
+export const AGENT_NOTIFY_DEFAULT: AgentNotify = DEFAULT_AGENT_NOTIFY;
 export const AGENT_NOTIFY: { level: AgentNotify; label: string }[] = [
   { level: 'never', label: 'Never' },
   { level: 'stuck', label: 'When it is stuck or capped' },
   { level: 'all', label: 'Every message to it' },
 ];
-export const agentNotifyKey = (team: string) => `konnect.agent-notify.${team}`;
 
-/** Each agent's setting, from what the phone kept: anything unknown is the default. */
-export function agentNotifyOf(kept: string | null | undefined, agent: string): AgentNotify {
-  try {
-    const v = (JSON.parse(kept ?? '{}') as Record<string, unknown>)[agent];
-    return v === 'never' || v === 'stuck' || v === 'all' ? v : AGENT_NOTIFY_DEFAULT;
-  } catch { return AGENT_NOTIFY_DEFAULT; }
-}
+/** An agent's setting in Kolab's prefs, by its name: the default when it has none. */
+export const agentNotifyOf = (agents: Readonly<Record<string, AgentNotify>> | undefined, agent: string): AgentNotify => agents?.[agent] ?? AGENT_NOTIFY_DEFAULT;
 
-/** What the phone keeps after setting `agent`: only those not at the default. */
-export function withAgentNotify(kept: string | null | undefined, agent: string, level: AgentNotify): string {
+/** Where an earlier build kept these settings on the phone, before Kolab took them: moved to Kolab once, then removed. */
+export const legacyAgentNotifyKey = (team: string) => `konnect.agent-notify.${team}`;
+
+/** The settings an earlier build kept, the valid ones only. */
+export function legacyAgentNotify(kept: string | null | undefined): Record<string, AgentNotify> {
   let all: Record<string, unknown> = {};
-  try { all = JSON.parse(kept ?? '{}') as Record<string, unknown>; } catch { /* a fresh start */ }
-  if (level === AGENT_NOTIFY_DEFAULT) delete all[agent]; else all[agent] = level;
-  return JSON.stringify(all);
+  try { all = JSON.parse(kept ?? '{}') as Record<string, unknown>; } catch { return {}; }
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return {};
+  return Object.fromEntries(Object.entries(all).filter((e): e is [string, AgentNotify] => (AGENT_NOTIFY_LEVELS as readonly unknown[]).includes(e[1])));
 }

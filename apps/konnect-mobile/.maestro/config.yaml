@@ -1,0 +1,13 @@
+# The flows run against one freshly started local-kolab, and some change what the next one sees
+# (messaging reads Ann's unread; your-agents opens #general, which marks it read): so in this order.
+flows:
+  - "*.yaml"
+executionOrder:
+  continueOnFailure: true
+  flowsOrder:
+    - sign-in
+    - messaging
+    - create-team
+    - team-admin
+    - switch-team
+    - your-agents
