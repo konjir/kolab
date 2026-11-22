@@ -289,6 +289,8 @@ export class Tokens {
     try {
       for (let attempt = 0; ; attempt++) {
         if (attempt > 0) {
+          // Stopped while that try was on its way: its failure is no news to whoever comes next.
+          if (generation !== this.generation) throw new Error('The refresh was stopped');
           this.triedAndFailed();
           if (this.now() >= until) return undefined;
           await this.pause(Math.min(this.retryMs * 2 ** (attempt - 1), this.retryMaxMs));
@@ -305,7 +307,8 @@ export class Tokens {
         return { res, body };
       }
     } finally {
-      this.retrying = false;
+      // A loop that was stopped leaves the state to the one that stopped it.
+      if (generation === this.generation) this.retrying = false;
     }
   }
 

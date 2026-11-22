@@ -217,6 +217,29 @@ describe('a refresh whose answer was lost', () => {
     await tokens.signOut();
   });
 
+  test('a switch that stops a refresh whose try is in flight is not failed by that try: it tries itself, and succeeds', async () => {
+    const store = new LoginStore(kv(), URL_);
+    await store.put(login({ expiresAt: 0 }));
+    // The refresh's first send hangs until we fail it; every send after it is answered.
+    let failFirst!: () => void;
+    let sends = 0;
+    const fetch = async (_url: string, init: { body: string }) => {
+      sends++;
+      if (sends === 1) { await new Promise<void>((_, reject) => { failFirst = () => reject(new TypeError('Network request failed')); }); }
+      const scope = new URLSearchParams(init.body).get('refresh_token') === 'refresh-1' ? 'konjir kolab:side role:engineer' : 'konjir kolab:hub role:product';
+      return reply({ access_token: `access-${sends}`, refresh_token: `refresh-${sends - 1}`, expires_in: 900, scope });
+    };
+    const tokens = new Tokens({ store, endpoints, fetch, now: () => 1_000, retryMs: 5 });
+    const refreshing = tokens.accessToken().catch((e: Error) => e);
+    await until(() => sends === 1);
+    // A switch arrives while that send is on its way, then the send fails, and the network is back.
+    const switching = tokens.switchTeam('side', async () => ({ kolab: 'side', role: 'engineer' }));
+    failFirst();
+    await expect(switching).resolves.toMatchObject({ team: 'side' });
+    expect(await refreshing).toBeInstanceOf(Error);
+    expect(await store.who()).toEqual({ actor: 'ann', team: 'side', role: 'engineer' });
+  });
+
   test('signing out while it retries stops it, and revokes the refresh token it kept', async () => {
     const store = new LoginStore(kv(), URL_);
     await store.put(login());
