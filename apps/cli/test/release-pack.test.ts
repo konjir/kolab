@@ -111,14 +111,16 @@ test('terraform init rewriting the provider lock is not a dirty checkout: the zi
   expect(pack(r, out).stderr).toMatch(/tracked changes aren't committed/);
 });
 
-test('konnect\'s phone app is no part of a release either: not in the zip, and a change to it or its workflows alone is the same release', () => {
-  const attrs = '/site export-ignore\n/apps/konnect-mobile export-ignore\n';
+test('konnect\'s phone app is no part of a release either: neither it nor its workflows are in the zip, and a change to it or its workflows alone is the same release', () => {
+  // The repository's own .gitattributes, so the zip holds exactly what the release id names.
+  const attrs = readFileSync(resolve(import.meta.dirname, '../../../.gitattributes'), 'utf8');
   const r = repo('app', { '.gitattributes': attrs, 'apps/server/a.ts': 'x', 'apps/konnect-mobile/package.json': '{"name":"@konjir/konnect-mobile"}', 'apps/konnect-mobile/app/index.tsx': 'one', '.github/workflows/mobile-release.yml': 'on: push', '.github/workflows/ci.yml': 'on: pull_request', 'package-lock.json': '{}' });
   const out = join(dir, 'app.zip');
   const p = pack(r, out);
   expect([p.status, p.stderr]).toStrictEqual([0, '']);
   const release = (JSON.parse(p.stdout) as { release: string }).release;
   expect(names(out).filter((n) => n.startsWith('apps/'))).toStrictEqual(['apps/', 'apps/server/', 'apps/server/a.ts']);
+  expect(names(out).filter((n) => n.startsWith('.github/'))).toStrictEqual(['.github/', '.github/workflows/', '.github/workflows/ci.yml']);
   // The id is the tree the commit would have with no app and no app workflow at all.
   const bare = repo('app-bare', { '.gitattributes': attrs, 'apps/server/a.ts': 'x', '.github/workflows/ci.yml': 'on: pull_request', 'package-lock.json': '{}' });
   expect(release).toBe(git(bare, 'rev-parse', 'HEAD^{tree}'));
