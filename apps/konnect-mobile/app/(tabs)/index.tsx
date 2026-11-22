@@ -1,6 +1,7 @@
 import type { Member } from '@konjir/types';
 import { useRouter, type Href } from 'expo-router';
 import { useState } from 'react';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/auth/AuthProvider';
@@ -23,6 +24,7 @@ export default function Home() {
   const router = useRouter();
   const qc = useQueryClient();
   const { colors } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const team = auth.current?.team;
   const channels = useChannels(team);
   const members = useMembers(team);
@@ -31,17 +33,17 @@ export default function Home() {
   const [switching, setSwitching] = useState(false);
   if (!team) return null; // The root layout's gate shows the sign-in screen while no team is signed in.
 
+  const all = members.data?.members ?? [];
   const unread = unreadOf(answers.data);
   const q = jump.trim().toLowerCase();
   const match = (s: string) => !q || s.toLowerCase().includes(q);
   const me = auth.current!.actor;
   const followed = (channels.data?.channels ?? []).filter((c) => c.following && match(c.channel));
-  const all = members.data?.members ?? [];
   const people = all.filter((m) => m.kind === 'person' && m.actor !== me && match(m.actor));
   const agents = all.filter((m) => m.kind === 'agent' && match(handleOf(m)));
   const unreadRows = [
     ...[...unread.channels].filter(([c]) => match(c)).map(([c, u]) => ({ key: `c-${c}`, label: `#${c}`, href: `/c/channel/${c}`, u, icon: 'channel' as IconName })),
-    ...[...unread.dms].filter(([p]) => match(p)).map(([p, u]) => ({ key: `d-${p}`, label: p, href: `/c/dm/${p}`, u, icon: 'person' as IconName })),
+    ...[...unread.dms].filter(([p]) => match(p)).map(([p, u]) => ({ key: `d-${p}`, label: p, href: `/c/dm/${p}`, u, icon: (all.find((m) => m.actor === p)?.kind === 'agent' ? 'agent' : 'person') as IconName })),
   ];
   const problem = [channels, members, answers].find((x) => x.error)?.error as Error | undefined;
 
@@ -86,7 +88,7 @@ export default function Home() {
         </Section>
         <View style={{ height: 72 }} />
       </Screen>
-      <Pressable testID="new-message" accessibilityRole="button" accessibilityLabel="New message" onPress={() => router.push('/new')} style={[styles.fab, { backgroundColor: colors.accent }]}>
+      <Pressable testID="new-message" accessibilityRole="button" accessibilityLabel="New message" onPress={() => router.push('/new')} style={[styles.fab, { backgroundColor: colors.accent, bottom: insets.bottom + 72 }]}>
         <Icon name="newMessage" size={24} tintColor={colors['on-accent']} />
       </Pressable>
     </View>

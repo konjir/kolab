@@ -60,6 +60,8 @@ mkdirSync(here, { recursive: true, mode: 0o700 });
 
 const idp = new StubIdentity();
 idp.as = PEOPLE.ann;
+// GitHub accounts an invitation can find: Cy, who is in no team yet.
+idp.account({ subject: '43', login: 'cy' });
 const kolab = await Kolab.open({});
 for (const p of Object.values(PEOPLE)) await kolab.signInWith({ provider: 'stub', ...p });
 await kolab.createKolab('hub', { owner: 'ann', ...by });

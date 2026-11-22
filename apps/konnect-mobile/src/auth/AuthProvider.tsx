@@ -44,11 +44,12 @@ export function useAuth(): Auth {
 export function AuthProvider({ children, kv = secureKV }: { children: ReactNode; kv?: SecureKV }) {
   const url = appExtra().konnectUrl;
   const scheme = [Constants.expoConfig?.scheme].flat()[0] ?? 'com.konjir.konnect';
+  const signedOutRef = useRef<(team: string) => void>(() => undefined);
   const { store, tokens } = useMemo(() => {
     const store = new LoginStore(kv, url);
     let oauth: Promise<KolabOAuth> | undefined;
     const endpoints = () => (oauth ??= discover(url).catch((e) => { oauth = undefined; throw e; }));
-    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init) }) };
+    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: (team) => signedOutRef.current(team) }) };
   }, [kv, url]);
   const clients = useRef(new Map<string, Promise<Client>>());
   const [state, setState] = useState<{ ready: boolean; teams: TeamSummary[]; current?: string }>({ ready: false, teams: [] });
@@ -66,6 +67,8 @@ export function AuthProvider({ children, kv = secureKV }: { children: ReactNode;
     clients.current.delete(team);
     void c?.then((x) => x.close()).catch(() => undefined);
   }, []);
+  // Kolab ended a team's sign-in: its connection goes, and the app shows the teams left (or the sign-in screen).
+  useEffect(() => { signedOutRef.current = (team) => { dropClient(team); void reload(); }; }, [dropClient, reload]);
 
   const auth: Auth = {
     ready: state.ready, url, teams: state.teams,
