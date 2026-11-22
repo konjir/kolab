@@ -11,7 +11,7 @@ import { Icon } from '@/icons';
 import { markReadUpTo } from '@/kolab/api';
 import { isAgent, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
 import { handleOf, mentionsIn } from '@/kolab/names';
-import { quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
+import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
 import { readThrough } from '@/kolab/unread';
 import { Markdown } from '@/markdown';
 import { FAMILIES, useAppTheme } from '@/theme';
@@ -54,7 +54,7 @@ export default function Conversation() {
 
   const send = async (text: string, retryOf?: Msg) => {
     // Its id is its nonce: a Retry sends the same one, so Kolab keeps the message once.
-    const local: Msg = retryOf ?? { id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`, from: me, message: text, sent_at: new Date().toISOString(), reply_to: replyTo?.id, pending: 'sending' };
+    const local: Msg = retryOf ?? { id: nonce(), from: me, message: text, sent_at: new Date().toISOString(), reply_to: replyTo?.id, pending: 'sending' };
     setPending((p) => [{ ...local, pending: 'sending' }, ...p.filter((x) => x.id !== local.id)]);
     setReplyTo(undefined);
     try {

@@ -26,6 +26,20 @@ export function rowsOf(newestFirst: readonly Msg[], firstUnread?: string, dayLab
   return rows;
 }
 
+/**
+ * A message's nonce, which is also its id on screen until Kolab's answer: a ULID's shape (time,
+ * then randomness, Crockford base 32), within Kolab's 1 to 100 characters of [A-Za-z0-9._:-], and
+ * never the same twice.
+ */
+export function nonce(now = Date.now()): string {
+  const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let time = '';
+  for (let t = now, i = 0; i < 10; i++, t = Math.floor(t / 32)) time = B32[t % 32] + time;
+  let rand = '';
+  for (let i = 0; i < 16; i++) rand += B32[Math.floor(Math.random() * 32)];
+  return time + rand;
+}
+
 /** What a reply quotes: the start of the message it answers, on one line. */
 export const quoteOf = (text: string, max = 100) => {
   const flat = text.replace(/\s+/g, ' ').trim();

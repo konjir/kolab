@@ -135,8 +135,8 @@ What Lee does, in order, before the release workflows can ship anything. Until t
    - `app-preview`, limited to the `main` branch, holding `EXPO_TOKEN` and `KONNECT_UPDATES_PRIVATE_KEY`.
    - `app-stores`, limited to the `main` branch, with Lee as its required reviewer, holding the same two.
 9. **A tag ruleset.** It lets only GitHub Actions create or move `konnect-native/*` tags, since they tell the release workflow which binaries exist.
-10. **Production's sign-in link.** Production signs in through `https://www.konjir.com/konnect/app/oauth`, a Universal Link (iOS 17.4 and later) and an App Link. www.konjir.com must serve two files naming the app:
-    - an `apple-app-site-association` with Lee's Apple Team ID and `com.konjir.konnect`
+10. **The sign-in link.** Preview and production sign in through `https://www.konjir.com/konnect/app/oauth`, a Universal Link and an App Link, so both need iOS 17.4 or later: the app's deployment target is 17.4 (expo-build-properties). Only the development build uses its private scheme, which Kolab takes only with `KONJIR_APP_DEV_SCHEMES=on`, as local-kolab starts it. www.konjir.com must serve two files naming the app:
+    - an `apple-app-site-association` with Lee's Apple Team ID and both `com.konjir.konnect` and `com.konjir.konnect.preview`
     - an `assetlinks.json` with the Play app signing certificate's SHA-256
 
     Both values come from steps 1 and 4.

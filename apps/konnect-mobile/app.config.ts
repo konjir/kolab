@@ -89,9 +89,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ios: {
       bundleIdentifier: id,
       supportsTablet: false,
-      // Production signs in through a verified https link on www.konjir.com (a Universal Link):
-      // the site serves the apple-app-site-association that names this app.
-      ...(variant === 'production' ? { associatedDomains: ['applinks:www.konjir.com'] } : {}),
+      // Preview and production sign in through a verified https link on www.konjir.com (a Universal
+      // Link): the site's apple-app-site-association names both bundle IDs.
+      ...(variant !== 'development' ? { associatedDomains: ['applinks:www.konjir.com'] } : {}),
       infoPlist: { ITSAppUsesNonExemptEncryption: false },
       // What the App Store's privacy details and Apple's required-reason APIs ask: no tracking; the
       // data konnect keeps is the person's own messages and identifiers, for the app's function;
@@ -114,8 +114,8 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     android: {
       package: id,
-      // Production's sign-in link, verified (autoVerify) against www.konjir.com's assetlinks.json.
-      ...(variant === 'production' ? {
+      // Preview's and production's sign-in link, verified (autoVerify) against www.konjir.com's assetlinks.json.
+      ...(variant !== 'development' ? {
         intentFilters: [{
           action: 'VIEW', autoVerify: true, category: ['BROWSABLE', 'DEFAULT'],
           data: [{ scheme: 'https', host: 'www.konjir.com', pathPrefix: '/konnect/app/oauth' }],
@@ -124,6 +124,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       adaptiveIcon: { foregroundImage: '../../brand/konjir-avatar.png', backgroundColor: PREDAWN_SURFACE },
     },
     plugins: [
+      // iOS 17.4 is the first that completes an auth session on an https callback (a Universal
+      // Link), which preview and production sign in with.
+      ['expo-build-properties', { ios: { deploymentTarget: '17.4' } }],
       'expo-router',
       'expo-dev-client',
       'expo-web-browser',

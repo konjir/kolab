@@ -3,6 +3,7 @@ import { LoginStore, type Login, type SecureKV } from '../src/auth/store';
 import { PRODUCTION_REDIRECT, redirectFor } from '../src/auth/sign-in';
 import { scopeTeam, TeamChanged, Tokens } from '../src/auth/tokens';
 import { badgeOf, type MyTeam } from '../src/kolab/teams';
+import { nonce } from '../src/kolab/thread';
 
 const URL_ = 'http://127.0.0.1:7432/mcp';
 const kv = (): SecureKV => { const m = new Map<string, string>(); return { get: async (k) => m.get(k) ?? null, set: async (k, v) => { m.set(k, v); }, remove: async (k) => { m.delete(k); } }; };
@@ -66,11 +67,17 @@ describe('the team a token is for', () => {
 });
 
 describe('the redirect a variant signs in with', () => {
-  test('production uses the verified https link; development and preview their own scheme', () => {
-    expect(redirectFor('production', 'com.konjir.konnect')).toBe(PRODUCTION_REDIRECT);
+  test('preview and production use the verified https link; development alone its scheme', () => {
     expect(PRODUCTION_REDIRECT).toBe('https://www.konjir.com/konnect/app/oauth');
+    expect(redirectFor('production', 'com.konjir.konnect')).toBe(PRODUCTION_REDIRECT);
+    expect(redirectFor('preview', 'com.konjir.konnect.preview')).toBe(PRODUCTION_REDIRECT);
     expect(redirectFor('development', 'com.konjir.konnect.dev')).toBe('com.konjir.konnect.dev:/oauth');
-    expect(redirectFor('preview', 'com.konjir.konnect.preview')).toBe('com.konjir.konnect.preview:/oauth');
+  });
+
+  test('a message\'s nonce fits Kolab\'s: 1 to 100 of [A-Za-z0-9._:-], one per message', () => {
+    const a = nonce(), b = nonce();
+    expect(a).toMatch(/^[A-Za-z0-9._:-]{1,100}$/);
+    expect(a).not.toBe(b);
   });
 });
 

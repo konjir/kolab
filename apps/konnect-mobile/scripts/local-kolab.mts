@@ -66,7 +66,8 @@ const kolab = await Kolab.open({});
 for (const p of Object.values(PEOPLE)) await kolab.signInWith({ provider: 'stub', ...p });
 await kolab.createKolab('hub', { owner: 'ann', ...by });
 await kolab.grant('hub', 'bo', 'write', by);
-const server = await startServer({ host: '127.0.0.1', port, kolab, adminToken: null, identity: idp, webRoot: null });
+// The development build signs in at com.konjir.konnect.dev:/oauth, a scheme Kolab takes only when asked to.
+const server = await startServer({ host: '127.0.0.1', port, kolab, adminToken: null, identity: idp, webRoot: null, appDevSchemes: true });
 const url = `${new URL(server.url).origin}/mcp`;
 
 const files: Record<string, string> = {};
