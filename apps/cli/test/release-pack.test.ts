@@ -5,7 +5,7 @@
 // konjir.com's files (D81), is left out of both the zip and the id.
 import { afterAll, expect, test } from '@jest/globals';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -109,4 +109,44 @@ test('terraform init rewriting the provider lock is not a dirty checkout: the zi
   // Any other tracked change is still refused.
   writeFileSync(join(r, 'a.ts'), 'changed');
   expect(pack(r, out).stderr).toMatch(/tracked changes aren't committed/);
+});
+
+test('konnect\'s phone app is no part of a release either: not in the zip, and a change to it or its workflows alone is the same release', () => {
+  const attrs = '/site export-ignore\n/apps/konnect-mobile export-ignore\n';
+  const r = repo('app', { '.gitattributes': attrs, 'apps/server/a.ts': 'x', 'apps/konnect-mobile/package.json': '{"name":"@konjir/konnect-mobile"}', 'apps/konnect-mobile/app/index.tsx': 'one', '.github/workflows/mobile-release.yml': 'on: push', '.github/workflows/ci.yml': 'on: pull_request', 'package-lock.json': '{}' });
+  const out = join(dir, 'app.zip');
+  const p = pack(r, out);
+  expect([p.status, p.stderr]).toStrictEqual([0, '']);
+  const release = (JSON.parse(p.stdout) as { release: string }).release;
+  expect(names(out).filter((n) => n.startsWith('apps/'))).toStrictEqual(['apps/', 'apps/server/', 'apps/server/a.ts']);
+  // The id is the tree the commit would have with no app and no app workflow at all.
+  const bare = repo('app-bare', { '.gitattributes': attrs, 'apps/server/a.ts': 'x', '.github/workflows/ci.yml': 'on: pull_request', 'package-lock.json': '{}' });
+  expect(release).toBe(git(bare, 'rev-parse', 'HEAD^{tree}'));
+  // A change to the app, or to its workflows, alone: the same release, so Kolab isn't reinstalled.
+  writeFileSync(join(r, 'apps/konnect-mobile/app/index.tsx'), 'two');
+  writeFileSync(join(r, '.github/workflows/mobile-release.yml'), 'on: workflow_dispatch');
+  writeFileSync(join(r, '.github/workflows/mobile-e2e.yml'), 'on: push');
+  git(r, 'add', '-A');
+  git(r, 'commit', '-qm', 'app only');
+  expect(JSON.parse(pack(r, out).stdout).release).toBe(release);
+  // Anything else is a new release: another workflow, the lockfile the release installs from, Kolab's code.
+  for (const [f, text] of [['.github/workflows/ci.yml', 'on: push'], ['package-lock.json', '{"x":1}'], ['apps/server/a.ts', 'y']]) {
+    const before = JSON.parse(pack(r, out).stdout).release;
+    writeFileSync(join(r, f), text);
+    git(r, 'commit', '-qam', f);
+    expect([f, JSON.parse(pack(r, out).stdout).release === before]).toStrictEqual([f, false]);
+  }
+});
+
+test('a release installs and builds kolab serve\'s workspaces alone: @konjir/kolab and what it depends on, never konnect\'s app or the konnect CLI', () => {
+  const ws = spawnSync(process.execPath, [resolve(import.meta.dirname, '../../../deploy/release/workspaces.mjs')], { cwd: resolve(import.meta.dirname, '../../..'), encoding: 'utf8' });
+  expect([ws.status, ws.stderr]).toStrictEqual([0, '']);
+  const list = ws.stdout.trim().split('\n');
+  expect(list).toStrictEqual(['@konjir/address', '@konjir/brand', '@konjir/channel-bridge', '@konjir/db', '@konjir/engine', '@konjir/kolab', '@konjir/log', '@konjir/login', '@konjir/server', '@konjir/types', '@konjir/web']);
+  // install.sh takes them so, and no install script runs in either install.
+  const install = readFileSync(resolve(import.meta.dirname, '../../../deploy/release/install.sh'), 'utf8');
+  const cis = install.split('\n').filter((l) => /^npm ci\b/.test(l));
+  expect(cis.length).toBe(2);
+  for (const l of cis) expect([l, /--ignore-scripts/.test(l), /--include-workspace-root/.test(l), /"\$\{ws_flags\[@\]\}"/.test(l)]).toStrictEqual([l, true, true, true]);
+  expect(install).toMatch(/nx run-many -t build -p "\$\{WS\[@\]\}"/);
 });

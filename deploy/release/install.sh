@@ -21,14 +21,23 @@ on_exit() {
   case "$REL" in /opt/konjir/releases/?*) cd / && rm -rf "$REL" ;; esac
 }
 trap on_exit EXIT
-# 1. Build: every project's Nx build target compiles it with tsc into its dist/. The build
-#    needs the dev dependencies (Nx, TypeScript); none of them needs its install script.
-npm ci --ignore-scripts --no-audit --no-fund --loglevel=error
-node_modules/.bin/nx run-many -t build --skip-nx-cache --output-style=static
+# Only `kolab serve`'s workspaces, @konjir/kolab and what it depends on (workspaces.mjs): never
+# konnect's phone app, which the release doesn't carry (.gitattributes), nor the konnect CLI.
+ws_list=$(node deploy/release/workspaces.mjs)
+WS=()
+ws_flags=()
+while IFS= read -r w; do WS+=("$w"); ws_flags+=(--workspace "$w"); done <<< "$ws_list"
+[ ${#WS[@]} -gt 0 ] || { echo "install.sh: no workspaces to install" >&2; exit 1; }
+# 1. Build: each of those projects' Nx build target compiles it with tsc into its dist/. The build
+#    needs their dev dependencies (Nx, TypeScript, Vite); none of them needs its install script.
+npm ci --ignore-scripts --include-workspace-root "${ws_flags[@]}" --no-audit --no-fund --loglevel=error
+node_modules/.bin/nx run-many -t build -p "${WS[@]}" --skip-nx-cache --output-style=static
 rm -rf .nx
-# 2. Run: reinstall only the production dependencies, so the release holds no build tools.
-#    npm ci replaces node_modules and leaves each project's dist/ in place.
-npm ci --omit=dev --no-audit --no-fund --loglevel=error
+# 2. Run: reinstall only their production dependencies, so the release holds no build tools. No
+#    install script runs, so no package's code runs as root here: none of them has one Kolab needs
+#    (the release's smoke check, `kolab serve` answering /healthz, runs on exactly this install).
+#    npm ci replaces node_modules and leaves each dist/ in place.
+npm ci --omit=dev --ignore-scripts --include-workspace-root "${ws_flags[@]}" --no-audit --no-fund --loglevel=error
 rm -rf .npm
 # 3. Observe (P11, D68): ship Kolab's and Caddy's journal to CloudWatch Logs, where the alarms
 #    count it. On anything but a Kolab instance, it does nothing. A failure only warns: shipping
