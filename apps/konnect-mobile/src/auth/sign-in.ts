@@ -14,7 +14,7 @@
  */
 import { AuthRequest, CodeChallengeMethod, exchangeCodeAsync, makeRedirectUri, ResponseType, type DiscoveryDocument } from 'expo-auth-session';
 import { teamClient } from './mcp';
-import type { TeamLogin } from './store';
+import type { Login } from './store';
 import type { Endpoints } from './tokens';
 
 export interface KolabOAuth extends Endpoints { discovery: DiscoveryDocument; registrationEndpoint: string }
@@ -47,7 +47,7 @@ export const scopeFor = (ask: SignInAsk) => {
 /** The person closed the sign-in, or Kolab's page refused it: `message` says which, as Kolab did. */
 export class SignInStopped extends Error { name = 'SignInStopped'; }
 
-export async function signIn(opts: { url: string; scheme: string; ask: SignInAsk; clientName: string }): Promise<TeamLogin> {
+export async function signIn(opts: { url: string; scheme: string; ask: SignInAsk; clientName: string }): Promise<Login> {
   const kolab = await discover(opts.url);
   const redirectUri = redirectFor(opts.scheme);
   const reg = await fetch(kolab.registrationEndpoint, {

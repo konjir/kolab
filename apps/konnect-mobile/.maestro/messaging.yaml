@@ -34,3 +34,10 @@ tags: [local-kolab]
     visible: ".*Review done.*"
     timeout: 20000
 - assertVisible: ".*@ann can you look at the composer next.*"
+- tapOn: "Home"
+- tapOn: "You"
+- tapOn:
+    id: "sign-out"
+- extendedWaitUntil:
+    visible: "Sign in with GitHub"
+    timeout: 20000

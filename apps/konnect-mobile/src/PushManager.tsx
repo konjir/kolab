@@ -3,6 +3,7 @@
  * and registered with each team whose Kolab has push (S4); a notification's tap opens its
  * conversation, in its team. What happened is kept for the Notifications screen to say.
  */
+import { useQueryClient } from '@tanstack/react-query';
 import * as Notifications from 'expo-notifications';
 import { router, type Href } from 'expo-router';
 import Storage from 'expo-sqlite/kv-store';
@@ -22,6 +23,7 @@ function showWhileOpen() {
 
 export function PushManager() {
   const auth = useAuth();
+  const qc = useQueryClient();
   const teams = auth.teams.map((t) => t.team).join(',');
 
   useEffect(() => {
@@ -50,13 +52,16 @@ export function PushManager() {
   useEffect(() => {
     const open = (data: unknown) => {
       const to = routeOf(data);
-      if (!to || !auth.teams.some((t) => t.team === to.team)) return;
-      void auth.switchTeam(to.team).then(() => router.push(to.path as Href));
+      if (!to) return;
+      // Push is the person's, from every team: one for another team switches there first.
+      void auth.switchTeam(to.team).then(() => router.push(to.path as Href), () => undefined);
     };
     const last = Notifications.getLastNotificationResponse();
     if (last) open(last.notification.request.content.data);
     const sub = Notifications.addNotificationResponseReceivedListener((r) => open(r.notification.request.content.data));
-    return () => { sub?.remove?.(); };
-  }, [auth]);
+    // Each push may be another team's: their dots and badges are read again.
+    const heard = Notifications.addNotificationReceivedListener?.(() => void qc.invalidateQueries({ queryKey: ['account'] }));
+    return () => { sub?.remove?.(); heard?.remove?.(); };
+  }, [auth, qc]);
   return null;
 }

@@ -94,6 +94,23 @@ if (process.env.KONNECT_LOCAL_SEED !== '0') {
   await kolab.sendMessage(agent, 'ann', 'I finished the review. Want the details in #general or here?');
   await kolab.endSession(bo, { signingOut: true });
   await kolab.endSession(agent, { signingOut: true });
+
+  // A second team of Ann's, `side`, with something unread in it (a mention), to switch to; and a
+  // team of Bo's, `ops`, that Ann is invited to.
+  await kolab.createKolab('side', { owner: 'ann', ...by });
+  await kolab.grant('side', 'bo', 'write', by);
+  const boSide = await kolab.openSession('bo', 'engineer', { kolab: 'side', ...by });
+  await kolab.sendChannelMessage(boSide, 'general', '@ann this is side: did the switch work?', { mentions: ['ann'] });
+  await kolab.sendMessage(boSide, 'ann', 'A DM in side, so its dot shows from hub.');
+  await kolab.endSession(boSide, { signingOut: true });
+  await kolab.createKolab('ops', { owner: 'bo', ...by });
+  try {
+    const boOps = await kolab.openSession('bo', 'engineer', { kolab: 'ops', ...by });
+    await kolab.inviteAccounts(boOps, ['ann'], { provider: 'stub', find: async () => ({ subject: PEOPLE.ann.subject, login: 'ann', person: true }) });
+    await kolab.endSession(boOps, { signingOut: true });
+  } catch (e) {
+    console.log(`(no invitation to ops: ${(e as Error).message})`);
+  }
 }
 
 /** A person's access token, refreshed by the MCP SDK's rules when it is near its end. */

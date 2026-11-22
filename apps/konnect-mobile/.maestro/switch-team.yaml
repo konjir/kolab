@@ -1,0 +1,41 @@
+# One sign-in, two teams: Ann signs in to hub, sees side's unread in the switcher, switches to side
+# with no second sign-in, and back, then signs out. Needs a Kolab with konjir_list_my_teams and
+# konjir_switch_team, and local-kolab's seed (Ann in hub and side, a mention for her in side).
+appId: ${APP_ID}
+tags: [local-kolab]
+---
+- tapOn: "Sign in with GitHub"
+- extendedWaitUntil:
+    visible: "Sign in to hub"
+    timeout: 30000
+- tapOn: "Sign in to hub"
+- extendedWaitUntil:
+    visible: "general.*"
+    timeout: 30000
+- tapOn:
+    id: "team-switcher"
+- extendedWaitUntil:
+    visible: "hub, current"
+    timeout: 20000
+- assertVisible: "side.*mention.*"
+- tapOn:
+    id: "team-side"
+- extendedWaitUntil:
+    visible: "side"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: ".*this is side.*|#general.*unread.*"
+    timeout: 20000
+- tapOn:
+    id: "team-switcher"
+- tapOn:
+    id: "team-hub"
+- extendedWaitUntil:
+    visible: "hub"
+    timeout: 30000
+- tapOn: "You"
+- tapOn:
+    id: "sign-out"
+- extendedWaitUntil:
+    visible: "Sign in with GitHub"
+    timeout: 20000

@@ -9,14 +9,10 @@ jest.mock('expo-sqlite/kv-store', () => {
   return { __esModule: true, default: { getItem: async (k: string) => m.get(k) ?? null, setItem: async (k: string, v: string) => { m.set(k, v); }, removeItem: async (k: string) => { m.delete(k); } } };
 });
 
-/** The secure store, as a Map, with `teams` signed in at the app's default Kolab URL. */
-function storeWith(teams: string[]): SecureKV {
-  const ns = 'konnect.kolab.konjir.com_mcp';
+/** The secure store, as a Map, signed in (to `team`) or not, at the app's default Kolab URL. */
+function storeWith(team?: string): SecureKV {
   const m = new Map<string, string>();
-  if (teams.length) {
-    m.set(`${ns}.teams`, JSON.stringify(teams));
-    for (const t of teams) m.set(`${ns}.login.${t}`, JSON.stringify({ team: t, actor: 'ann', role: 'product', url: 'https://kolab.konjir.com/mcp', clientId: 'kjcl_x', accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 600_000 }));
-  }
+  if (team) m.set('konnect.kolab.konjir.com_mcp.login', JSON.stringify({ actor: 'ann', team, role: 'product', url: 'https://kolab.konjir.com/mcp', clientId: 'kjcl_x', accessToken: 'a', refreshToken: 'r', expiresAt: Date.now() + 600_000 }));
   return { get: async (k) => m.get(k) ?? null, set: async (k, v) => { m.set(k, v); }, remove: async (k) => { m.delete(k); } };
 }
 
@@ -44,7 +40,7 @@ const routes = () => ({
 
 describe('the auth gate', () => {
   test('signed in to no team, the app is the sign-in screen and nothing else, even for a deep link', async () => {
-    mockKv = storeWith([]);
+    mockKv = storeWith();
     await renderRouter(routes(), { initialUrl: '/expo-development-client?url=http%3A%2F%2F127.0.0.1%3A8081' });
     expect(await screen.findByTestId('sign-in-screen')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Sign in with GitHub' })).toBeTruthy();
@@ -54,7 +50,7 @@ describe('the auth gate', () => {
   });
 
   test('signed in, the tabs, and no sign-in screen', async () => {
-    mockKv = storeWith(['hub']);
+    mockKv = storeWith('hub');
     await renderRouter(routes(), { initialUrl: '/' });
     expect(await screen.findByTestId('home')).toBeTruthy();
     expect(screen.queryByTestId('sign-in-screen')).toBeNull();

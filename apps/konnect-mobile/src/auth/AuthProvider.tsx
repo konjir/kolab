@@ -1,19 +1,21 @@
 /**
- * The app's sign-ins, for every screen: the teams signed in to and the one shown, signing in to a
- * team or making one, switching, and signing out. Tokens stay in here (LoginStore, Tokens); screens
- * get a team's MCP client, never a token.
+ * The app's sign-in, for every screen: the person signs in once, with GitHub, and moves between the
+ * teams their account belongs to. Who they are and the team they are in, signing in (or accepting an
+ * invitation, or making a team, all through Kolab's page), switching teams, and signing out. Tokens
+ * stay in here (LoginStore, Tokens); screens get the MCP client, never a token.
  */
 import type { Client } from '@modelcontextprotocol/client';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
+import Storage from 'expo-sqlite/kv-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { appExtra } from '@/config';
-import Storage from 'expo-sqlite/kv-store';
+import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
 import { discover, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
-import { LoginStore, type SecureKV, type TeamSummary } from './store';
-import { SignedOut, Tokens } from './tokens';
+import { LoginStore, type SecureKV, type Who } from './store';
+import { Tokens } from './tokens';
 
 /** expo-secure-store, readable after the phone's first unlock (so a refresh can run in the background later). */
 const secureKV: SecureKV = {
@@ -25,14 +27,19 @@ const secureKV: SecureKV = {
 export interface Auth {
   ready: boolean;
   url: string;
-  teams: TeamSummary[];
-  current?: TeamSummary;
-  /** Signs in through Kolab's page: picking a team or an invitation, or making `team`. Resolves with the team. */
+  /** Who is signed in, and the team the app shows; nothing while signed out. */
+  current?: Who;
+  /** The signed-in team, as a list (empty while signed out). */
+  teams: Who[];
+  adapter: TeamsAdapter;
+  /** Signs in through Kolab's page: a team or an invitation to pick, or `team` to make. Resolves with the team. */
   signIn(ask: SignInAsk): Promise<string>;
-  signOut(team: string): Promise<{ revoked: boolean }>;
+  /** Signs this phone out: the sign-in is revoked at Kolab and forgotten. */
+  signOut(): Promise<{ revoked: boolean }>;
+  /** Moves the sign-in to another of the person's teams. */
   switchTeam(team: string): Promise<void>;
-  /** The team's MCP client, connected once and shared. */
-  client(team: string): Promise<Client>;
+  /** The MCP client, connected once and shared; it follows the sign-in from team to team. */
+  client(team?: string): Promise<Client>;
 }
 
 const AuthContext = createContext<Auth | null>(null);
@@ -43,70 +50,76 @@ export function useAuth(): Auth {
   return auth;
 }
 
-export function AuthProvider({ children, kv = secureKV }: { children: ReactNode; kv?: SecureKV }) {
+export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: { children: ReactNode; kv?: SecureKV; adapter?: TeamsAdapter }) {
   const url = appExtra().konnectUrl;
   const scheme = [Constants.expoConfig?.scheme].flat()[0] ?? 'com.konjir.konnect';
-  // The team whose sign-in Kolab ended last, with a count so the same team twice is seen twice.
-  const [ended, setEnded] = useState<{ team: string; n: number }>();
+  // Kolab ended the sign-in: a count, so the same thing twice is seen twice.
+  const [ended, setEnded] = useState(0);
   const { store, tokens } = useMemo(() => {
     const store = new LoginStore(kv, url);
     let oauth: Promise<KolabOAuth> | undefined;
     const endpoints = () => (oauth ??= discover(url).catch((e) => { oauth = undefined; throw e; }));
-    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: (team) => setEnded((e) => ({ team, n: (e?.n ?? 0) + 1 })) }) };
+    return { store, tokens: new Tokens({ store, endpoints, fetch: (u, init) => fetch(u, init), onSignedOut: () => setEnded((n) => n + 1) }) };
   }, [kv, url]);
-  const clients = useRef(new Map<string, Promise<Client>>());
-  const [state, setState] = useState<{ ready: boolean; teams: TeamSummary[]; current?: string }>({ ready: false, teams: [] });
+  const client = useRef<Promise<Client> | undefined>(undefined);
+  const [state, setState] = useState<{ ready: boolean; who?: Who }>({ ready: false });
 
-  const read = useCallback(async () => ({ ready: true, teams: await store.summaries(), current: await store.current() }), [store]);
+  const read = useCallback(async () => ({ ready: true, who: await store.who() }), [store]);
   const reload = useCallback(async () => setState(await read()), [read]);
   useEffect(() => {
     let live = true;
-    void read().then((s) => { if (live) setState(s); });
+    // Sign-ins an earlier build kept per team are revoked and forgotten: one sign-in now.
+    void store.takeLegacy().then((old) => { for (const l of old) void tokens.revoke(l); }).catch(() => undefined)
+      .then(read).then((s) => { if (live) setState(s); });
     return () => { live = false; };
-  }, [read]);
+  }, [store, tokens, read]);
 
-  const dropClient = useCallback((team: string) => {
-    const c = clients.current.get(team);
-    clients.current.delete(team);
+  const dropClient = useCallback(() => {
+    const c = client.current;
+    client.current = undefined;
     void c?.then((x) => x.close()).catch(() => undefined);
   }, []);
-  // Kolab ended a team's sign-in: its connection goes, and the app shows the teams left (or the sign-in screen).
-  useEffect(() => { if (ended) { dropClient(ended.team); void read().then(setState); } }, [ended, dropClient, read]);
+  useEffect(() => { if (ended) { dropClient(); void read().then(setState); } }, [ended, dropClient, read]);
 
   const auth: Auth = {
-    ready: state.ready, url, teams: state.teams,
-    current: state.teams.find((t) => t.team === state.current),
+    ready: state.ready, url, adapter,
+    current: state.who,
+    teams: state.who ? [state.who] : [],
     signIn: async (ask) => {
       const login = await signInWith({ url, scheme, ask, clientName: `konnect (${appExtra().variant})` });
-      const before = await store.get(login.team);
+      const before = await store.get();
       await store.put(login);
-      await store.setCurrent(login.team);
+      dropClient();
       // The sign-in this one replaces is ended at Kolab, not left to lapse.
-      if (before) { dropClient(login.team); void tokens.revoke(before); }
+      if (before) void tokens.revoke(before);
       await reload();
       return login.team;
     },
-    signOut: async (team) => {
-      // The phone stops hearing from the team before its sign-in ends (S4; a Kolab without push refuses, and that's fine).
+    signOut: async () => {
+      // The phone stops hearing from Kolab before its sign-in ends (S4; a Kolab without push refuses, and that's fine).
       const token = await Storage.getItem(PUSH_TOKEN_KEY).catch(() => null);
-      if (token) await auth.client(team).then((c) => unregisterDevice(c, token)).catch(() => undefined);
-      dropClient(team);
-      const r = await tokens.signOut(team);
+      if (token && state.who) await auth.client().then((c) => unregisterDevice(c, token)).catch(() => undefined);
+      dropClient();
+      const r = await tokens.signOut();
       await reload();
       return r;
     },
-    switchTeam: async (team) => { await store.setCurrent(team); await reload(); },
-    client: (team) => {
-      let c = clients.current.get(team);
-      if (!c) {
-        c = teamClient(url, { token: () => tokens.accessToken(team), renew: (refused) => tokens.renew(team, refused) });
-        c.catch((e) => {
-          clients.current.delete(team);
-          if (e instanceof SignedOut) void reload();
-        });
-        clients.current.set(team, c);
+    switchTeam: async (team) => {
+      if (!state.who || team === state.who.team) return;
+      await tokens.switchTeam(team, async (accessToken) => {
+        const c = await teamClient(url, { token: async () => accessToken, renew: async () => accessToken });
+        try { return await adapter.switchTo(c, team); } finally { await c.close().catch(() => undefined); }
+      });
+      dropClient();
+      await reload();
+    },
+    client: () => {
+      if (!client.current) {
+        const c = teamClient(url, { token: () => tokens.accessToken(), renew: (refused) => tokens.renew(refused) });
+        c.catch(() => { if (client.current === c) client.current = undefined; });
+        client.current = c;
       }
-      return c;
+      return client.current;
     },
   };
   return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>;

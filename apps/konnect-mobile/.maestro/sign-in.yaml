@@ -1,28 +1,30 @@
-# From the sign-in screen: Kolab's page, a team, the tabs, and signing out back to the sign-in
-# screen. Against a local Kolab (scripts/local-kolab.mts) whose stub identity provider signs anyone
-# in as Ann, a member of `hub`, with the app open and signed out: a dev build, with `start` run
-# with KONNECT_URL=http://127.0.0.1:7432/mcp. A person presses Kolab's button, as Maestro does here.
+# From the sign-in screen: one sign-in with GitHub through Kolab's page, the tabs, and signing this
+# phone out back to the sign-in screen. Against a local Kolab (scripts/local-kolab.mts) whose stub
+# identity provider signs anyone in as Ann, with the app open and signed out: a dev build, with
+# `start` run with KONNECT_URL=http://127.0.0.1:7432/mcp. A person presses Kolab's button, as Maestro does.
 appId: ${APP_ID}
 tags: [local-kolab]
 ---
 - assertVisible: "Sign in with GitHub"
 - assertNotVisible: "Home"
 - tapOn: "Sign in with GitHub"
-# Kolab's page, in the auth session: the teams Ann is in, each with its own button.
+# Kolab's page, in the auth session: Ann's teams, each with its own button.
 - extendedWaitUntil:
     visible: "Sign in to hub"
     timeout: 30000
 - tapOn: "Sign in to hub"
 # Kolab's answer comes back to com.konjir.konnect.dev:/oauth, and the app exchanges the code.
 - extendedWaitUntil:
-    visible: "general"
+    visible: "general.*"
     timeout: 30000
 - assertVisible: "bo.*"
 - tapOn: "DMs"
 - tapOn: "Activity"
 - tapOn: "You"
+- assertVisible: "ann.*GitHub"
 - assertVisible: "hub.*"
-- tapOn: "Sign out of hub"
+- tapOn:
+    id: "sign-out"
 - extendedWaitUntil:
     visible: "Sign in with GitHub"
     timeout: 20000
