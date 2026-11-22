@@ -10,6 +10,7 @@ The marketing site at `https://www.konjir.com` (D81), with a section for each pr
 | `/kolab/hands-on/`, the hands-on tutorial | `src/kolab/hands-on.md`, in the subset of Markdown that `deploy/site/markdown.mjs` renders |
 | `/konnect/`, konnect's page | `src/konnect/main.html`: the page's `<main>`, written as the org page's is |
 | `/konnect/guide/`, the guide to messages between people and agents | `src/konnect/guide.md`, in the same subset |
+| `/konnect/app/oauth/`, where konnect's phone app's sign-in lands when the app doesn't take the link | `src/konnect-app/main.html`, written as the others are; `noindex`, in no sitemap (below) |
 
 `src/site.css` is the stylesheet every page shares: the Daybreak and Predawn palettes, on the `.kj` root, and the rules for links, buttons (`.kb`), the theme switch (`.tt`) and the header's menu (`.hd`, `.menu…`). The root itself, and the header every page shares, are written by `deploy/site/chrome.mjs`.
 
@@ -48,6 +49,16 @@ A new page is an entry in `PAGES` in `deploy/site/build.mjs` (its path, its sect
 - renders each Markdown page into its section's header and footer, with a contents list of its `##` headings, and `deploy/site/article.css` added to the shared stylesheet. `markdown.mjs` renders only what these pages use: `#`, `##` and `###` headings, paragraphs, `-` and `1.` lists, tables, fenced code blocks of the kinds `sh`, `text` (a prompt to paste), `output` and `file`, and inline code, bold and links to `https://`, `/` or `#` (holding no `\`, `(` or `)`). It escapes all text, the title included, and refuses anything else, raw HTML included, rather than guess. A heading's id is made from its text, so links to a heading keep working as long as the heading's words don't change. Each finished page is then checked whole: its `<head>` must be exactly the one the build writes, its texts holding no markup and its URLs this site's, and its body must pass the same refusals as its source
 
 It refuses, rather than guess, a `main.html` that isn't one `<main>`, a `footer.html` that isn't one `<footer>`, and in any source anything a static page under the CSP can't have: an element that isn't HTML's or the SVG the pages draw with (a custom element, say), a template hole (`{{…}}`), event handler attributes in any case, `<script>`, `<style>`, `<iframe>`, `<object>`, `<embed>` or `<form>` in the body, `javascript:` URLs, resources from anywhere but the site itself, and a `style` holding `url()`, `@import` or a brace.
+
+## konnect's app links
+
+konnect's iOS and Android app signs in at an https link on this site, `https://www.konjir.com/konnect/app/oauth` (Kolab's `APP_REDIRECT_URI`, Lee's decision of 2026-11-21): Kolab sends the sign-in's code there, and the phone hands the link to the app, as a Universal Link on iOS and an App Link on Android, only because this site says the app may take it. So no other app can receive the code, as any app could claim a private-use scheme.
+
+- **`/.well-known/apple-app-site-association`**, JSON with no extension (uploaded as `application/json`): `applinks` for `<Team ID>.com.konjir.konnect` and `<Team ID>.com.konjir.konnect.preview` on `/konnect/app/oauth` alone, and `webcredentials` for the same apps, which the app's auth session uses to take an https callback.
+- **`/.well-known/assetlinks.json`**: `delegate_permission/common.handle_all_urls` for `com.konjir.konnect` and `com.konjir.konnect.preview`, each with the SHA-256 fingerprints of the certificates it is signed with. Android takes the path from the app's own intent filter.
+- **The page at the path**, `/konnect/app/oauth/`, for a phone without the app, or one that didn't hand it the link: it says to go back to konnect, or install it, and sign in from there. It runs no script but the site's own `site.js`, which never reads the address, so the code in its query is never shown or used; CloudFront serves `/konnect/app/oauth` from it in place, never by a redirect that would send the code on, and the referrer policy sends no other site more than this origin.
+
+Both files are built from `deploy/site/app-links.json`, which holds the Apple Developer Team ID and each Android package's signing-certificate fingerprints: Lee's, and placeholders (`null`, `[]`) until he fills them in. The build checks each for its form (10 capital letters and digits; 32 bytes as `AA:BB:…`), refuses one that isn't, and writes a file only from ids that are there: with no Team ID it writes no `apple-app-site-association`, and with no fingerprint no `assetlinks.json`, removing an old copy, and says so on its line. So until then nothing claims the path, and a sign-in's redirect opens the page. The CloudFront Function passes all of `/.well-known/` as it came, never adding a slash, as Apple and Google require.
 
 ## Where it's served
 

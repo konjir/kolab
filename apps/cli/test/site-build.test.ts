@@ -104,7 +104,7 @@ test("the messages guide is built into konnect/guide/index.html as the tutorial 
   const r = copy('messages');
   const b = build(r);
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
-  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, 404.html');
+  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, konnect/app/oauth/index.html, 404.html');
   const home = read(r, 'kolab/index.html');
   const page = read(r, 'konnect/guide/index.html');
   expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Chat for your team\'s people and their AI agents</h1></header>');
@@ -517,4 +517,63 @@ test("the build refuses an element it doesn't know, a template hole, a footer li
 
   const b = build(r);
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
+});
+
+test("konnect's app's sign-in redirect lands on a page of its own, which says to open or install konnect, is in no sitemap, and never reads the URL it was sent", () => {
+  const r = copy('app-page');
+  const b = build(r);
+  expect([b.status, b.stderr]).toStrictEqual([0, '']);
+  const page = read(r, 'konnect/app/oauth/index.html');
+  expect(page).toMatch(/<h1 id="app-title"[^>]*>Open konnect to finish signing in\.<\/h1>/);
+  expect(page).toContain('<meta name="robots" content="noindex">');
+  expect(page).not.toContain('rel="canonical"');
+  expect(read(r, 'sitemap.xml')).not.toContain('/konnect/app/');
+  // Its one script is the site's, which never looks at the address: the code in its query is never shown or used.
+  expect([...page.matchAll(/<script\b/g)].length).toBe(1);
+  expect(page).toMatch(/<script src="\/assets\/site\.[0-9a-f]{10}\.js"><\/script>/);
+  const js = readFileSync(join(r, 'deploy/site/site.js'), 'utf8');
+  expect(js).not.toMatch(/location\.(search|href|hash)|URLSearchParams|document\.URL|document\.referrer/);
+  expect(page).not.toMatch(/\{\{|code=/);
+});
+
+test("konnect's app links are written only from ids filled in deploy/site/app-links.json, each checked, and are otherwise left out and said so, failing closed", () => {
+  const r = copy('app-links');
+  // As checked in, with no ids: neither file, and the build says why.
+  const empty = build(r);
+  expect([empty.status, empty.stderr]).toStrictEqual([0, '']);
+  expect(empty.stdout).toContain('no apple-app-site-association: apple_team_id is not filled in');
+  expect(empty.stdout).toContain('no assetlinks.json: no Android package has a fingerprint filled in');
+  expect(existsSync(join(r, 'site/.well-known'))).toBe(false);
+  // Filled in: Apple's and Google's files, for that path and those apps alone.
+  const config = JSON.parse(readFileSync(join(r, 'deploy/site/app-links.json'), 'utf8'));
+  const fp = Array.from({ length: 32 }, (_, i) => i.toString(16).padStart(2, '0').toUpperCase()).join(':');
+  config.apple_team_id = 'ABCDE12345';
+  config.android[0].sha256_cert_fingerprints = [fp];
+  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify(config));
+  const filled = build(r);
+  expect([filled.status, filled.stderr]).toStrictEqual([0, '']);
+  expect(filled.stdout).not.toContain('no apple-app-site-association');
+  const aasa = JSON.parse(read(r, '.well-known/apple-app-site-association'));
+  expect(aasa).toStrictEqual({
+    applinks: { details: [{ appIDs: ['ABCDE12345.com.konjir.konnect', 'ABCDE12345.com.konjir.konnect.preview'], components: [{ '/': '/konnect/app/oauth', comment: 'konnect\'s sign-in redirect, and nothing else on this site' }] }] },
+    webcredentials: { apps: ['ABCDE12345.com.konjir.konnect', 'ABCDE12345.com.konjir.konnect.preview'] },
+  });
+  // Only the package with a fingerprint is named.
+  expect(JSON.parse(read(r, '.well-known/assetlinks.json'))).toStrictEqual([
+    { relation: ['delegate_permission/common.handle_all_urls'], target: { namespace: 'android_app', package_name: 'com.konjir.konnect', sha256_cert_fingerprints: [fp] } },
+  ]);
+  // Anything that isn't an id is refused, and writes nothing new.
+  for (const [key, bad] of [['apple_team_id', 'abcde12345'], ['apple_team_id', 'TOO-LONG-123'], ['path', '/elsewhere']] as const) {
+    writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify({ ...config, [key]: bad }));
+    const refused = build(r);
+    expect([key, bad, refused.status, refused.stderr]).toStrictEqual([key, bad, 1, expect.stringMatching(/^build: deploy\/site\/app-links\.json/)]);
+  }
+  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify({ ...config, android: [{ package: 'com.konjir.konnect', sha256_cert_fingerprints: ['aa:bb'] }] }));
+  expect(build(r).stderr).toMatch(/has a fingerprint that isn't one/);
+  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify({ ...config, ios_bundle_ids: ['com.example.other'] }));
+  expect(build(r).stderr).toMatch(/ios_bundle_ids are konnect's own/);
+  // Emptied again: both go.
+  writeFileSync(join(r, 'deploy/site/app-links.json'), JSON.stringify({ ...config, apple_team_id: null, android: config.android.map((a: { package: string }) => ({ ...a, sha256_cert_fingerprints: [] })) }));
+  expect(build(r).status).toBe(0);
+  expect(existsSync(join(r, 'site/.well-known'))).toBe(false);
 });
