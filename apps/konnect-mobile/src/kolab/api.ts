@@ -66,3 +66,26 @@ export const kolab = (client: Client) => ({
   erase: (team: string) => call(client, 'konjir_erase_kolab', { kolab: team }),
 });
 export type KolabApi = ReturnType<typeof kolab>;
+
+const toolNames = new WeakMap<Client, Promise<Set<string>>>();
+/** The tools this Kolab has, asked once per connection: an older Kolab lacks the newer ones. */
+export function hasTool(client: Client, name: string): Promise<boolean> {
+  let names = toolNames.get(client);
+  if (!names) { names = client.listTools().then((r) => new Set(r.tools.map((t) => t.name))); toolNames.set(client, names); }
+  return names.then((n) => n.has(name));
+}
+
+/**
+ * Marks a conversation read up to `upTo` with S2's tools (konjir_mark_channel_read,
+ * konjir_mark_messages_read), which only move forward. False when this Kolab hasn't them.
+ */
+export async function markReadUpTo(client: Client, kind: 'channel' | 'dm', name: string, upTo: string): Promise<boolean> {
+  if (kind === 'channel') {
+    if (!(await hasTool(client, 'konjir_mark_channel_read'))) return false;
+    await call(client, 'konjir_mark_channel_read', { channel: name, up_to: upTo });
+  } else {
+    if (!(await hasTool(client, 'konjir_mark_messages_read'))) return false;
+    await call(client, 'konjir_mark_messages_read', { with: name, up_to: upTo });
+  }
+  return true;
+}
