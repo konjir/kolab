@@ -34,6 +34,11 @@ output "admin_token_parameter" {
   value       = module.secrets.admin_token_param_name
 }
 
+output "expo_access_token_parameter" {
+  description = "SSM SecureString holding Expo's access token for push notifications to konnect's app (S4). Terraform makes it as `unset`, write-only, and never writes it again; Lee puts the token (README, Deploying to AWS). While it is unset, Kolab runs with push off."
+  value       = module.secrets.expo_access_token_param_name
+}
+
 output "log_group" {
   description = "CloudWatch Logs group holding Kolab's and Caddy's journal (streams konjir and caddy), kept 30 days."
   value       = module.monitoring.log_group_name

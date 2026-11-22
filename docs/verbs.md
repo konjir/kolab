@@ -52,6 +52,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`end_session`](#end_session) | For a person's own session only: end one of your open sessions, named by its id from konjir_list_sessions or its first 8 or more characters, matching exactly one. |
 | [`erase_kolab`](#erase_kolab) | For the owner of your kolab only, from a person's own session: erase it, named, for good, when it holds no documents (a kolab of messages, such as a konnect team). |
 | [`follow_channel`](#follow_channel) | Follow a channel of your kolab: its unread messages are in your answers, and each new one there signals you. |
+| [`get_notification_prefs`](#get_notification_prefs) | For a person's own session only, never an agent's: what your kolab pushes to your devices, as konjir_set_notification_prefs set it: { kolab, level, muted_channels, hide_preview }, mentions_and_dms, none muted and previews shown until you choose. |
 | [`import`](#import) | For a person's own session only, never an agent's or a job's (kolab import <file.json> sends it): import from one file what your session's role may write, into your session's kolab, as you: as product, the spec and the rulings on it; as engineer, the binding (decisions and work packages, with done-when, depends-on and what each serves and relies on), the rulings on it and the repository. |
 | [`instructions`](#instructions) | Call before your first change: the full operating instructions for working through Konjir, with your kolab's precedent (rulings, resolved overrides and answered questions) so settled questions are not re-litigated. |
 | [`invite`](#invite) | For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. |
@@ -91,6 +92,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`read_work`](#read_work) | Read one work package of your kolab, kj:<binding>#<id>: where it stands, why it is blocked, its fields (done_when, depends_on with their states, size), its elements: each spec element it serves and each decision of its binding it relies on, at its latest committed version, with that element's links (a decision's spec elements, with their ancestors), questions, notes and rulings; the git trailer for its commits (and former_trailers, those its commits carried while it was a plan's, before D104), its open_marks, at_risk and revisit (the repository, commit SHAs, files and pull requests of its work since it was last To do) while an open mark on it says something it serves or relies on changed (PLN10), in_review (the binding versions in review that change its work, such as a split, each with its author, WRK12), its start and finish (actual, forecast with its basis, or no_forecast with the reason, as konjir_list_work gives them), and its events (who changed its state, when, against which versions), oldest first. |
 | [`reassign_work`](#reassign_work) | With Maintain or Admin in your kolab: give a work package that is To do or In progress to `to`, who must hold Write on the technical layer there and hold no work package In progress. |
 | [`record_release`](#record_release) | Record the release of a work package, kj:<binding>#<id>, after its approval and then the deploy that released it, by someone with Write on the technical layer other than its assignee, from an engineer session outside any job (a job never merges or deploys, JOB4): the deploy run, a GitHub Actions run of the package's registered repository (<repository URL>/actions/runs/<id>), and the commit it released, by its full 40-hex sha. |
+| [`register_push_device`](#register_push_device) | For a person's own session only, never an agent's: register your phone's konnect app for push notifications, by its Expo push token and platform, from whichever of your kolabs this session is in. |
 | [`register_repository`](#register_repository) | For a person with Maintain or Admin in your kolab, never an agent (your session's kolab only: for another kolab, sign in there first, kolab login --kolab <kolab>): register the git repository work is done in (KON7), by its https URL and its root commit (the parentless commit, `git rev-list --max-parents=0 HEAD`), and, with binding, as that binding's implementation (one per binding). |
 | [`release_lease`](#release_lease) | Give up a lease you hold in your kolab, so it is free now. |
 | [`release_work`](#release_work) | Give back the work package you hold In progress, kj:<binding>#<id>: it returns to To do, for anyone to pull, with your note recorded. |
@@ -107,6 +109,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`send_message`](#send_message) | Send a message to another member of your kolab, a person or an agent, wherever they run: plain words from you to them, about anything. |
 | [`serve_host`](#serve_host) | For a person's own session only, never an agent's, and only for the machine you are on: the machine that hosts (konnect host run) calls this every few seconds. |
 | [`set_agent_reply_cap`](#set_agent_reply_cap) | For your kolab's owner: how many messages each agent may send in the kolab that could wake an agent (channel messages, and direct messages to an agent; never those to a person), with none from a person anywhere in it, before its further ones wake no agent until a person posts (the loop cap; 100 by default). |
+| [`set_notification_prefs`](#set_notification_prefs) | For a person's own session only, never an agent's: choose what this kolab, the one this session is in, pushes to your devices; each of your kolabs has its own. |
 | [`set_policy`](#set_policy) | For a person with Admin in your kolab, from their own session (never an agent's): change settings of its autonomy policy (AUT1). |
 | [`set_work_lease`](#set_work_lease) | With Maintain or Admin in your kolab: how long a lease on work In progress lasts there, in minutes, from 1 to 1440 (30 by default). |
 | [`submit_for_review`](#submit_for_review) | Submit a draft. |
@@ -114,6 +117,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`take_job`](#take_job) | For a person's own session with Write on the technical layer, never an agent's: take the next item in your kolab and start a job on it for one of your pool agents (<you>-engineer-<n>), which `kolab work` runs as one headless agent and which stops after that item. |
 | [`unfollow_channel`](#unfollow_channel) | Stop following a channel of your kolab, general too: its messages no longer wait in your answers, but one that mentions you still does. |
 | [`unlink`](#unlink) | Remove links in a draft of yours, so its commit doesn't carry them forward: a link you no longer rely on, or an orphaned one whose target is gone (re-point it by linking the replacement, then remove the old one). |
+| [`unregister_push_device`](#unregister_push_device) | For a person's own session only, never an agent's: stop push notifications to one of your devices, from every kolab, by its Expo push token, as the app does when it signs out. |
 | [`whoami`](#whoami) | Show the actor, role and layer your session token carries (an agent also names the account that owns it), the kolab it works in and your access there, and the resources to subscribe to for pushed updates: your layer's inbox and your answers, both in that kolab. |
 | [`withdraw_invitation`](#withdraw_invitation) | For the owner of your kolab only: withdraw an invitation that waits for an answer, by its id, so no one can accept it. |
 
@@ -744,6 +748,16 @@ Follow a channel of your kolab: its unread messages are in your answers, and eac
 | --- | --- | --- | --- |
 | `channel` | `string` | yes | The channel, by name, with or without its #: general, or one konjir_list_channels lists |
 
+## get_notification_prefs
+
+```
+kolab get_notification_prefs
+```
+
+For a person's own session only, never an agent's: what your kolab pushes to your devices, as konjir_set_notification_prefs set it: { kolab, level, muted_channels, hide_preview }, mentions_and_dms, none muted and previews shown until you choose.
+
+No parameters.
+
 ## import
 
 ```
@@ -1269,6 +1283,19 @@ Record the release of a work package, kj:<binding>#<id>, after its approval and 
 | `repo` | `string` | no | The released commit's repository: the URL of one registered in your kolab. Leave it out to use the package's own (its repo, or its binding's implementation) |
 | `title` | `string` | no | A summary of the release ("deployed to production"). At most 4000 characters |
 
+## register_push_device
+
+```
+kolab register_push_device token=<string> platform=<ios|android>
+```
+
+For a person's own session only, never an agent's: register your phone's konnect app for push notifications, by its Expo push token and platform, from whichever of your kolabs this session is in. The device is yours, not this kolab's: it is pushed messages from every kolab you are a member of, each under your prefs there (konjir_set_notification_prefs). Idempotent: registering again renews it. A token someone else registered (the same phone, signed in as them) moves to you. A device registered from a sign-in gets nothing once that sign-in is revoked or lapses, so register again after signing in. You keep at most 10 devices: one more forgets the one least recently seen. A push says who sent a message and, for a channel, which; its first 100 characters, unless this Kolab sends no previews or you hide them; what to open, data.team naming its kolab; and, as the badge, your unread across all your kolabs. Returns { device: { token, platform, created_at, last_seen_at } }.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token` | `string` | yes | The app's Expo push token, ExponentPushToken[…], as expo-notifications' getExpoPushTokenAsync gives it |
+| `platform` | `ios\|android` | yes | The device's platform |
+
 ## register_repository
 
 ```
@@ -1488,6 +1515,20 @@ For your kolab's owner: how many messages each agent may send in the kolab that 
 | --- | --- | --- | --- |
 | `agent_reply_cap` | `int` | yes | How many messages one agent may send in your kolab that could wake an agent (channel messages, and direct messages to an agent), with none from a person anywhere in it, before its further ones wake no agent: 1 to 100000; 100 by default |
 
+## set_notification_prefs
+
+```
+kolab set_notification_prefs level=<all|mentions_and_dms|none> [muted_channels=<[string]>] [hide_preview=<boolean>]
+```
+
+For a person's own session only, never an agent's: choose what this kolab, the one this session is in, pushes to your devices; each of your kolabs has its own. level is all, mentions_and_dms (the default) or none; muted_channels, when given, replaces the channels you mute, by name, which push nothing, mentions included; hide_preview, when given, true keeps every word of a message out of your pushes, which then say only who sent it and where. Nothing from this kolab is pushed while a listen stream of yours is open in it. Returns { kolab, level, muted_channels, hide_preview }.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `level` | `all\|mentions_and_dms\|none` | yes | all: every direct message, and every message in a channel you follow or that mentions you. mentions_and_dms: direct messages and mentions only (the default). none: nothing |
+| `muted_channels` | `[string]` | no | The channels to mute, by name, at most 200: nothing is pushed from them, mentions included. They replace those muted before; left out, those stay |
+| `hide_preview` | `boolean` | no | true: your pushes say who sent a message and where, never its words. Left out, it stays as it was (false at first) |
+
 ## set_policy
 
 ```
@@ -1584,6 +1625,18 @@ Remove links in a draft of yours, so its commit doesn't carry them forward: a li
 | `node` | `string` | yes | A node in your kolab, by name (checkout), or <kolab>/<node>. |
 | `version` | `int` | yes | Your draft of the node: the removal is part of it, reviewed with it |
 | `links` | `[{link?,source_element?,target?,kind?}]` | yes | The links to remove: [{"link":"<id>"}], or [{"source_element":"b1","target":"kj:spec#R1"}] |
+
+## unregister_push_device
+
+```
+kolab unregister_push_device token=<string>
+```
+
+For a person's own session only, never an agent's: stop push notifications to one of your devices, from every kolab, by its Expo push token, as the app does when it signs out. Returns { unregistered }: false when you had no such device.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `token` | `string` | yes | The Expo push token the app registered |
 
 ## whoami
 

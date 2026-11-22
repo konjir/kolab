@@ -18,6 +18,7 @@ export const NO_ACTOR_REASONS = {
   system: {
     migrations: 'applies migrations, and frees the outbox claims of a process that stopped',
     outbox: 'runs outbox jobs: cascades, settles and rebases owed by versions whose authors and submitters are recorded; a rebase Kolab writes is by kolab',
+    push: 'queues the push notifications of a message just sent (queuePushes), which names its sender; the job names no one',
     policy_resync: 'gives the review requests on versions in review again under each kolab\'s policy as Kolab opens (W6.2, REV6): each request names its reviewer, and it commits nothing',
   },
   unsigned: {
@@ -183,6 +184,12 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   askHost: { recorded: ['kolab_host_request.owner'] },
   answerHost: { recorded: ['kolab_host_request.answered_by'] },
   endHost: { recorded: ['audit_event:host.ended'] },
+  // Push (migration 0058): a device and prefs name the person whose session set them; unregistering
+  // leaves no row, so it is audited. Queuing a message's pushes is Kolab's own, for its sender.
+  registerPushDevice: { recorded: ['push_device.actor_id'] },
+  unregisterPushDevice: { recorded: ['audit_event:push_device.unregistered'] },
+  setNotificationPrefs: { recorded: ['notification_pref.actor_id'] },
+  queuePushes: { system: 'push' },
   openCase: { recorded: ['case_file.opened_by', 'position.actor_id'] },
   addPosition: { recorded: ['position.actor_id'] },
   rule: { recorded: ['ruling.actor_id'] },

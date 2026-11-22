@@ -70,3 +70,22 @@ resource "aws_ssm_parameter" "cli_npm_spec" {
 output "cli_npm_spec_param_arn" {
   value = "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/konjir/${var.name}/cli-npm-spec"
 }
+
+# Expo's access token, with which Kolab sends push notifications to konnect's phone app through
+# Expo's push service (S4): the SecureString /konjir/<name>/expo-access-token. Terraform makes it
+# with a placeholder, `unset`, as a write-only value (value_wo), so neither the placeholder nor the
+# token Lee puts in its place is ever in a Terraform variable, file or state, and Terraform never
+# writes it again while value_wo_version stays 1. Lee puts the token with put-parameter --overwrite
+# (README, "Deploying to AWS"). Until then start.sh reads `unset` as no token, and Kolab runs with
+# push off, saying so in one line.
+resource "aws_ssm_parameter" "expo_access_token" {
+  #checkov:skip=CKV_AWS_337:SecureString with the AWS-managed SSM key; a customer-managed key is a production step
+  name             = "/konjir/${var.name}/expo-access-token"
+  description      = "Expo access token Kolab sends push notifications with (konnect's app); unset until Lee puts it"
+  type             = "SecureString"
+  value_wo         = "unset"
+  value_wo_version = 1
+}
+
+output "expo_access_token_param_arn" { value = aws_ssm_parameter.expo_access_token.arn }
+output "expo_access_token_param_name" { value = aws_ssm_parameter.expo_access_token.name }

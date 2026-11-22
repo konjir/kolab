@@ -161,6 +161,8 @@ export const AUDIT_ACTIONS = [
   'host.ended',
   // A kolab erased by its owner (migration 0056): this row, and its grants' grant.removed rows, still name it.
   'kolab.erased',
+  // A person's push device unregistered by them (migration 0058): its row goes, and this says so.
+  'push_device.unregistered',
 ] as const;
 export type AuditAction = typeof AUDIT_ACTIONS[number];
 /** One row of the audit log: what was done, in which kolab if any, to whom, by whom and when. */
@@ -247,9 +249,10 @@ export type ReviewRequestState = typeof REVIEW_REQUEST_STATES[number];
  * The work a transactional outbox job owes (REV3, W1.8): a committed version's cascade, a version
  * overtaken while it waited, to fold or reject, and a variant to rebase onto its parent's latest
  * version (D43, P6), or a dependent in another kolab up to date with it: its links there
- * checked, a fork rebased once its holder holds it again (LNK8, KON9).
+ * checked, a fork rebased once its holder holds it again (LNK8, KON9). A `push` job names no
+ * version: it sends push notifications of one message to konnect's phone app (migration 0058).
  */
-export const OUTBOX_KINDS = ['after_commit', 'settle', 'rebase'] as const;
+export const OUTBOX_KINDS = ['after_commit', 'settle', 'rebase', 'push'] as const;
 export type OutboxKind = typeof OUTBOX_KINDS[number];
 /** An outbox job is pending until done, or dead after too many failed attempts, until an admin retries it. */
 export const OUTBOX_STATES = ['pending', 'dead'] as const;
@@ -819,6 +822,48 @@ export interface Conversation {
   unread_more: boolean;
   last_at: string;
 }
+/** A device a person's konnect app registered for push in a team (konjir_register_push_device). */
+export interface PushDevice {
+  token: string;
+  platform: import('./limits.js').PushPlatform;
+  created_at: string;
+  last_seen_at: string;
+}
+/**
+ * What a person is told of in a team (konjir_get_notification_prefs): a level, the channels they
+ * muted, by name, and whether their pushes hide the message's words (hide_preview).
+ */
+export interface NotificationPrefs {
+  kolab: string;
+  level: import('./limits.js').NotificationLevel;
+  muted_channels: string[];
+  hide_preview: boolean;
+}
+/** What a push carries for the app to open: the team, and the conversation and message it is about. */
+export type PushData =
+  | { team: string; kind: 'dm'; with: string; message_id: string }
+  | { team: string; kind: 'channel'; channel: string; message_id: string };
+/**
+ * One person's push about one message, as a push job carries it: a title (the sender and, for a
+ * channel, `#channel`), the start of the message unless previews are off (on the server, or by
+ * the person's hide_preview), what to open, and the
+ * badge, their unread in the team.
+ */
+export interface PushNotification {
+  actor: string;
+  title: string;
+  body?: string;
+  data: PushData;
+  badge: number;
+}
+/**
+ * A message as it was just sent, told to this process's own listeners once it commits
+ * (Kolab.onMessageSent): who sent it, its words, and every member it signalled: a direct
+ * message's recipient, or a channel's followers and those it mentions, never its sender.
+ */
+export type SentMessage =
+  | { kind: 'dm'; kolab: string; id: string; from: string; to: string; message: string; recipients: string[] }
+  | { kind: 'channel'; kolab: string; id: string; from: string; channel: string; channel_id: string; message: string; mentions: string[]; recipients: string[] };
 /** A member of a kolab, as another member sees them: who they can send a message to. */
 export interface Member {
   actor: string; kind: ActorKind;

@@ -78,4 +78,9 @@ run "production_keeps_its_names" {
     condition     = output.admin_token_parameter != null && strcontains(file("environments/production.s3.tfbackend"), "key = \"konjir/test/terraform.tfstate\"")
     error_message = "production's state must stay at konjir/test/terraform.tfstate"
   }
+  # Expo's access token for push (S4): made with a placeholder Lee fills in, and named where start.sh reads it.
+  assert {
+    condition     = output.expo_access_token_parameter == "/konjir/konjir-test/expo-access-token"
+    error_message = "Expo's access token is /konjir/konjir-test/expo-access-token, beside the admin token, where start.sh reads it"
+  }
 }

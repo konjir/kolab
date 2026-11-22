@@ -22,7 +22,7 @@ import {
   type CaseFileState, type CaseFileView, type PositionVerdict, type RulingEffect, type RulingView,
   type Access, type AccessHolder, type AccessLevel, type AccessSource, type KolabAccessView, type InviteLevel, type InvitePreview, type InviteView, INVITATION_LEVEL, type InvitationView, type PendingInvitation, type OwnSession, type Actor, type ActorKind, type Archivable, type ArchiveTarget, type Author, type KolabRow, type OrgRole, type Visibility,
   type DeltaInput, type DeltaKind, type EdgeKind, type ElementInput, type LinkRef, type ElementRow, type Finding, type GateResult, type Kind, type KolabEvent, type Layer,
-  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Conversation, type Channel, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
+  type AuditAction, type AuditEvent, type Doer, type MarkRow, type Member, type Message, type Conversation, type Channel, type PushDevice, type NotificationPrefs, type PushNotification, type PushData, type SentMessage, type NotificationLevel, type PushPlatform, PUSH_PLATFORMS, NOTIFICATION_LEVELS, DEFAULT_NOTIFICATION_LEVEL, EXPO_PUSH_TOKEN, MAX_PUSH_DEVICES, PUSH_PREVIEW_CHARS, PUSH_BATCH, type ChannelMessage, type Lease, type UnreadChannel, type UnreadChannelMessage, type OverrideResolution, type Query, type QueryKind, type QueryState, type Resolution, type CheckContext, type CheckResult, type Checks,
   type ReviewRequestState, type ReviewRequestView, type ReviewVerdictKind, type Role, type SubmissionView, type VersionRow,
   type VersionState, type WorkFields, WORK_FIELDS,
   JOB_ENDS, JOB_LIMITS, type JobCaps, type JobEnd, type JobKind, type JobOutcome, type JobView,
@@ -490,7 +490,7 @@ const ERASED_WITH_KOLAB = [
   'kolab_host', 'kolab_lease', 'kolab_invitation', 'kolab_invite',
   'channel_mention', 'channel_read', 'channel_follow', 'channel_message', 'channel',
   'message_run', 'message_receipt', 'message', 'kolab_chat_agent', 'kolab_chat',
-  'kolab_policy', 'node_name', 'outbox',
+  'kolab_policy', 'node_name', 'outbox', 'notification_pref',
 ] as const;
 
 /** The identity provider whose login is a member's `login` (Member): GitHub's, as GitHubIdentity names it. */
@@ -617,6 +617,13 @@ const LIVE_SESSION = `s.ended_at is null and (s.token_key = $1 or (s.token_key i
  * expiry (D55): not ended, and a grant's while its grant is neither revoked nor lapsed; a
  * hand-issued one's until it expires (W2.22), when it is refused like an ended one.
  */
+/**
+ * Whether the push device `d`, left joined to the sign-in it was registered from as `dg`, may be
+ * pushed to (0058): one registered from a hand-issued session always, one from a sign-in only while
+ * that sign-in is neither revoked nor lapsed, so signing out of a team on the phone stops its pushes.
+ */
+const LIVE_DEVICE = `(d.grant_id is null or (dg.revoked_at is null and dg.expires_at > now()))`;
+
 const OPEN_SESSION = `s.ended_at is null and (g.id is null and (s.expires_at is null or s.expires_at > now())
        or g.id is not null and g.revoked_at is null and g.expires_at > now())`;
 
@@ -718,8 +725,44 @@ function noticeOf(x: unknown): Notice | 'later' | undefined {
 
 /** A job in the outbox (REV3, W1.8): work a committed change still owes, until it is done. */
 interface OutboxJob {
-  id: string; kind: OutboxKind; version_id: string; claim: string;
-  payload: { approvedBy?: string; ruling?: string; rulingBy?: Doer; onto?: string; node?: string } | null; attempts: number;
+  /** Null for a push job, which names no version (0058). */
+  id: string; kind: OutboxKind; version_id: string | null; kolab_id: string; claim: string;
+  payload: ({ approvedBy?: string; ruling?: string; rulingBy?: Doer; onto?: string; node?: string } & Partial<PushPayload>) | null; attempts: number;
+}
+
+/**
+ * A push job's payload (0058): the message it is about, what each person is told of it, and the
+ * tokens it has sent to so far, so a job retried after a failure part way sends each one once.
+ */
+interface PushPayload { message: string; notifications: PushNotification[]; sent?: string[] }
+
+/** One push as Expo's push service takes it: to one device's token. */
+export interface PushMessage extends Omit<PushNotification, 'actor'> { to: string; sound: 'default' }
+
+/**
+ * What became of one push: sent, or refused, `unregistered` when the device's token is no longer
+ * good (Expo's DeviceNotRegistered), so Kolab forgets it.
+ */
+export type PushTicket = { ok: true } | { ok: false; unregistered: boolean; error: string };
+
+/**
+ * Sends a batch of at most PUSH_BATCH pushes, returning a ticket for each, in order. It throws when
+ * it is worth trying again later (the service unreachable, or failing on its side): the job is
+ * retried through the outbox, with backoff. The server gives Kolab one (apps/server, push.ts).
+ */
+export type PushSend = (messages: PushMessage[]) => Promise<PushTicket[]>;
+
+/**
+ * Whether one person is pushed one message (S4): never while they listen (a stream of theirs is
+ * open in the team) or with `none`; a direct message with either other level; a channel message
+ * not in a channel they muted, with `all` (they follow it or are mentioned, or they wouldn't be
+ * among its recipients), or with `mentions_and_dms` only if it mentions them. Agents never get here.
+ */
+export function wantsPush(p: { kind: 'dm' | 'channel'; level: NotificationLevel; muted: boolean; mentioned: boolean; listening: boolean }): boolean {
+  if (p.listening || p.level === 'none') return false;
+  if (p.kind === 'dm') return true;
+  if (p.muted) return false;
+  return p.level === 'all' || p.mentioned;
 }
 
 /**
@@ -784,6 +827,13 @@ export class Kolab {
     private readonly leaseMs: number, private readonly closeWaitMs: number, private readonly dataDir?: string) {}
 
   private listeners = new Set<(e: KolabEvent) => void>();
+  private sentListeners = new Set<(m: SentMessage) => void>();
+  /**
+   * Push notifications to konnect's phone app (0058): `send` reaches Expo's push service, and is
+   * null while push is off (the server sets it only when it has an access token); with `preview`
+   * false, a push carries no words of its message.
+   */
+  readonly push: { send: PushSend | null; preview: boolean } = { send: null, preview: true };
   /** Names this Kolab in what it notifies, so it can skip its own notifications when it hears them. */
   private readonly origin = randomBytes(9).toString('base64url');
   private listening?: Promise<Listening | undefined>;
@@ -885,6 +935,23 @@ export class Kolab {
   onEvent(fn: (e: KolabEvent) => void): () => void {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
+  }
+
+  /**
+   * Be told of each direct or channel message sent through this Kolab, once it has committed: who
+   * sent it, its words, and every member it signalled. Only this process's own sends, never another
+   * process's: an inbox event (onEvent) names no message, and is heard in every process, so it can't
+   * say which message to push, nor push it once. Returns an unsubscribe function.
+   */
+  onMessageSent(fn: (m: SentMessage) => void): () => void {
+    this.sentListeners.add(fn);
+    return () => { this.sentListeners.delete(fn); };
+  }
+
+  private tellSent(m: SentMessage) {
+    for (const fn of this.sentListeners) {
+      try { fn(m); } catch { /* a listener's failure never fails a send */ }
+    }
   }
 
   /**
@@ -1419,7 +1486,7 @@ export class Kolab {
           and not ${archivedKolabSql('o.kolab_id')}   -- an archived kolab's jobs wait until it is unarchived (D52)
           and (o.claimed_until is null or o.claimed_until < clock_timestamp())
           and (o.claim is null or not (o.claim = any($${n + 3}::text[])))
-       returning o.id, o.kind, o.version_id, o.claim, o.payload, o.attempts`, [...params, ulid(), this.origin, this.ownTokens()])).rows[0];
+       returning o.id, o.kind, o.version_id, o.kolab_id, o.claim, o.payload, o.attempts`, [...params, ulid(), this.origin, this.ownTokens()])).rows[0];
   }
 
   /**
@@ -1433,7 +1500,7 @@ export class Kolab {
     let done = 0;
     for (let taken = 0; taken < (opts.max ?? Infinity); taken++) {
       const job = await this.claimJob(
-        `select j.id from outbox j join version jv on jv.id = j.version_id
+        `select j.id from outbox j left join version jv on jv.id = j.version_id
           where j.state = 'pending' and j.run_after <= clock_timestamp()
             and (j.claimed_until is null or j.claimed_until < clock_timestamp())
             and (j.claim is null or not (j.claim = any($3::text[])))
@@ -1463,11 +1530,13 @@ export class Kolab {
 
   /** Runs a job this process has just claimed. */
   private async runJob(job: OutboxJob): Promise<'done' | 'deferred' | 'lost' | 'failed'> {
-    return (await this.runToken({ token: job.claim, kind: job.kind, versionId: job.version_id }, (claim) => this.perform(job, claim))).state;
+    return (await this.runToken({ token: job.claim, kind: job.kind, versionId: job.version_id ?? job.id }, (claim) => this.perform(job, claim))).state;
   }
 
   /** The work a job owes, from its row alone. Each is idempotent: run again, it does nothing twice. */
   private async perform(job: OutboxJob, claim: Claim): Promise<unknown> {
+    if (job.kind === 'push') return this.pushJob(job, claim);
+    if (job.version_id === null) throw new Error(`outbox job ${job.id} of kind ${job.kind} names no version`);
     if (job.kind === 'after_commit') return this.cascade(await this.version(job.version_id), claim);
     if (job.kind === 'settle') return this.settleJob(job.version_id, job.payload ?? {}, claim);
     if (job.kind === 'rebase') return this.rebaseJob(job.version_id, job.payload?.node, claim);
@@ -1487,16 +1556,17 @@ export class Kolab {
     if (opts.kolab !== undefined) await this.requireKolab(opts.kolab);
     const rows = (await this.db.query<{ id: string; kind: OutboxKind; state: OutboxState; kolab_id: string; name: string; seq: number;
       attempts: number; claimed_by: string | null; run_after: Date | string; last_error: string | null; created_at: Date | string;
-      after_kolab: string | null; after_name: string | null; after_seq: number | null }>(
+      after_kolab: string | null; after_name: string | null; after_seq: number | null; message: string | null }>(
       `select o.id, o.kind, o.state, o.kolab_id, n.name, v.seq, o.attempts, o.claimed_by, o.run_after, o.last_error, o.created_at,
-              an.kolab_id as after_kolab, an.name as after_name, av.seq as after_seq
-         from outbox o join version v on v.id = o.version_id join node n on n.id = v.node_id
+              an.kolab_id as after_kolab, an.name as after_name, av.seq as after_seq, o.payload->>'message' as message
+         from outbox o left join version v on v.id = o.version_id left join node n on n.id = v.node_id
          left join version av on av.id = o.payload->>'onto' left join node an on an.id = av.node_id
         where ($1::text is null or o.state = $1) and ($2::text is null or o.kolab_id = $2) and ($3::text is null or o.id > $3)
         order by o.id limit $4`, [opts.state ?? null, opts.kolab ?? null, after, all ? null : size + 1])).rows;
     const { rows: shown, next } = pageOf(rows, size, list, (r) => [r.id]);
     return { next, items: shown.map((r): OutboxJobView => ({
-      id: r.id, kind: r.kind, state: r.state, subject: formatAddress({ kolab: r.kolab_id, node: r.name, version: r.seq }),
+      // A push job's subject is its kolab and the message it is about, never what it says (0058).
+      id: r.id, kind: r.kind, state: r.state, subject: r.kind === 'push' ? `${r.kolab_id} message ${r.message}` : formatAddress({ kolab: r.kolab_id, node: r.name, version: r.seq }),
       attempts: r.attempts, claimed_by: r.claimed_by, run_after: new Date(r.run_after).toISOString(), last_error: r.last_error,
       created_at: new Date(r.created_at).toISOString(),
       ...(r.after_name ? { after: formatAddress({ kolab: r.after_kolab!, node: r.after_name, version: r.after_seq! }) } : {}),
@@ -10217,7 +10287,7 @@ export class Kolab {
     const s = await this.session(sessionId);
     if (to === s.actor_id) throw new LimitError(`${to} is you: a message goes to another member of kolab ${s.kolab}`);
     const id = ulid();
-    return this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
+    const sent = await this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so it takes no new messages`);
       const members = await this.membersIn(tx, s.kolab);
       if (!members.some((h) => h.id === s.actor_id)) throw new AccessError(notAMember(s));
@@ -10242,6 +10312,9 @@ export class Kolab {
       await signal({ inbox: 'actor', kolab: s.kolab, actor: to });
       return { id, from: s.actor_id, to, message: body, reply_to: opts.replyTo ?? null, sent_at: iso(sent.sent_at)!, read_at: null };
     }, undefined, { access: true }));
+    // Committed: this process's listeners hear it, for a push (0058).
+    this.tellSent({ kind: 'dm', kolab: s.kolab, id, from: s.actor_id, to, message: body, recipients: [to] });
+    return sent;
   }
 
   /**
@@ -10627,7 +10700,7 @@ export class Kolab {
     if (!Array.isArray(asked) || asked.some((m) => typeof m !== 'string')) throw new LimitError('mentions is a list of members\' names');
     if (asked.length > MAX_MENTIONS) throw new LimitError(`a message mentions at most ${MAX_MENTIONS} members; it names ${asked.length}`);
     const s = await this.session(sessionId);
-    return this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
+    const { sent, channelId, recipients } = await this.rated(s.actor_id, 'message', (hold) => this.inTransaction(async (tx, signal) => {
       if ((await tx.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so it takes no new messages`);
       const members = await this.channelMembers(tx, s);
       const c = await this.channelIn(tx, s.kolab, channel);
@@ -10669,12 +10742,22 @@ export class Kolab {
         [c.id, s.actor_id, id, s.kolab]);
       const choices = new Map((await tx.query<{ actor_id: string; following: boolean }>(
         `select actor_id, following from channel_follow where channel_id = $1`, [c.id])).rows.map((r) => [r.actor_id, r.following]));
+      const signalled: string[] = [];
       for (const h of members) {
         if (h.id === s.actor_id) continue;
-        if ((choices.get(h.id) ?? c.name === GENERAL_CHANNEL) || mentions.includes(h.id)) await signal({ inbox: 'actor', kolab: s.kolab, actor: h.id });
+        if ((choices.get(h.id) ?? c.name === GENERAL_CHANNEL) || mentions.includes(h.id)) {
+          await signal({ inbox: 'actor', kolab: s.kolab, actor: h.id });
+          signalled.push(h.id);
+        }
       }
-      return { id, channel: c.name, from: s.actor_id, message: body, reply_to: opts.replyTo ?? null, mentions, sent_at: iso(sent.sent_at)! };
+      return {
+        sent: { id, channel: c.name, from: s.actor_id, message: body, reply_to: opts.replyTo ?? null, mentions, sent_at: iso(sent.sent_at)! },
+        channelId: c.id, recipients: signalled,
+      };
     }, undefined, { access: true }));
+    // Committed: this process's listeners hear it, for a push (0058).
+    this.tellSent({ kind: 'channel', kolab: s.kolab, id: sent.id, from: s.actor_id, channel: sent.channel, channel_id: channelId, message: body, mentions: sent.mentions, recipients });
+    return sent;
   }
 
   /**
@@ -10835,6 +10918,250 @@ export class Kolab {
       await tx.query(`update kolab_chat set agent_reply_cap = $2, cap_set_by = $3, cap_set_at = clock_timestamp() where kolab_id = $1`, [s.kolab, cap, s.actor_id]);
       return { kolab: s.kolab, agent_reply_cap: cap };
     }, undefined, { access: true });
+  }
+
+  // ---- push notifications to konnect's phone app (migration 0058) ------------------
+
+  /** Refuses an agent's session: devices and what to be told of are a person's alone. */
+  private personsOwn(s: Session, what: string) {
+    if (s.kind !== 'person') throw new AccessError(`${s.actor_id} is an agent: only a person ${what}, from their own app`);
+  }
+
+  /** In `q`, refuses a session that isn't a member of its kolab, or one whose kolab is archived. */
+  private async pushMember(q: Q, s: Session) {
+    if ((await q.query(`select 1 where ${archivedKolabSql('$1::text')}`, [s.kolab])).rows.length) throw new TenancyError(`kolab ${s.kolab} is archived, so nothing in it changes`);
+    if (!(await this.membersIn(q, s.kolab)).some((h) => h.id === s.actor_id)) {
+      throw new AccessError(`${s.actor_id} is not a member of kolab ${s.kolab}: pushes are of its messages, for those who hold access there`);
+    }
+  }
+
+  /**
+   * Registers the device of the session's person for push (konjir_register_push_device), by its
+   * Expo push token and platform, from whichever of their teams the session is in: the device is the
+   * person's, and is pushed messages from every team they are a member of. Idempotent, renewing when
+   * it was last seen, and noting the sign-in it came from, so pushes stop once that sign-in is
+   * revoked or lapses (a sign-in moved to another team keeps its grant, and so its device). A token
+   * another person registered (the same phone, signed in as someone else) moves to the caller. A
+   * person keeps at most MAX_PUSH_DEVICES: one more forgets the least recently seen.
+   */
+  async registerPushDevice(sessionId: string, token: string, platform: string): Promise<{ device: PushDevice }> {
+    if (typeof token !== 'string' || !EXPO_PUSH_TOKEN.test(token)) throw new LimitError('token is an Expo push token, ExponentPushToken[…], as the app\'s expo-notifications gives it');
+    if (!(PUSH_PLATFORMS as readonly string[]).includes(platform)) throw new LimitError(`platform is one of ${PUSH_PLATFORMS.join(', ')}`);
+    const s = await this.session(sessionId);
+    this.personsOwn(s, 'registers a device for push');
+    return this.inTransaction(async (tx) => {
+      await this.pushMember(tx, s);
+      const grant = (await tx.query<{ grant_id: string | null }>(`select grant_id from session where id = $1`, [s.id])).rows[0]?.grant_id ?? null;
+      await tx.exec('set local role kj_system');
+      const row = (await tx.query<{ token: string; platform: PushPlatform; created_at: Date | string; last_seen_at: Date | string }>(
+        `insert into push_device(token, actor_id, platform, grant_id) values ($1, $2, $3, $4)
+         on conflict (token) do update set
+           created_at = case when push_device.actor_id = excluded.actor_id then push_device.created_at else clock_timestamp() end,
+           actor_id = excluded.actor_id, platform = excluded.platform, grant_id = excluded.grant_id, last_seen_at = clock_timestamp()
+         returning token, platform, created_at, last_seen_at`, [token, s.actor_id, platform, grant])).rows[0];
+      await tx.query(
+        `delete from push_device where actor_id = $1 and token not in (
+           select token from push_device where actor_id = $1 order by last_seen_at desc, token limit $2)`,
+        [s.actor_id, MAX_PUSH_DEVICES]);
+      return { device: { token: row.token, platform: row.platform, created_at: iso(row.created_at)!, last_seen_at: iso(row.last_seen_at)! } };
+    });
+  }
+
+  /**
+   * Forgets a device of the session's person (konjir_unregister_push_device), as the app does when
+   * it signs out: nothing more is pushed to it from any team, and the audit log says so, in the
+   * session's kolab, by its platform, never its token. `unregistered` is false when the caller had no
+   * such device, whoever else may have.
+   */
+  async unregisterPushDevice(sessionId: string, token: string): Promise<{ unregistered: boolean }> {
+    if (typeof token !== 'string' || !token) throw new LimitError('token is the Expo push token the app registered');
+    const s = await this.session(sessionId);
+    this.personsOwn(s, 'unregisters a device');
+    return this.inTransaction(async (tx) => {
+      // As Kolab's own login, not kj_system: the audit log is written by it alone (0024).
+      const gone = (await tx.query<{ platform: PushPlatform }>(
+        `delete from push_device where token = $1 and actor_id = $2 returning platform`, [token, s.actor_id])).rows[0];
+      if (gone) await audit(tx, s.actor_id, 'push_device.unregistered', { kolab: s.kolab, subject: s.actor_id, detail: { platform: gone.platform } });
+      return { unregistered: !!gone };
+    });
+  }
+
+  /** In `q`, a person's notification prefs in a kolab, the default without a row, muted channels by name. */
+  private async prefsIn(q: Q, kolab: string, actor: string): Promise<NotificationPrefs> {
+    const row = (await q.query<{ level: NotificationLevel; muted: string[]; hide_preview: boolean }>(
+      `select level, muted, hide_preview from notification_pref where kolab_id = $1 and actor_id = $2`, [kolab, actor])).rows[0];
+    const muted = row?.muted.length ? (await q.query<{ name: string }>(
+      `select name from channel where kolab_id = $1 and id = any($2::text[]) order by name collate "C"`, [kolab, row.muted])).rows.map((r) => r.name) : [];
+    return { kolab, level: row?.level ?? DEFAULT_NOTIFICATION_LEVEL, muted_channels: muted, hide_preview: row?.hide_preview ?? false };
+  }
+
+  /**
+   * Sets what the session's person is pushed of in its kolab (konjir_set_notification_prefs): a
+   * level (NOTIFICATION_LEVELS); when given, the channels they mute, by name, which replace the
+   * ones muted before; and when given, hide_preview, whether their pushes carry none of a message's
+   * words. Left out, each stays as it was (no muted channel, previews shown, at first). A muted
+   * channel pushes nothing, a mention there included. Every name must be a channel of the kolab.
+   */
+  async setNotificationPrefs(sessionId: string, prefs: { level: string; muted_channels?: string[] | null; hide_preview?: boolean | null }): Promise<NotificationPrefs> {
+    if (!(NOTIFICATION_LEVELS as readonly string[]).includes(prefs.level)) throw new LimitError(`level is one of ${NOTIFICATION_LEVELS.join(', ')}`);
+    const hide = prefs.hide_preview ?? null;
+    if (hide !== null && typeof hide !== 'boolean') throw new LimitError('hide_preview is true or false');
+    const asked = prefs.muted_channels ?? null;
+    if (asked !== null && (!Array.isArray(asked) || asked.some((c) => typeof c !== 'string'))) throw new LimitError('muted_channels is a list of channels\' names');
+    if (asked !== null && asked.length > MAX_CHANNELS) throw new LimitError(`muted_channels names at most ${MAX_CHANNELS} channels, as many as a kolab holds`);
+    const names = asked === null ? null : [...new Set(asked.map(channelName))];
+    const s = await this.session(sessionId);
+    this.personsOwn(s, 'chooses what they are told of');
+    return this.inTransaction(async (tx) => {
+      await this.pushMember(tx, s);
+      let muted: string[] | null = null;
+      if (names !== null) {
+        const found = (await tx.query<{ id: string; name: string }>(`select id, name from channel where kolab_id = $1 and name = any($2::text[])`, [s.kolab, names])).rows;
+        const missing = names.filter((n) => !found.some((c) => c.name === n));
+        if (missing.length) throw new LimitError(`kolab ${s.kolab} has no channel ${missing.map((n) => `#${n}`).join(', ')}: konjir_list_channels lists its channels`);
+        muted = found.map((c) => c.id).sort();
+      }
+      await tx.exec('set local role kj_system');
+      await tx.query(
+        `insert into notification_pref(kolab_id, actor_id, level, muted, hide_preview) values ($1, $2, $3, coalesce($4::text[], '{}'), coalesce($5::boolean, false))
+         on conflict (kolab_id, actor_id) do update set level = excluded.level,
+           muted = case when $4::text[] is null then notification_pref.muted else excluded.muted end,
+           hide_preview = coalesce($5::boolean, notification_pref.hide_preview), updated_at = clock_timestamp()`,
+        [s.kolab, s.actor_id, prefs.level, muted, hide]);
+      return this.prefsIn(tx, s.kolab, s.actor_id);
+    });
+  }
+
+  /** What the session's person is pushed of in its kolab (konjir_get_notification_prefs): mentions_and_dms and no muted channel until they choose. */
+  async notificationPrefs(sessionId: string): Promise<NotificationPrefs> {
+    const s = await this.session(sessionId);
+    this.personsOwn(s, 'has notification prefs');
+    if (!(await this.membersIn(this.db, s.kolab)).some((h) => h.id === s.actor_id)) {
+      throw new AccessError(`${s.actor_id} is not a member of kolab ${s.kolab}: pushes are of its messages, for those who hold access there`);
+    }
+    return this.prefsIn(this.db, s.kolab, s.actor_id);
+  }
+
+  /**
+   * A person's unread in one kolab: their unread direct messages, and in each channel their unread
+   * if they follow it or their unread mentions if not, each counted up to UNREAD_COUNT_CEILING as
+   * their answers count it, and the sum at most UNREAD_COUNT_CEILING.
+   */
+  private async unreadIn(kolab: string, actor: string): Promise<number> {
+    const dms = (await this.db.query<{ n: number }>(
+      `select count(*)::int as n from (select 1 from message m where m.kolab_id = $1 and m.sent_to = $2
+          and not exists (select 1 from message_receipt r where r.message_id = m.id) limit $3) z`, [kolab, actor, UNREAD_COUNT_CEILING])).rows[0].n;
+    const channels = await this.channelCounts(this.db, { kolab, actor_id: actor, kind: 'person' } as Session);
+    const inChannels = channels.reduce((n, c) => { const k = counted(c); return n + (c.following ? k.unread : k.mentions); }, 0);
+    return Math.min(dms + inChannels, UNREAD_COUNT_CEILING);
+  }
+
+  /**
+   * A push's badge, one number on a device that hears every team: the sum of the person's unread in
+   * each team they are a member of now (unreadIn: by their own access, not archived, as a
+   * choose:kolab sign-in lists them), at most UNREAD_COUNT_CEILING.
+   */
+  private async badgeOf(actor: string): Promise<number> {
+    let n = 0;
+    for (const kolab of await this.reachable(actor)) {
+      if (n >= UNREAD_COUNT_CEILING) break;
+      if ((await this.db.query(`select 1 where ${archivedKolabSql('$1::text')}`, [kolab])).rows.length) continue;
+      if (!(await ownerAccess(this.db, actor, kolab)).level) continue;
+      n += await this.unreadIn(kolab, actor);
+    }
+    return Math.min(n, UNREAD_COUNT_CEILING);
+  }
+
+  /**
+   * Decides who is pushed a message just sent (onMessageSent), and queues one push job for it in
+   * the outbox, unless no one is: each recipient who is a person, not its sender, with a device
+   * whose sign-in is live (registered from any of their teams), and whom wantsPush says yes to under
+   * their prefs in the message's team. `data.team` names that team, which the app switches to.
+   * A person's push carries the message's first words only while the server's `push.preview` is on
+   * and they haven't chosen hide_preview. `listening` names the sessions holding a listen stream on this server process: a person with
+   * one of them open in the message's team is skipped (they see it there); one listening in
+   * another team is not. Push off (no `push.send`), it
+   * queues nothing. Returns how many people the job tells.
+   */
+  async queuePushes(m: SentMessage, opts: { listening?: string[] } = {}): Promise<number> {
+    if (!this.push.send) return 0;
+    const recipients = [...new Set(m.recipients)].filter((r) => r !== m.from);
+    if (!recipients.length) return 0;
+    const rows = (await this.db.query<{ actor: string; level: NotificationLevel; muted: boolean; hide: boolean; listening: boolean }>(
+      `select a.id as actor, coalesce(p.level, $4) as level, coalesce($5::text = any(p.muted), false) as muted,
+              coalesce(p.hide_preview, false) as hide,
+              exists (select 1 from session s left join oauth_grant g on g.id = s.grant_id
+                       where s.id = any($3::text[]) and s.actor_id = a.id and s.kolab_id = $1 and ${OPEN_SESSION}) as listening
+         from actor a left join notification_pref p on p.kolab_id = $1 and p.actor_id = a.id
+        where a.id = any($2::text[]) and a.kind = 'person'
+          and exists (select 1 from push_device d left join oauth_grant dg on dg.id = d.grant_id
+                       where d.actor_id = a.id and ${LIVE_DEVICE})
+        order by a.id`,
+      [m.kolab, recipients, opts.listening ?? [], DEFAULT_NOTIFICATION_LEVEL, m.kind === 'channel' ? m.channel_id : null])).rows;
+    const chosen = rows.filter((r) => wantsPush({
+      kind: m.kind, level: r.level, muted: r.muted, mentioned: m.kind === 'channel' && m.mentions.includes(r.actor), listening: r.listening,
+    }));
+    if (!chosen.length) return 0;
+    const title = m.kind === 'dm' ? m.from : `${m.from} in #${m.channel}`;
+    const body = this.push.preview ? [...m.message].slice(0, PUSH_PREVIEW_CHARS).join('') : undefined;
+    const data: PushData = m.kind === 'dm'
+      ? { team: m.kolab, kind: 'dm', with: m.from, message_id: m.id }
+      : { team: m.kolab, kind: 'channel', channel: m.channel, message_id: m.id };
+    const notifications: PushNotification[] = [];
+    // No words for a person who hides them, whatever the server's own setting.
+    for (const r of chosen) notifications.push({ actor: r.actor, title, ...(body === undefined || r.hide ? {} : { body }), data, badge: await this.badgeOf(r.actor) });
+    await this.inTransaction(async (tx) => {
+      await tx.exec('set local role kj_system');
+      await tx.query(`insert into outbox(id, kind, version_id, kolab_id, payload) values ($1, 'push', null, $2, $3)`,
+        [outboxId(), m.kolab, JSON.stringify({ message: m.id, notifications } satisfies PushPayload)]);
+      await this.notifyWork(tx);
+    });
+    this.wake();
+    return notifications.length;
+  }
+
+  /**
+   * A push job's work: each person's push to each of their live devices, through `push.send`,
+   * PUSH_BATCH at a time. A device whose token comes back unregistered is forgotten. Each batch sent is recorded on the job, so a job retried after
+   * the service failed part way (send throws: the outbox retries it with backoff) sends each once.
+   * With push off since it was queued, it is dropped, and says so.
+   */
+  private async pushJob(job: OutboxJob, claim: Claim): Promise<void> {
+    const send = this.push.send;
+    const p = job.payload as PushPayload | null;
+    if (!send) {
+      log.warn(`push job ${job.id} dropped: push is off on this Kolab`, { event: 'push_dropped', id: job.id, kolab: job.kolab_id });
+      return;
+    }
+    if (!p?.notifications?.length) return;
+    const sent = new Set(p.sent ?? []);
+    const devices = (await this.db.query<{ token: string; actor_id: string }>(
+      `select d.token, d.actor_id from push_device d left join oauth_grant dg on dg.id = d.grant_id
+        where d.actor_id = any($1::text[]) and ${LIVE_DEVICE} order by d.actor_id, d.token`,
+      [p.notifications.map((n) => n.actor)])).rows;
+    const of = new Map(p.notifications.map((n) => [n.actor, n]));
+    const messages: PushMessage[] = devices.filter((d) => !sent.has(d.token)).map((d) => {
+      const { actor: _, ...n } = of.get(d.actor_id)!;
+      return { to: d.token, ...n, sound: 'default' as const };
+    });
+    for (let i = 0; i < messages.length; i += PUSH_BATCH) {
+      claim.check();
+      const batch = messages.slice(i, i + PUSH_BATCH);
+      const tickets = await send(batch);
+      const gone: string[] = [];
+      batch.forEach((msg, j) => {
+        sent.add(msg.to);
+        const t = tickets[j];
+        if (t?.ok) return;
+        if (t?.unregistered) gone.push(msg.to);
+        else log.warn(`a push of message ${p.message} in kolab ${job.kolab_id} was refused: ${t?.error ?? 'no ticket came back for it'}`, { event: 'push_refused', kolab: job.kolab_id, error: t?.error });
+      });
+      if (gone.length) {
+        const forgot = await this.db.query(`delete from push_device where token = any($1::text[]) returning token`, [gone]);
+        log.info(`forgot ${forgot.rows.length} device(s) Expo says are no longer registered`, { event: 'push_device_forgotten', kolab: job.kolab_id, devices: forgot.rows.length });
+      }
+      await this.db.query(`update outbox set payload = jsonb_set(payload, '{sent}', $2::jsonb) where claim = $1`, [claim.token, JSON.stringify([...sent])]);
+    }
   }
 
   // ---- leases in a kolab (migration 0054) ----------------------------------------
