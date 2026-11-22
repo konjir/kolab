@@ -207,17 +207,17 @@ test(`a person keeps at most ${MAX_PUSH_DEVICES} devices, across their teams: on
 
 test('notification prefs: mentions_and_dms and nothing muted by default; a level and muted channels by name, which stay when left out; unknown channels and levels refused', async () => {
   const { kolab, bo } = await hub();
-  expect(await kolab.notificationPrefs(bo)).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false });
+  expect(await kolab.notificationPrefs(bo)).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false, agents: { 'bo-claude': 'stuck' } });
   await kolab.makeChannel(bo, 'deploys');
   await kolab.makeChannel(bo, 'alerts');
   expect(await kolab.setNotificationPrefs(bo, { level: 'all', muted_channels: ['#deploys', 'alerts', 'deploys'] }))
-    .toStrictEqual({ kolab: 'hub', level: 'all', muted_channels: ['alerts', 'deploys'], hide_preview: false });
-  expect(await kolab.setNotificationPrefs(bo, { level: 'none' })).toStrictEqual({ kolab: 'hub', level: 'none', muted_channels: ['alerts', 'deploys'], hide_preview: false });
-  expect(await kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms', muted_channels: [], hide_preview: false })).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false });
+    .toStrictEqual({ kolab: 'hub', level: 'all', muted_channels: ['alerts', 'deploys'], hide_preview: false, agents: { 'bo-claude': 'stuck' } });
+  expect(await kolab.setNotificationPrefs(bo, { level: 'none' })).toStrictEqual({ kolab: 'hub', level: 'none', muted_channels: ['alerts', 'deploys'], hide_preview: false, agents: { 'bo-claude': 'stuck' } });
+  expect(await kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms', muted_channels: [], hide_preview: false, agents: { 'bo-claude': 'stuck' } })).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false, agents: { 'bo-claude': 'stuck' } });
   expect(await rejection(kolab.setNotificationPrefs(bo, { level: 'all', muted_channels: ['nope', 'general'] }))).toMatch(/LimitError: kolab hub has no channel #nope/);
   expect(await rejection(kolab.setNotificationPrefs(bo, { level: 'loud' }))).toMatch(/LimitError: level is one of all, mentions_and_dms, none/);
   expect(await rejection(kolab.setNotificationPrefs(bo, { level: 'all', muted_channels: Array.from({ length: 201 }, (_, i) => `c${i}`) }))).toMatch(/at most 200/);
-  expect(await kolab.notificationPrefs(bo)).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false });
+  expect(await kolab.notificationPrefs(bo)).toStrictEqual({ kolab: 'hub', level: 'mentions_and_dms', muted_channels: [], hide_preview: false, agents: { 'bo-claude': 'stuck' } });
 });
 
 test('a direct message to a person with a device queues one push job, which sends the sender, the start of the message, what to open and their unread', async () => {
@@ -314,7 +314,7 @@ test('hide_preview, a person\'s own choice in a team, keeps the words out of the
   const { kolab, ann, bo, cy, pushed } = await hub();
   await kolab.registerPushDevice(bo, token('b'), 'ios');
   await kolab.registerPushDevice(cy, token('c'), 'ios');
-  expect(await kolab.setNotificationPrefs(bo, { level: 'all', hide_preview: true })).toStrictEqual({ kolab: 'hub', level: 'all', muted_channels: [], hide_preview: true });
+  expect(await kolab.setNotificationPrefs(bo, { level: 'all', hide_preview: true, agents: { 'bo-claude': 'stuck' } })).toStrictEqual({ kolab: 'hub', level: 'all', muted_channels: [], hide_preview: true, agents: { 'bo-claude': 'stuck' } });
   expect(await kolab.setNotificationPrefs(bo, { level: 'all' })).toMatchObject({ hide_preview: true });
   expect(await kolab.notificationPrefs(bo)).toMatchObject({ hide_preview: true });
   await kolab.sendChannelMessage(ann, 'general', 'the plan, @bo @cy', { mentions: ['bo', 'cy'] });
@@ -574,4 +574,63 @@ test('a push job just short of the age limit still goes', async () => {
   await kolab.sendMessage(ann, 'bo', 'late, not stale');
   await kolab.db.query(`update outbox set created_at = clock_timestamp() - make_interval(secs => $1)`, [PUSH_MAX_AGE_S - 60]);
   expect((await pushed()).messages.map((m) => m.body)).toStrictEqual(['late, not stale']);
+});
+
+test('per-agent prefs: stuck by default, set by label for one\'s own agents only, the rest kept; never, stuck and all decide what the owner is pushed of an agent', async () => {
+  const { kolab, ann, bo, cy, agent, pushed } = await hub();
+  await kolab.registerPushDevice(bo, token('b'), 'ios');
+  expect((await kolab.notificationPrefs(bo)).agents).toStrictEqual({ 'bo-claude': 'stuck' });
+  expect((await kolab.notificationPrefs(ann)).agents).toStrictEqual({});
+  expect(await rejection(kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms', agents: { claude: 'loud' } }))).toMatch(/LimitError: each agent's choice is one of never, stuck, all/);
+  expect(await rejection(kolab.setNotificationPrefs(ann, { level: 'mentions_and_dms', agents: { 'bo/claude': 'all' } }))).toMatch(/LimitError: bo\/claude names no agent of yours in kolab hub/);
+  const agentPushes = async () => (await pushed()).messages.filter((m) => m.data.kind === 'agent');
+
+  // stuck, the default: nothing runs as it (no listen stream, no state), so a direct message to it says so, once an hour.
+  const d1 = await kolab.sendMessage(ann, 'bo-claude', 'are you there?');
+  expect((await agentPushes()).map((m) => [m.title, m.body, m.data])).toStrictEqual([[
+    "bo/claude isn't running", 'A message waits for it, and nothing is running as it.', { team: 'hub', kind: 'agent', agent: 'bo-claude', reason: 'not_running', message_id: d1.id, with: 'ann' },
+  ]]);
+  await kolab.sendMessage(ann, 'bo-claude', 'still there?');
+  expect(await agentPushes()).toStrictEqual([]);
+  // An hour on, again.
+  await kolab.db.query(`update notification_pref set agents_stuck_pushed = '{"bo-claude": "2000-01-01T00:00:00Z"}' where actor_id = 'bo'`);
+  await kolab.sendMessage(cy, 'bo-claude', 'hello?');
+  expect((await agentPushes()).map((m) => m.data)).toMatchObject([{ reason: 'not_running' }]);
+  // Running: no stuck push. A message from Bo himself: none either.
+  kolab.push.agentRunning = () => true;
+  await kolab.db.query(`update notification_pref set agents_stuck_pushed = '{}'`);
+  await kolab.sendMessage(ann, 'bo-claude', 'while it runs');
+  expect(await agentPushes()).toStrictEqual([]);
+
+  // all: each direct message to it, and each mention of it, from someone else; by label.
+  expect((await kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms', agents: { claude: 'all' } })).agents).toStrictEqual({ 'bo-claude': 'all' });
+  const d2 = await kolab.sendMessage(ann, 'bo-claude', 'the plan');
+  expect((await agentPushes()).map((m) => [m.title, m.body, m.data])).toStrictEqual([['ann to bo/claude', 'the plan', { team: 'hub', kind: 'agent', agent: 'bo-claude', reason: 'message', message_id: d2.id, with: 'ann' }]]);
+  const c1 = await kolab.sendChannelMessage(cy, 'general', 'over to you, @bo/claude', { mentions: ['bo/claude'] });
+  expect((await agentPushes()).map((m) => [m.title, m.data])).toStrictEqual([['cy in #general, to bo/claude', { team: 'hub', kind: 'agent', agent: 'bo-claude', reason: 'mention', message_id: c1.id, channel: 'general' }]]);
+  await kolab.sendMessage(bo, 'bo-claude', 'from Bo himself');
+  expect(await agentPushes()).toStrictEqual([]);
+  // Bo mentioned in the same message is told of it once, as himself.
+  await kolab.sendChannelMessage(cy, 'general', '@bo and @bo/claude', { mentions: ['bo', 'bo/claude'] });
+  expect((await pushed()).messages.map((m) => m.data.kind)).toStrictEqual(['channel']);
+
+  // Capped: the agent's own message that reaches the cap says so, under all or stuck, once an hour.
+  await kolab.setAgentReplyCap(ann, 2);
+  await kolab.sendChannelMessage(agent, 'general', 'one');
+  expect(await agentPushes()).toStrictEqual([]);
+  const capped = await kolab.sendChannelMessage(agent, 'general', 'two');
+  expect((await agentPushes()).map((m) => [m.title, m.data.kind === 'agent' && m.data.reason, m.data.message_id])).toStrictEqual([['bo/claude is stuck', 'capped', capped.id]]);
+  await kolab.sendChannelMessage(agent, 'general', 'past it');
+  expect(await agentPushes()).toStrictEqual([]);
+
+  // never: nothing; the agents left out keep theirs.
+  expect((await kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms', agents: { 'bo/claude': 'never' } })).agents).toStrictEqual({ 'bo-claude': 'never' });
+  expect((await kolab.setNotificationPrefs(bo, { level: 'mentions_and_dms' })).agents).toStrictEqual({ 'bo-claude': 'never' });
+  await kolab.sendMessage(ann, 'bo-claude', 'anything');
+  await kolab.sendChannelMessage(agent, 'general', 'three');
+  expect(await agentPushes()).toStrictEqual([]);
+  // Level none: nothing, whatever the agent's choice.
+  await kolab.setNotificationPrefs(bo, { level: 'none', agents: { claude: 'all' } });
+  await kolab.sendMessage(ann, 'bo-claude', 'anything');
+  expect(await agentPushes()).toStrictEqual([]);
 });

@@ -33,14 +33,15 @@ async function hub(kolab?: TestKolab) {
 test('an agent sends a message to another owner\'s agent in a kolab with no spec or work; it waits unread in their answers, is signalled, and a reply comes back', async () => {
   const { kolab, annAgent, boAgent, bo, events } = await hub();
   const sent = await kolab.sendMessage(annAgent, 'bo-claude', 'Are you taking the importer? I have the exporter.');
-  expect(sent).toStrictEqual({ id: sent.id, from: 'ann-claude', to: 'bo-claude', message: 'Are you taking the importer? I have the exporter.', reply_to: null, sent_at: sent.sent_at, read_at: null });
-  // Only the recipient's answers are signalled: no layer's inbox, and not the sender's.
-  expect(events).toStrictEqual([{ inbox: 'actor', kolab: 'hub', actor: 'bo-claude' }]);
+  // Each agent's owner reads it, and the result says so (Lee, 2026-11-22).
+  expect(sent).toStrictEqual({ id: sent.id, from: 'ann-claude', to: 'bo-claude', message: 'Are you taking the importer? I have the exporter.', reply_to: null, sent_at: sent.sent_at, read_at: null, readable_by: ['ann', 'bo'] });
+  // The recipient's answers are signalled, and each agent's owner's, unchanged: no layer's inbox, and not the sender's.
+  expect(events).toStrictEqual([{ inbox: 'actor', kolab: 'hub', actor: 'bo-claude' }, { inbox: 'actor', kolab: 'hub', actor: 'ann' }, { inbox: 'actor', kolab: 'hub', actor: 'bo' }]);
 
   // It waits unread; looking at the answers marks nothing.
   expect(await kolab.unreadMessages(boAgent)).toStrictEqual({ unread: 1, items: [sent] });
   expect(await kolab.unreadMessages(boAgent)).toStrictEqual({ unread: 1, items: [sent] });
-  // No one else reads it: not the sender as its own, not the recipient's owner.
+  // It is no one else's own: not the sender's unread, not the recipient's owner's (who reads it with konjir_list_agent_messages).
   expect(await kolab.unreadMessages(annAgent)).toStrictEqual({ unread: 0, items: [] });
   expect(await kolab.unreadMessages(bo)).toStrictEqual({ unread: 0, items: [] });
   expect((await kolab.messagesPage(bo)).items).toStrictEqual([]);
@@ -57,7 +58,7 @@ test('an agent sends a message to another owner\'s agent in a kolab with no spec
   events.length = 0;
   const reply = await kolab.sendMessage(boAgent, 'ann-claude', 'Yes, the importer is mine.', { replyTo: sent.id });
   expect(reply).toMatchObject({ from: 'bo-claude', to: 'ann-claude', reply_to: sent.id, read_at: null });
-  expect(events).toStrictEqual([{ inbox: 'actor', kolab: 'hub', actor: 'ann-claude' }]);
+  expect(events).toStrictEqual([{ inbox: 'actor', kolab: 'hub', actor: 'ann-claude' }, { inbox: 'actor', kolab: 'hub', actor: 'bo' }, { inbox: 'actor', kolab: 'hub', actor: 'ann' }]);
   expect((await kolab.unreadMessages(annAgent)).items).toStrictEqual([reply]);
 
   // Each side lists the exchange, newest first; the sender sees when theirs was read.
@@ -149,15 +150,15 @@ test('members are listed by name for any member, with who is here now, and never
     kolab: 'hub', next: null,
     items: [
       { actor: 'ann', kind: 'person', owner: null, login: null, github_id: null, here: true },
-      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, github_id: null, here: false },
+      { actor: 'ann-claude', kind: 'agent', owner: 'ann', label: 'claude', login: null, github_id: null, here: false, owner_reads: true },
       { actor: 'bo', kind: 'person', owner: null, login: null, github_id: null, here: true },
-      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, github_id: null, here: true, you: true },
+      { actor: 'bo-claude', kind: 'agent', owner: 'bo', label: 'claude', login: null, github_id: null, here: true, owner_reads: true, you: true },
     ],
   });
   // An agent's label is its own field, so it can be named <owner>/<label>; one named otherwise has none.
   await kolab.addActor('helper', { owner: 'bo' });
   await kolab.grant('hub', 'helper', 'write');
-  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, login: null, github_id: null, here: false });
+  expect((await kolab.membersPage(ann)).items.find((m) => m.actor === 'helper')).toStrictEqual({ actor: 'helper', kind: 'agent', owner: 'bo', label: null, login: null, github_id: null, here: false, owner_reads: true });
   // A page at a time, by name; a cursor from another list is refused.
   const first = await kolab.membersPage(ann, { limit: 3 });
   expect(first.items.map((m) => m.actor)).toStrictEqual(['ann', 'ann-claude', 'bo']);

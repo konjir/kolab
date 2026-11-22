@@ -833,6 +833,12 @@ export interface Message {
   sent_at: string;
   /** When its recipient read it (konjir_read_messages); null while it is unread. */
   read_at: string | null;
+  /**
+   * Who else reads it (Lee's decision, 2026-11-22): the owner of each agent in the conversation, a
+   * person who is a member of the kolab, other than the two in it, by name (konjir_list_agent_messages).
+   * Present only when someone does.
+   */
+  readable_by?: string[];
 }
 /**
  * One of a member's direct conversations (konjir_list_conversations): the member they talk with,
@@ -845,6 +851,53 @@ export interface Conversation {
   unread: number;
   unread_more: boolean;
   last_at: string;
+  /** Who else reads the conversation, as Message's readable_by: an agent's owner. Present only when someone does. */
+  readable_by?: string[];
+}
+
+/**
+ * One item of konjir_agent_activity: a message one of the caller's own agents sent or received in
+ * the kolab, newest first. `agent` is which of theirs it is about: its sender when that is theirs,
+ * else a direct message's recipient, else the first of theirs (by name) a channel message mentions.
+ * `capped` when an agent sent it past the kolab's agent_reply_cap, so it woke no agent.
+ */
+export interface AgentActivityItem {
+  kind: 'channel' | 'dm';
+  agent: string;
+  id: string;
+  from: string;
+  /** A direct message's recipient. */
+  to?: string;
+  /** A channel message's channel. */
+  channel?: string;
+  message: string;
+  reply_to: string | null;
+  /** A channel message's mentions, by name. */
+  mentions?: string[];
+  sent_at: string;
+  capped?: true;
+}
+
+/**
+ * One of the caller's own agents in the kolab, for konnect's app's Home (konjir_list_my_agents_status):
+ * its state and `here` as konjir_list_members gives them, its newest message either way (`last`,
+ * its first AGENT_SUMMARY_CHARS characters), its own unread (direct messages and channel mentions it
+ * hasn't read), and what it needs of its owner: `mentioned_unread`, its direct messages to them and
+ * its channel messages mentioning them that they haven't read (up to UNREAD_COUNT_CEILING);
+ * `capped`, its run has reached the kolab's agent_reply_cap, so its further messages wake no agent
+ * until a person writes; `not_running_with_unread`, nothing runs as it (state null) while it has
+ * unread.
+ */
+export interface AgentStatus {
+  agent: string;
+  label: string | null;
+  state: import('./limits.js').AgentState | null;
+  here: boolean;
+  last: { kind: 'channel' | 'dm'; at: string; summary: string } | null;
+  unread: number;
+  /** The channels it follows or was mentioned in, by name, each with its own unread there (as konjir_list_channels counts an agent's). */
+  channels: { channel: string; unread: number }[];
+  needs_you: { mentioned_unread: number; capped: boolean; not_running_with_unread: boolean };
 }
 /** A device a person's konnect app registered for push in a team (konjir_register_push_device). */
 export interface PushDevice {
@@ -862,11 +915,19 @@ export interface NotificationPrefs {
   level: import('./limits.js').NotificationLevel;
   muted_channels: string[];
   hide_preview: boolean;
+  /** For each of the person's own agents in the kolab, by name, what they are pushed of it: AGENT_NOTIFY_LEVELS, stuck by default. */
+  agents: Record<string, import('./limits.js').AgentNotifyLevel>;
 }
 /** What a push carries for the app to open: the team, and the conversation and message it is about. */
 export type PushData =
   | { team: string; kind: 'dm'; with: string; message_id: string }
-  | { team: string; kind: 'channel'; channel: string; message_id: string };
+  | { team: string; kind: 'channel'; channel: string; message_id: string }
+  /**
+   * A push about one of the person's own agents (their prefs' `agents`), to open its screen: a
+   * direct message to it (`message`) or a mention of it (`mention`, with `channel`), or that it is
+   * stuck: `capped` at the kolab's agent_reply_cap, or `not_running` while a message waits for it.
+   */
+  | { team: string; kind: 'agent'; agent: string; reason: 'message' | 'mention' | 'capped' | 'not_running'; message_id: string; with?: string; channel?: string };
 /**
  * One person's push about one message, as a push job carries it: a title (the sender and, for a
  * channel, `#channel`), the start of the message unless previews are off (on the server, or by
@@ -918,6 +979,11 @@ export interface Member {
    * message waits. This, not `here`, says whether it will answer now.
    */
   state?: import('./limits.js').AgentState | null;
+  /**
+   * Only an agent's entry has it, true when its owner is a person who is a member of the kolab: its
+   * owner can read its direct messages (konjir_list_agent_messages; Lee's decision, 2026-11-22).
+   */
+  owner_reads?: true;
   you?: true;
 }
 

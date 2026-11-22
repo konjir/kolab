@@ -2,7 +2,7 @@
 
 konnect is a command-line chat for a team's people and their AI agents, across machines. A message addressed to an agent wakes it, with nobody typing, and its answer comes back the same way. This page sets it up in three commands and shows the common uses.
 
-A team has channels, which every member reads and sends to, and direct messages, which only the two members in them can read. An agent is a member too, named after its owner: `@ada/laptop` is Ada's agent `laptop`.
+A team has channels, which every member reads and sends to, and direct messages, which only the two members in them can read, and an agent's owner, who can read their agent's direct messages in konnect's phone app. An agent is a member too, named after its owner: `@ada/laptop` is Ada's agent `laptop`.
 
 ## Set up
 
@@ -276,8 +276,10 @@ DESCRIPTION
        messages from the command line, across machines.
 
        A team has channels, which every member can read and send to, and
-       direct messages, which only the two members in them can read.  Messages
-       are kept for as long as the team is.
+       direct messages, which only the two members in them can read, and an
+       agent's owner: the person who owns an agent can read its direct
+       messages, in konnect's phone app (this command doesn't show them
+       yet).  Messages are kept for as long as the team is.
 
        An agent runs in a harness, such as Claude Code.  A message addressed
        to an agent wakes it: a turn starts in it with nobody typing.  An agent

@@ -3,7 +3,8 @@ import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
 import { Kolab, maskTokens, type PushMessage, type PushSend, type PushTicket } from '@konjir/engine';
 import { log } from '@konjir/log';
-import { MAX_CHANNELS, MAX_PUSH_DEVICES, NOTIFICATION_LEVELS, PUSH_BATCH, PUSH_PLATFORMS, PUSH_PREVIEW_CHARS } from '@konjir/types';
+import { AGENT_NOTIFY_LEVELS, MAX_CHANNELS, MAX_PUSH_DEVICES, NOTIFICATION_LEVELS, PUSH_BATCH, PUSH_PLATFORMS, PUSH_PREVIEW_CHARS } from '@konjir/types';
+import { AgentStates } from './agent-states.js';
 import { args } from './args.js';
 import { ListenStreams } from './listen-streams.js';
 import { asAgent } from './results.js';
@@ -86,11 +87,13 @@ export function expoSender(opts: { accessToken: string; fetch?: typeof fetch; ur
 export class PushNotifications implements OnModuleInit, OnModuleDestroy {
   private sender?: PushSend;
   private listening?: () => string[];
+  private running?: (kolab: string, agent: string) => boolean;
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
     @Inject(ListenStreams) private readonly streams: ListenStreams,
     @Inject(PUSH_OPTIONS) private readonly options: PushOptions,
+    @Inject(AgentStates) private readonly states: AgentStates,
   ) {}
 
   onModuleInit() {
@@ -103,6 +106,9 @@ export class PushNotifications implements OnModuleInit, OnModuleDestroy {
     this.kolab.push.preview = this.options.preview;
     this.listening = () => this.streams.listeningSessions();
     this.kolab.push.listening = this.listening;
+    // Something runs as an agent while it has said so lately (konjir_say_state), as konjir_list_members' state reads it.
+    this.running = (kolab, agent) => this.states.stateOf(kolab, agent) !== null;
+    this.kolab.push.agentRunning = this.running;
   }
 
   /**
@@ -111,6 +117,7 @@ export class PushNotifications implements OnModuleInit, OnModuleDestroy {
    */
   onModuleDestroy() {
     if (this.listening && this.kolab.push.listening === this.listening) this.kolab.push.listening = null;
+    if (this.running && this.kolab.push.agentRunning === this.running) this.kolab.push.agentRunning = null;
   }
 }
 
@@ -123,6 +130,7 @@ const setNotificationPrefs = args({
   level: z.enum(NOTIFICATION_LEVELS).describe('all: every direct message, and every message in a channel you follow or that mentions you. mentions_and_dms: direct messages and mentions only (the default). none: nothing'),
   muted_channels: z.array(z.string()).optional().describe(`The channels to mute, by name, at most ${MAX_CHANNELS}: nothing is pushed from them, mentions included. They replace those muted before; left out, those stay`),
   hide_preview: z.boolean().optional().describe('true: your pushes say who sent a message and where, never its words. Left out, it stays as it was (false at first)'),
+  agents: z.record(z.string(), z.enum(AGENT_NOTIFY_LEVELS)).optional().describe('For your own agents in this kolab, by label (or <you>/<label>): never, nothing about it; stuck (the default), a push when it is stuck, capped at the reply cap or not running while a message waits for it, at most once an hour; all, besides, each direct message to it and each mention of it from someone else. The agents it leaves out keep their choice'),
 });
 const noArgs = args({});
 
@@ -157,17 +165,17 @@ export class PushTools {
 
   @McpTool({
     name: 'konjir_set_notification_prefs',
-    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: choose what this kolab, the one this session is in, pushes to your devices; each of your kolabs has its own. level is all, mentions_and_dms (the default) or none; muted_channels, when given, replaces the channels you mute, by name, which push nothing, mentions included; hide_preview, when given, true keeps every word of a message out of your pushes, which then say only who sent it and where. Nothing from this kolab is pushed while a listen stream of yours is open in it. Returns { kolab, level, muted_channels, hide_preview }.',
+    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: choose what this kolab, the one this session is in, pushes to your devices; each of your kolabs has its own. level is all, mentions_and_dms (the default) or none; muted_channels, when given, replaces the channels you mute, by name, which push nothing, mentions included; hide_preview, when given, true keeps every word of a message out of your pushes, which then say only who sent it and where. agents, when given, sets what you are pushed of each of your own agents here it names (never, stuck or all), the rest keeping theirs; a push about an agent has data { team, kind: agent, agent, reason: message, mention, capped or not_running, message_id, with or channel }. Nothing from this kolab is pushed while a listen stream of yours is open in it. Returns { kolab, level, muted_channels, hide_preview, agents }.',
     schema: setNotificationPrefs,
     annotations: { idempotentHint: true },
   })
-  setNotificationPrefs({ level, muted_channels, hide_preview }: z.infer<typeof setNotificationPrefs>, context?: McpToolContext) {
-    return asAgent(context, (s) => this.kolab.setNotificationPrefs(s, { level, muted_channels, hide_preview }));
+  setNotificationPrefs({ level, muted_channels, hide_preview, agents }: z.infer<typeof setNotificationPrefs>, context?: McpToolContext) {
+    return asAgent(context, (s) => this.kolab.setNotificationPrefs(s, { level, muted_channels, hide_preview, agents }));
   }
 
   @McpTool({
     name: 'konjir_get_notification_prefs',
-    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: what your kolab pushes to your devices, as konjir_set_notification_prefs set it: { kolab, level, muted_channels, hide_preview }, mentions_and_dms, none muted and previews shown until you choose.',
+    description: 'For a person\'s own session in konnect\'s app only, never an agent\'s nor any other app\'s: what your kolab pushes to your devices, as konjir_set_notification_prefs set it: { kolab, level, muted_channels, hide_preview, agents }, mentions_and_dms, none muted, previews shown and each of your agents here stuck until you choose.',
     schema: noArgs,
     annotations: { readOnlyHint: true },
   })

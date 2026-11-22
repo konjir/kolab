@@ -36,7 +36,8 @@ test('one row per member talked with, either way, newest first, each with the ne
   const page = await kolab.conversationsPage(ann);
   expect(page.next).toBeNull();
   expect(page.items).toStrictEqual([
-    { with: 'bo-claude', last: fromAgent, unread: 1, unread_more: false, last_at: fromAgent.sent_at },
+    // Bo reads his agent's conversations, and it says so (Lee, 2026-11-22).
+    { with: 'bo-claude', last: fromAgent, unread: 1, unread_more: false, last_at: fromAgent.sent_at, readable_by: ['bo'] },
     { with: 'cy', last: fromCy2, unread: 2, unread_more: false, last_at: fromCy2.sent_at },
     { with: 'bo', last: toBo, unread: 0, unread_more: false, last_at: toBo.sent_at },
   ]);
