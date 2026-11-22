@@ -21,9 +21,10 @@
 // "//". Every other request passes.
 // Two paths are served as they are, never redirected, as Apple and Google require: konnect's app
 // links, /.well-known/apple-app-site-association and /.well-known/assetlinks.json (all of
-// /.well-known/ passes as it came), and konnect's app's sign-in redirect, /konnect/app/oauth, which
-// is served from /konnect/app/oauth/index.html in place, so the code in its query is never sent
-// anywhere again by a redirect; the page never reads it.
+// /.well-known/ passes as it came), and konnect's app's sign-in redirects, /konnect/app/oauth for
+// the production build and /konnect/app/preview/oauth for the preview build, each served from its
+// own index.html in place, so the code in its query is never sent anywhere again by a redirect;
+// the page never reads it.
 // Tested in apps/cli/test/site-www-redirect.test.ts.
 function handler(event) {
   var request = event.request;
@@ -53,8 +54,8 @@ function handler(event) {
   if (host === '${apex}') return uri.charAt(0) === '/' ? redirect('https://${www}' + (moved || uri)) : request;
   if (moved) return redirect(moved);
   if (uri.indexOf('/.well-known/') === 0) return request;
-  if (uri === '/konnect/app/oauth') {
-    request.uri = '/konnect/app/oauth/index.html';
+  if (uri === '/konnect/app/oauth' || uri === '/konnect/app/preview/oauth') {
+    request.uri = uri + '/index.html';
     return request;
   }
   if (uri.charAt(uri.length - 1) === '/') {

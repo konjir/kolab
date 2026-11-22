@@ -14,10 +14,12 @@
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
 //   /konnect/app/oauth/  site/src/konnect-app/main.html, the page konnect's app's sign-in lands on
 //                     when the app doesn't take the link (noindex, in no sitemap)
+//   /konnect/app/preview/oauth/  the same page, for konnect's preview build's own sign-in path
 //
 // And konnect's app links, from deploy/app-links.json: /.well-known/apple-app-site-association and
 // /.well-known/assetlinks.json, which let only konnect's signed app take its sign-in's https
-// redirect, /konnect/app/oauth. Each is written only once Lee's ids are filled in there, and
+// redirect, /konnect/app/oauth for the production build and /konnect/app/preview/oauth for the
+// preview build, each app only its own. Each is written only once Lee's ids are filled in there, and
 // otherwise left out, and said so: failing closed, no app is ever claimed for that path.
 //
 // site/src/site.css is the stylesheet every page shares, and site/src/kolab/footer.html the footer
@@ -123,10 +125,13 @@ const PAGES = [
   { path: '/konnect/', section: 'konnect', main: 'konnect/main.html', title: 'konnect: chat for your team’s people and their AI agents' },
   { path: '/konnect/guide/', section: 'konnect', article: 'konnect/guide.md', kicker: 'Guide', contents: 'Sections', what: 'guide' },
   // konnect's app's sign-in redirect, https://www.konjir.com/konnect/app/oauth (APP_REDIRECT_URI in
-  // libs/engine): its Universal Link and App Link open the app; without the app, this page says so. It
-  // runs no script of its own and never reads the URL, so the code a sign-in sends there is never shown
-  // or used; the CloudFront Function serves /konnect/app/oauth from it without a redirect.
+  // libs/engine), and its preview build's, /konnect/app/preview/oauth (APP_PREVIEW_REDIRECT_URI), a
+  // path of its own so that with both builds installed each catches only its own: its Universal Link
+  // and App Link open the app; without the app, this page says so. It runs no script of its own and
+  // never reads the URL, so the code a sign-in sends there is never shown or used; the CloudFront
+  // Function serves both paths from it without a redirect.
   { path: '/konnect/app/oauth/', section: 'konnect', main: 'konnect-app/main.html', title: 'Open konnect to finish signing in', noindex: true },
+  { path: '/konnect/app/preview/oauth/', section: 'konnect', main: 'konnect-app/main.html', title: 'Open konnect to finish signing in', noindex: true },
 ];
 for (const p of PAGES) {
   if (!/^\/(?:[a-z0-9-]+\/)*$/.test(p.path)) fail(`a page path must be /, or /<folder>/…/: ${p.path}`);
@@ -475,7 +480,12 @@ copyFileSync(join(repo, 'brand', 'konjir-mark-tile.svg'), outPath('favicon.svg')
 // and the build says so on stdout. So until then no app is claimed for the path, and the sign-in's
 // redirect opens the page above.
 const links = JSON.parse(readFileSync(join(here, 'app-links.json'), 'utf8'));
-if (links.path !== '/konnect/app/oauth' || !PAGES.some((p) => p.path === `${links.path}/`)) fail('deploy/site/app-links.json names a path that is not /konnect/app/oauth, the page above');
+// Each build's own sign-in path, and only that: production's and preview's, never one for both.
+const APP_PATHS = { 'com.konjir.konnect': '/konnect/app/oauth', 'com.konjir.konnect.preview': '/konnect/app/preview/oauth' };
+if (typeof links.paths !== 'object' || links.paths === null || JSON.stringify(Object.entries(links.paths).sort()) !== JSON.stringify(Object.entries(APP_PATHS).sort())
+  || !Object.values(APP_PATHS).every((path) => PAGES.some((p) => p.path === `${path}/`))) {
+  fail(`deploy/site/app-links.json: paths gives each build its own sign-in path, exactly ${JSON.stringify(APP_PATHS)}, each a page above`);
+}
 const BUNDLE = /^com\.konjir\.konnect(\.preview)?$/;
 const said = [];
 const wellKnown = (name, body) => {
@@ -494,8 +504,9 @@ if (links.apple_team_id === null) {
 } else {
   if (typeof links.apple_team_id !== 'string' || !/^[A-Z0-9]{10}$/.test(links.apple_team_id)) fail('deploy/site/app-links.json: apple_team_id is the Apple Developer team\'s id, 10 capital letters and digits, or null');
   const apps = links.ios_bundle_ids.map((b) => `${links.apple_team_id}.${b}`);
+  // Each app only its own path, so with both installed the right one takes each sign-in.
   wellKnown('apple-app-site-association', {
-    applinks: { details: [{ appIDs: apps, components: [{ '/': links.path, comment: 'konnect\'s sign-in redirect, and nothing else on this site' }] }] },
+    applinks: { details: links.ios_bundle_ids.map((b) => ({ appIDs: [`${links.apple_team_id}.${b}`], components: [{ '/': links.paths[b], comment: 'konnect\'s sign-in redirect for this build, and nothing else on this site' }] })) },
     webcredentials: { apps },
   });
 }

@@ -317,6 +317,16 @@ export function loopbackRedirect(uri: string): boolean {
 export const APP_REDIRECT_URI = 'https://www.konjir.com/konnect/app/oauth';
 
 /**
+ * konnect's preview build's redirect URI: the same as APP_REDIRECT_URI, on a path of its own, so a
+ * phone with both builds installed hands each its own sign-in (Android verifies App Links per
+ * package, and either app would otherwise catch the other's link). Matched as a string, exactly.
+ */
+export const APP_PREVIEW_REDIRECT_URI = 'https://www.konjir.com/konnect/app/preview/oauth';
+
+/** The app's https redirect URIs, production's and preview's, each the app's on every Kolab (appRedirect). */
+export const APP_HTTPS_REDIRECT_URIS: readonly string[] = [APP_REDIRECT_URI, APP_PREVIEW_REDIRECT_URI];
+
+/**
  * The private-use URI schemes of konnect's development and preview builds (RFC 8252 §7.1), allowed
  * only on a Kolab configured to (KONJIR_APP_DEV_SCHEMES=on: local-kolab and tests, never
  * production), since any app may claim a scheme. Named one by one: no other app's scheme is ever a
@@ -335,11 +345,11 @@ export const APP_DEV_REDIRECT_URIS: readonly string[] = APP_DEV_SCHEMES.map((s) 
 
 /**
  * Whether a redirect URI is konnect's own app's, on the person's own phone or computer: exactly
- * APP_REDIRECT_URI, or, with `devSchemes` (the Kolab's appRedirects.devSchemes), exactly one of
- * APP_DEV_REDIRECT_URIS.
+ * one of APP_HTTPS_REDIRECT_URIS (production's and preview's), or, with `devSchemes` (the Kolab's
+ * appRedirects.devSchemes), exactly one of APP_DEV_REDIRECT_URIS.
  */
 export function appRedirect(uri: string, devSchemes: boolean): boolean {
-  return typeof uri === 'string' && (uri === APP_REDIRECT_URI || (devSchemes && APP_DEV_REDIRECT_URIS.includes(uri)));
+  return typeof uri === 'string' && (APP_HTTPS_REDIRECT_URIS.includes(uri) || (devSchemes && APP_DEV_REDIRECT_URIS.includes(uri)));
 }
 
 /** Whether every one of a client's redirect URIs is konnect's own app's (appRedirect): the app's own client. */
@@ -869,7 +879,7 @@ export class Kolab {
    */
   readonly push: { send: PushSend | null; preview: boolean; listening: (() => string[]) | null } = { send: null, preview: true, listening: null };
   /**
-   * Which redirect URIs are konnect's own app's (appRedirect): always APP_REDIRECT_URI, and, with
+   * Which redirect URIs are konnect's own app's (appRedirect): always APP_HTTPS_REDIRECT_URIS, and, with
    * `devSchemes`, its development builds' private-use schemes, for local-kolab and tests
    * (KONJIR_APP_DEV_SCHEMES=on, startServer). Off unless set.
    */

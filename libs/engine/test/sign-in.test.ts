@@ -3,7 +3,7 @@
 // row-level security refusing an expired or rotated token on its own.
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
-import { APP_DEV_REDIRECT_URIS, APP_REDIRECT_URI, Kolab, OAuthGrantError, appRedirect, onPersonsDevice, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
+import { APP_DEV_REDIRECT_URIS, APP_HTTPS_REDIRECT_URIS, APP_PREVIEW_REDIRECT_URI, APP_REDIRECT_URI, Kolab, OAuthGrantError, appRedirect, onPersonsDevice, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
 import { els, openKolab, people, persistentStore, rejection } from '../src/testing.js';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -112,11 +112,17 @@ test('redirect URIs: https, or http only on loopback (any port there); never ano
 
 test('konnect\'s own app\'s redirect URIs: its https link always, its development builds\' <scheme>:/oauth only where allowed, and the production scheme never; matched as strings, no look-alike, other form, case, query, fragment or host', async () => {
   const dev = ['com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth'];
-  expect([APP_REDIRECT_URI, APP_DEV_REDIRECT_URIS]).toStrictEqual(['https://www.konjir.com/konnect/app/oauth', dev]);
-  // The https link: the app's on every Kolab, and a valid https redirect anywhere.
+  expect([APP_REDIRECT_URI, APP_PREVIEW_REDIRECT_URI, APP_DEV_REDIRECT_URIS]).toStrictEqual(['https://www.konjir.com/konnect/app/oauth', 'https://www.konjir.com/konnect/app/preview/oauth', dev]);
+  expect(APP_HTTPS_REDIRECT_URIS).toStrictEqual([APP_REDIRECT_URI, APP_PREVIEW_REDIRECT_URI]);
+  // The https links, production's and preview's, each on its own path: the app's on every Kolab, and a valid https redirect anywhere.
   for (const devSchemes of [false, true]) {
-    expect([devSchemes, validRedirectUri(APP_REDIRECT_URI, devSchemes), appRedirect(APP_REDIRECT_URI, devSchemes)]).toStrictEqual([devSchemes, true, true]);
+    for (const link of APP_HTTPS_REDIRECT_URIS) {
+      expect([devSchemes, link, validRedirectUri(link, devSchemes), appRedirect(link, devSchemes)]).toStrictEqual([devSchemes, link, true, true]);
+    }
   }
+  // One build's link never stands in for the other's.
+  expect(redirectUriMatches([APP_REDIRECT_URI], APP_PREVIEW_REDIRECT_URI)).toBe(false);
+  expect(redirectUriMatches([APP_PREVIEW_REDIRECT_URI], APP_REDIRECT_URI)).toBe(false);
   // The development builds' schemes: only where allowed.
   for (const ok of dev) {
     expect([ok, validRedirectUri(ok, true), appRedirect(ok, true), redirectUriMatches([ok], ok, true)]).toStrictEqual([ok, true, true, true]);
@@ -127,7 +133,9 @@ test('konnect\'s own app\'s redirect URIs: its https link always, its developmen
   expect([validRedirectUri('com.konjir.konnect:/oauth', true), appRedirect('com.konjir.konnect:/oauth', true)]).toStrictEqual([false, false]);
   // Look-alikes of the https link are https redirects like any other, never the app's.
   for (const other of ['https://www.konjir.com/konnect/app/oauth/', 'https://www.konjir.com/konnect/app/oauth?x=1', 'https://konjir.com/konnect/app/oauth',
-    'https://www.konjir.com/konnect/app/OAUTH', 'https://WWW.konjir.com/konnect/app/oauth', 'https://www.konjir.com:443/konnect/app/oauth', 'https://www.konjir.com.evil.example/konnect/app/oauth']) {
+    'https://www.konjir.com/konnect/app/OAUTH', 'https://WWW.konjir.com/konnect/app/oauth', 'https://www.konjir.com:443/konnect/app/oauth', 'https://www.konjir.com.evil.example/konnect/app/oauth',
+    'https://www.konjir.com/konnect/app/preview/oauth/', 'https://www.konjir.com/konnect/app/preview/oauth?x=1', 'https://www.konjir.com/konnect/app/preview', 'https://www.konjir.com/konnect/app/dev/oauth',
+    'https://www.konjir.com/konnect/app/oauth/preview', 'https://www.konjir.com/konnect/app/Preview/oauth']) {
     expect([other, appRedirect(other, true)]).toStrictEqual([other, false]);
   }
   for (const bad of [
@@ -159,6 +167,7 @@ test('konnect\'s own app\'s redirect URIs: its https link always, its developmen
   // A Kolab that doesn't allow them, as production: the https link alone, and no scheme at all, the development builds' included.
   const production = await openKolab({ appDevSchemes: false });
   expect((await production.registerClient({ redirectUris: [APP_REDIRECT_URI] })).redirectUris).toStrictEqual([APP_REDIRECT_URI]);
+  expect((await production.registerClient({ redirectUris: [APP_PREVIEW_REDIRECT_URI] })).redirectUris).toStrictEqual([APP_PREVIEW_REDIRECT_URI]);
   for (const scheme of ['com.konjir.konnect:/oauth', ...dev]) {
     const refused = await production.registerClient({ redirectUris: [scheme] }).catch((x: unknown) => x);
     expect([scheme, (refused as OAuthGrantError).message]).toStrictEqual([scheme, `${scheme} isn't a redirect URI Kolab sends codes to: use https, or http on a loopback address, with no fragment or credentials`]);
@@ -168,6 +177,8 @@ test('konnect\'s own app\'s redirect URIs: its https link always, its developmen
 test('a client is on the person\'s own device when every redirect URI is loopback, or every one is konnect\'s own app\'s; never a mix', () => {
   expect(onPersonsDevice(['http://127.0.0.1:9/cb', 'http://[::1]:9/cb'], false)).toBe(true);
   expect(onPersonsDevice([APP_REDIRECT_URI], false)).toBe(true);
+  expect(onPersonsDevice([APP_PREVIEW_REDIRECT_URI], false)).toBe(true);
+  expect(onPersonsDevice([APP_PREVIEW_REDIRECT_URI, 'https://app.example/cb'], false)).toBe(false);
   expect(onPersonsDevice([APP_REDIRECT_URI, 'com.konjir.konnect.dev:/oauth', 'com.konjir.konnect.preview:/oauth'], true)).toBe(true);
   // A development build's scheme counts only where it is allowed.
   expect(onPersonsDevice(['com.konjir.konnect.dev:/oauth'], false)).toBe(false);

@@ -11,7 +11,8 @@
 #  - security headers on every response, a strict CSP among them
 #  - konnect's app links, /.well-known/apple-app-site-association (as JSON, though it has no
 #    extension) and /.well-known/assetlinks.json, when the build wrote them, served as they are,
-#    with konnect's app's sign-in page at /konnect/app/oauth (the function serves both unredirected)
+#    with konnect's app's sign-in page at /konnect/app/oauth and its preview build's at
+#    /konnect/app/preview/oauth (the function serves them all unredirected)
 #  - every file in site/ (README.md, dotfiles and the source in site/src/ aside) uploaded with its
 #    content type and cache policy: content-hashed files cached a year as immutable, everything
 #    else a minute, so a deploy shows within a minute and needs no invalidation. The build keeps the
