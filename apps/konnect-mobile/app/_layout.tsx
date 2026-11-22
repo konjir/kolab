@@ -6,7 +6,6 @@ import * as SystemUI from 'expo-system-ui';
 import { useEffect } from 'react';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
 import { remember } from '@/auth/pending-link';
-import { DevStart } from '@/dev/DevStart';
 import { KolabCache } from '@/kolab/live';
 import { useAppTheme } from '@/theme';
 
@@ -41,14 +40,19 @@ function Gate() {
     <>
       <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
-        <Stack.Protected guard={signedIn}>
-          <Stack.Screen name="(tabs)" />
-        </Stack.Protected>
+        {/* First, so it is where the gate lands while signed out. */}
         <Stack.Protected guard={!signedIn}>
           <Stack.Screen name="sign-in" />
         </Stack.Protected>
+        <Stack.Protected guard={signedIn}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="c/[kind]/[name]" />
+          <Stack.Screen name="browse" />
+          <Stack.Screen name="new" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="profile/[actor]" />
+          <Stack.Screen name="dev" />
+        </Stack.Protected>
       </Stack>
-      <DevStart />
     </>
   );
 }

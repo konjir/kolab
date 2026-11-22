@@ -37,7 +37,7 @@ xcrun simctl openurl booted "com.konjir.konnect.dev://dev/oauth"   # expo-auth-s
 xcrun simctl openurl booted "com.konjir.konnect.dev://dev/brand"   # every icon and face, in the current theme
 ```
 
-iOS asks whether to open each link in the app. With nobody to tap Open, start Metro with `EXPO_PUBLIC_DEV_ROUTE=/dev/mcp` instead (`src/dev/DevStart.tsx`, dev bundles only), and launch the app with `xcrun simctl launch booted com.konjir.konnect.dev --initialUrl http://127.0.0.1:8081`. Each spike logs to the screen and to Metro. `local-kolab` hands the build its URL and two throwaway tokens at `http://127.0.0.1:7433/spike`, on loopback only. Never point the spikes at production.
+iOS asks whether to open each link in the app; tap Open. The spikes are there only while signed in to a team, in the development variant. Each spike logs to the screen and to Metro. `local-kolab` hands the build its URL and two throwaway tokens at `http://127.0.0.1:7433/spike`, on loopback only. Never point the spikes at production.
 
 ## Check
 

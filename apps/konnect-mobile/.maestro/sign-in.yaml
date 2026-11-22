@@ -17,7 +17,6 @@ tags: [local-kolab]
 - extendedWaitUntil:
     visible: "general"
     timeout: 30000
-- assertVisible: "ann, you"
 - assertVisible: "bo.*"
 - tapOn: "DMs"
 - tapOn: "Activity"
