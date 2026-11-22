@@ -442,7 +442,39 @@ export class OAuthController {
       if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
       throw e;
     }
+    if (await this.signInApp(res, base, id, binding, csrf)) return;
     await this.consent(res, 200, id, binding, csrf, { login: who.login, created: person.created });
+  }
+
+  /**
+   * konnect's own app signing in on `choose:kolab` (every redirect URI one of its schemes): a person
+   * with teams goes straight back to it, signed in where they worked last or to their only team,
+   * with no page to tap (Lee's instruction of 2026-11-21), and konjir_switch_team moves the sign-in
+   * from there. Only as the identity provider answers, so only once, and only while no invitation
+   * waits and Kolab can tell where (appSignInKolab); otherwise, or if consentPerson refuses it (the
+   * kolab gone since), the page is shown as for any client. Every other client, the CLI's loopback
+   * ones included, always sees the page. Returns whether it answered.
+   */
+  private async signInApp(res: Response, base: string, id: string, binding: string, csrf: string): Promise<boolean> {
+    const pending = await this.kolab.pendingAuthorization(binding);
+    if (!pending?.person || pending.clientId === WEB_CLIENT || !nativeRedirect(pending.redirectUri)) return false;
+    const scope = personScope(pending.scope);
+    if (!scope || !('choose' in scope)) return false;
+    const client = await this.client(pending.clientId, '');
+    if (!client || !onPersonsDevice(client.redirectUris)) return false;
+    const kolab = await this.kolab.appSignInKolab(pending.person);
+    if (!kolab) return false;
+    try {
+      const r = await this.kolab.consentPerson(binding, csrf, { kolab });
+      clearBinding(res, this.options, id);
+      res.redirect(303, withParams(r.redirectUri, { code: r.code, state: r.clientState ?? undefined, iss: base }));
+      return true;
+    } catch (e) {
+      // Expired or used meanwhile: said as the page's own Allow would say it.
+      if (e instanceof OAuthGrantError) { sendError(res, 400, e.message); return true; }
+      if (e instanceof AccessError || e instanceof ActorError || e instanceof TenancyError || e instanceof RoleError) return false;
+      throw e;
+    }
   }
 
   /**
