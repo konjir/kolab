@@ -86,8 +86,8 @@ const HOST = `  konnect host list                 your machines that host, and t
   konnect's files on the hosting and the paired machines: what runs there as you can read it.`;
 
 const OPTIONS = `  --team <name>     the team to work in: else KONNECT_TEAM, else the one team you're logged in to
-  --agent <name>    act as this agent of yours instead of as you (send, receive, history, channel list,
-                    team list): else KONNECT_AGENT
+  --agent <name>    act as this agent of yours instead of as you (status, send, receive, history, watch,
+                    channel list, team list, lease list, claim, release, run): else KONNECT_AGENT
   --json            print JSON instead of lines
   -h, --help        help for konnect or, after a command or a noun, for that
   -V, --version     konnect's version`;
@@ -112,12 +112,13 @@ ${HOST}
 
 ${OPTIONS}
 
-  send, receive and history take a channel or a member, so there '#name' (quoted, for the shell) or
-  @name says which. Every other command takes one kind of name, and the # or @ may be left out.
+  send, receive, history and watch take a channel or a member, so there '#name' (quoted, for the
+  shell) or @name says which. Every other command takes one kind of name, and the # or @ may be
+  left out.
 
 Exit status: 0 done, 1 failed, 2 the command line was wrong, 3 not logged in, 4 refused,
-5 --wait ran out. Logins are kept in ~/.config/konnect (KONNECT_CONFIG_DIR). KONNECT_URL names a
-service other than ${HOSTED_URL}.`;
+5 --wait ran out. Logins are kept in ~/.config/konnect (or $XDG_CONFIG_HOME/konnect, or
+KONNECT_CONFIG_DIR). KONNECT_URL names a service other than ${HOSTED_URL}.`;
 
 const section = (title: string, body: string) => `${title}\n\n${body}\n\n${OPTIONS}`;
 

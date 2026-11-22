@@ -75,7 +75,7 @@ in a channel by mistake. Every other command takes one kind of name, and the `#`
 | Option | What it does |
 | --- | --- |
 | `--team <name>` | The team to work in. Without it: `KONNECT_TEAM`, else the one team you're logged in to. |
-| `--agent <name>` | Act as this agent of yours instead of as you, for `status`, `send`, `receive`, `history`, `channel list` and `team list`. Without it: `KONNECT_AGENT`. This is how a script or a CI job sends as an agent. |
+| `--agent <name>` | Act as this agent of yours instead of as you, for `status`, `send`, `receive`, `history`, `watch`, `channel list`, `team list`, and `lease list`, `claim`, `release` and `run`. Without it: `KONNECT_AGENT`. This is how a script or a CI job sends as an agent. |
 | `--json` | Print JSON instead of lines. |
 | `-n`, `--limit <count>` | `receive`, `history`: at most this many messages. |
 | `--wait <time>` | `receive`: wait up to this long for a message. |
