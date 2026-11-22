@@ -34,6 +34,12 @@ export function useAnswers(team: string | undefined) {
   return useQuery({ queryKey: [team, 'answers'], enabled: !!team && !!uri, queryFn: async () => (await api(team!)).answers(uri!) });
 }
 
+/** The person's direct conversations, newest first (S3). */
+export function useConversations(team: string | undefined) {
+  const api = useApi();
+  return useQuery({ queryKey: [team, 'conversations'], enabled: !!team, queryFn: async () => (await api(team!)).conversations() });
+}
+
 export type ConversationKind = 'channel' | 'dm';
 
 /** A conversation's messages, newest first, a page of 50 at a time. */

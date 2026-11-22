@@ -8,7 +8,7 @@ import { ActionSheetIOS, Alert, KeyboardAvoidingView, Platform, Pressable, Style
 import { useAuth } from '@/auth/AuthProvider';
 import { Composer } from '@/Composer';
 import { Icon } from '@/icons';
-import { kolab, markReadUpTo } from '@/kolab/api';
+import { markReadUpTo } from '@/kolab/api';
 import { isAgent, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
 import { handleOf, mentionsIn } from '@/kolab/names';
 import { quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
@@ -71,13 +71,8 @@ export default function Conversation() {
     if (!through || marking.current) return;
     marking.current = true;
     try {
-      const client = await auth.client(team);
-      const upTo = unread[through - 1]!;
-      // S2's "read up to here" where Kolab has it; otherwise its reads, which mark read oldest first, 20 at a time.
-      if (await markReadUpTo(client, kind, name, upTo)) { /* marked */ } else {
-        const k = kolab(client);
-        for (let left = through; left > 0; left -= 20) await (kind === 'channel' ? k.readChannel(name, Math.min(20, left)) : k.readMessages(name, Math.min(20, left)));
-      }
+      // Read up to the newest unread message seen (S2).
+      await markReadUpTo(await auth.client(team), kind, name, unread[through - 1]!);
       await qc.invalidateQueries({ queryKey: [team, 'answers'] });
       await qc.invalidateQueries({ queryKey: [team, 'channels'] });
     } catch { /* tried again on the next scroll */ } finally { marking.current = false; }

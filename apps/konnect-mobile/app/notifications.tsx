@@ -3,7 +3,7 @@ import Storage from 'expo-sqlite/kv-store';
 import { useEffect, useState } from 'react';
 import { useAuth } from '@/auth/AuthProvider';
 import { useChannels } from '@/kolab/hooks';
-import { DEFAULT_PREFS, kolabHasPush, PUSH_STATUS_KEY, setPrefs, type NotifyLevel, type NotifyPrefs } from '@/push';
+import { DEFAULT_PREFS, getPrefs, kolabHasPush, PUSH_STATUS_KEY, setPrefs, type NotifyLevel, type NotifyPrefs } from '@/push';
 import { useAppTheme } from '@/theme';
 import { Body, Button, Hint, Problem, Row, Screen, Section } from '@/ui';
 
@@ -36,8 +36,10 @@ export default function NotificationSettings() {
       if (p) setLocal({ ...DEFAULT_PREFS, ...(JSON.parse(p) as Partial<NotifyPrefs>) });
       setStatus(s ?? 'Not asked yet.');
     });
+    // What Kolab keeps for this team wins over what the phone remembered.
+    void auth.client().then(async (c) => (await kolabHasPush(c) ? getPrefs(c) : undefined)).then((kept) => { if (live && kept) setLocal(kept); }, () => undefined);
     return () => { live = false; };
-  }, [key]);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const save = async (next: NotifyPrefs) => {
     setLocal(next); setProblem(undefined); setSaid(undefined);

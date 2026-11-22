@@ -1,38 +1,43 @@
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/auth/AuthProvider';
-import { useAnswers, useMembers } from '@/kolab/hooks';
-import { handleOf } from '@/kolab/names';
+import { Avatar } from '@/Avatar';
+import { useConversations, useMembers } from '@/kolab/hooks';
 import { quoteOf } from '@/kolab/thread';
-import { unreadOf } from '@/kolab/unread';
 import { Hint, Problem, Row, Screen, Section } from '@/ui';
+import { View } from 'react-native';
 
-/**
- * DMs: every person and agent to talk with, the ones with unread messages first, each with the
- * first unread message. Once Kolab lists conversations (S3, konjir_list_conversations), each row
- * gets its last message and the list its recency.
- */
+const when = (iso: string) => {
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
+
+/** DMs: every direct conversation, newest first, each with its last message and what is unread (konjir_list_conversations). */
 export default function DirectMessages() {
   const auth = useAuth();
   const team = auth.current?.team;
+  const me = auth.current?.actor;
   const router = useRouter();
-  const members = useMembers(team);
-  const answers = useAnswers(team);
-  const unread = unreadOf(answers.data);
-  const first = new Map<string, string>();
-  for (const m of answers.data?.messages?.items ?? []) if (!first.has(m.from)) first.set(m.from, m.message);
-  const others = (members.data?.members ?? []).filter((m) => m.actor !== auth.current?.actor)
-    .sort((a, b) => (unread.dms.get(b.actor)?.count ?? 0) - (unread.dms.get(a.actor)?.count ?? 0) || a.actor.localeCompare(b.actor));
+  const conversations = useConversations(team);
+  const members = useMembers(team).data?.members ?? [];
+  const list = conversations.data?.conversations ?? [];
   return (
     <Screen title="DMs" testID="dms">
-      {members.error && <Problem>{(members.error as Error).message}</Problem>}
+      {conversations.error && <Problem>{(conversations.error as Error).message}</Problem>}
       <Section title="Conversations">
-        {members.isLoading && <Hint>Reading…</Hint>}
-        {!members.isLoading && others.length === 0 && <Hint>Nobody else is in this team yet.</Hint>}
-        {others.map((m) => {
-          const u = unread.dms.get(m.actor);
+        {conversations.isLoading && <Hint>Reading…</Hint>}
+        {!conversations.isLoading && list.length === 0 && <Hint>No direct messages yet. Start one with the pencil on Home.</Hint>}
+        {list.map((c) => {
+          const m = members.find((x) => x.actor === c.with);
+          const owner = m?.owner ? members.find((x) => x.actor === m.owner) : undefined;
+          const unread = c.unread ? `${c.unread}${c.unread_more ? '+' : ''} unread · ` : '';
           return (
-            <Row key={m.actor} testID={`dm-${m.actor}`} icon={m.kind === 'agent' ? 'agent' : 'person'} label={u ? `${handleOf(m)}: ${quoteOf(first.get(m.actor) ?? '', 40)}` : handleOf(m)}
-              detail={u ? `${u.count} unread` : undefined} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: m.actor } })} />
+            <View key={c.with} style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 14 }}>
+              {m && <Avatar member={m} owner={owner} size={32} />}
+              <View style={{ flex: 1 }}>
+                <Row testID={`dm-${c.with}`} icon={m?.kind === 'agent' ? 'agent' : 'person'} label={`${c.with}: ${c.last.from === me ? 'you: ' : ''}${quoteOf(c.last.message, 40)}`}
+                  detail={`${unread}${when(c.last_at)}`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: c.with } })} />
+              </View>
+            </View>
           );
         })}
       </Section>

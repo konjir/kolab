@@ -72,6 +72,12 @@ export async function unregisterDevice(client: Client, token: string) {
   await call(client, 'konjir_unregister_push_device', { token });
 }
 
+/** The team's prefs as Kolab keeps them (konjir_get_notification_prefs). */
+export async function getPrefs(client: Client): Promise<NotifyPrefs> {
+  const r = await call<{ level: NotifyLevel; muted_channels: string[]; hide_preview: boolean }>(client, 'konjir_get_notification_prefs');
+  return { level: r.level, muted: r.muted_channels, hidePreview: r.hide_preview };
+}
+
 export async function setPrefs(client: Client, prefs: NotifyPrefs) {
   await call(client, 'konjir_set_notification_prefs', prefsArgs(prefs));
 }

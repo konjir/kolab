@@ -1,4 +1,3 @@
-import type { Member } from '@konjir/types';
 import { useRouter, type Href } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -6,7 +5,7 @@ import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 're
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/auth/AuthProvider';
 import { Icon, type IconName } from '@/icons';
-import { useAnswers, useChannels, useMembers } from '@/kolab/hooks';
+import { useAnswers, useChannels, useConversations, useMembers } from '@/kolab/hooks';
 import { handleOf } from '@/kolab/names';
 import { unreadOf, type Unread } from '@/kolab/unread';
 import { setBadge } from '@/push';
@@ -31,22 +30,24 @@ export default function Home() {
   const channels = useChannels(team);
   const members = useMembers(team);
   const answers = useAnswers(team);
-  // The app's badge: what is unread in the team shown.
-  const unreadTotal = unreadOf(answers.data).total;
+  const conversations = useConversations(team);
+  const myTeams = useMyTeams().data?.teams;
+  // The app's badge: what is unread across the person's teams, as a push sets it.
+  const unreadTotal = myTeams ? myTeams.reduce((n, t) => n + t.unread, 0) : unreadOf(answers.data).total;
   useEffect(() => { void setBadge(unreadTotal); }, [unreadTotal]);
   const [jump, setJump] = useState('');
   const [switching, setSwitching] = useState(false);
   // Something unread in a team other than the one shown: a dot on the switcher.
-  const elsewhere = (useMyTeams().data?.teams ?? []).some((t) => !t.current && t.unread > 0);
+  const elsewhere = (myTeams ?? []).some((t) => !t.current && t.unread > 0);
   if (!team) return null; // The root layout's gate shows the sign-in screen while no team is signed in.
 
   const all = members.data?.members ?? [];
   const unread = unreadOf(answers.data);
   const q = jump.trim().toLowerCase();
   const match = (s: string) => !q || s.toLowerCase().includes(q);
-  const me = auth.current!.actor;
   const followed = (channels.data?.channels ?? []).filter((c) => c.following && match(c.channel));
-  const people = all.filter((m) => m.kind === 'person' && m.actor !== me && match(m.actor));
+  // Direct messages: the person's conversations with people, newest first (S3); agents have their own section.
+  const dms = (conversations.data?.conversations ?? []).filter((c) => all.find((m) => m.actor === c.with)?.kind !== 'agent' && match(c.with));
   const agents = all.filter((m) => m.kind === 'agent' && match(handleOf(m)));
   const unreadRows = [
     ...[...unread.channels].filter(([c]) => match(c)).map(([c, u]) => ({ key: `c-${c}`, label: `#${c}`, href: `/c/channel/${c}`, u, icon: 'channel' as IconName })),
@@ -77,8 +78,9 @@ export default function Home() {
           <Item icon="browseChannels" label="Browse channels" onPress={() => router.push('/browse')} />
         </Section>
         <Section title="Direct messages">
-          {people.map((p) => <PersonItem key={p.actor} m={p} unread={unread.dms.get(p.actor)} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: p.actor } })} />)}
-          {!members.isLoading && people.length === 0 && <Hint>{q ? 'Nobody matches.' : 'Nobody else is in this team yet.'}</Hint>}
+          {dms.map((c) => <Item key={c.with} icon="person" label={c.with} detail={all.find((m) => m.actor === c.with)?.here ? 'here' : undefined}
+            unread={c.unread ? { count: c.unread, mentions: c.unread } : undefined} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: c.with } })} />)}
+          {!conversations.isLoading && dms.length === 0 && <Hint>{q ? 'Nobody matches.' : 'No direct messages yet: the pencil starts one.'}</Hint>}
         </Section>
         <Section title="Agents">
           {agents.map((a) => <Item key={a.actor} icon={STATE_ICON[a.state ?? ''] ?? 'stateStopped'} label={handleOf(a)} detail={a.state ?? 'not running'} unread={unread.dms.get(a.actor)}
@@ -93,10 +95,6 @@ export default function Home() {
       </Pressable>
     </View>
   );
-}
-
-function PersonItem({ m, unread, onPress }: { m: Member; unread?: Unread; onPress: () => void }) {
-  return <Item icon="person" label={m.actor} detail={m.here ? 'here' : undefined} unread={unread} onPress={onPress} />;
 }
 
 /** A row of Home: bold when unread, with a badge counting mentions. */

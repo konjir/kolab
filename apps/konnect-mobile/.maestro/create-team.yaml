@@ -6,14 +6,7 @@ tags: [local-kolab]
 env:
   TEAM: phone-made
 ---
-- tapOn: "Sign in with GitHub"
-- extendedWaitUntil:
-    visible: "Sign in to hub"
-    timeout: 30000
-- tapOn: "Sign in to hub"
-- extendedWaitUntil:
-    visible: "general.*"
-    timeout: 30000
+- runFlow: subflows/sign-in-ann.yaml
 - tapOn:
     id: "team-switcher"
 - tapOn:

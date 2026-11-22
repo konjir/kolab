@@ -7,16 +7,7 @@ tags: [local-kolab]
 ---
 - assertVisible: "Sign in with GitHub"
 - assertNotVisible: "Home"
-- tapOn: "Sign in with GitHub"
-# Kolab's page, in the auth session: Ann's teams, each with its own button.
-- extendedWaitUntil:
-    visible: "Sign in to hub"
-    timeout: 30000
-- tapOn: "Sign in to hub"
-# Kolab's answer comes back to com.konjir.konnect.dev:/oauth, and the app exchanges the code.
-- extendedWaitUntil:
-    visible: "general.*"
-    timeout: 30000
+- runFlow: subflows/sign-in-ann.yaml
 - assertVisible: "bo.*"
 - tapOn: "DMs"
 - tapOn: "Activity"
