@@ -220,7 +220,7 @@ This work is in this repo and outside the kolab process, like konnect. New tools
 
 ## Phases
 
-Each phase is one or more PRs, merged after review and green CI. Server phases deploy as usual.
+Every phase, 0 to 6, ships in one PR, #211 (Lee, 2026-11-21), each phase in its own commits, merged after review and green CI; its server changes deploy as usual. "Later" stays out of it.
 
 0. **Spikes (1–2 days).** Prove each of these, or change the plan:
    - `@modelcontextprotocol/client` runs on Hermes, with `expo/fetch` streaming a listen response.
