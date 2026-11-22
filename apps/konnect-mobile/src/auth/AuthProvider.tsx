@@ -13,9 +13,9 @@ import { appExtra } from '@/config';
 import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
-import { discover, InvalidClient, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
+import { discover, InvalidClient, redirectFor, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type Who } from './store';
-import { Tokens } from './tokens';
+import { TeamChanged, Tokens } from './tokens';
 
 /**
  * expo-secure-store, readable after the phone's first unlock (so a refresh can run in the
@@ -42,7 +42,10 @@ export interface Auth {
   signOut(): Promise<{ revoked: boolean }>;
   /** Moves the sign-in to another of the person's teams. */
   switchTeam(team: string): Promise<void>;
-  /** The MCP client for the team shown, connected once and shared; a new one for each team. */
+  /**
+   * The MCP client for the team the sign-in is in now, connected once and shared; a new one for each
+   * team. With `team`, only for that team: TeamChanged if the sign-in has moved on.
+   */
   client(team?: string): Promise<Client>;
   /** A sign-in Kolab moved because the person lost the team (removed, left, archived, erased). */
   moved?: { from: string; to?: string };
@@ -75,26 +78,30 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   // One MCP client per team: its token source is bound to that team, so a request in flight when
   // the sign-in moves never reaches the new team (Tokens' TeamChanged).
   const client = useRef<{ team: string; client: Promise<Client> } | undefined>(undefined);
-  const [state, setState] = useState<{ ready: boolean; who?: Who }>({ ready: false });
+  const [state, setShown] = useState<{ ready: boolean; who?: Who }>({ ready: false });
+  // The team the sign-in is in now, for a caller holding an `auth` from an earlier render (a timer,
+  // a request that outlived its screen): client() compares with this, never with that render's team.
+  const latestTeam = useRef<string | undefined>(undefined);
+  const setState = useCallback((s: { ready: boolean; who?: Who }) => { latestTeam.current = s.who?.team; setShown(s); }, []);
 
   const read = useCallback(async () => ({ ready: true, who: await store.who() }), [store]);
-  const reload = useCallback(async () => setState(await read()), [read]);
+  const reload = useCallback(async () => setState(await read()), [read, setState]);
   useEffect(() => {
     let live = true;
     // Sign-ins an earlier build kept per team are revoked and forgotten: one sign-in now.
     void store.takeLegacy().then((old) => { for (const l of old) void tokens.revoke(l); }).catch(() => undefined)
       .then(read).then((s) => { if (live) setState(s); });
     return () => { live = false; };
-  }, [store, tokens, read]);
+  }, [store, tokens, read, setState]);
 
   const dropClient = useCallback(() => {
     const c = client.current;
     client.current = undefined;
     void c?.client.then((x) => x.close()).catch(() => undefined);
   }, []);
-  useEffect(() => { if (ended) { dropClient(); void read().then(setState); } }, [ended, dropClient, read]);
+  useEffect(() => { if (ended) { dropClient(); void read().then(setState); } }, [ended, dropClient, read, setState]);
   // Kolab moved the sign-in (the team was lost): a new client for the new team, and the team shown.
-  useEffect(() => { if (moved) { dropClient(); void read().then(setState); } }, [moved, dropClient, read]);
+  useEffect(() => { if (moved) { dropClient(); void read().then(setState); } }, [moved, dropClient, read, setState]);
 
   const auth: Auth = {
     ready: state.ready, url, adapter, moved, signIns,
@@ -103,18 +110,23 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
     teams: state.who ? [state.who] : [],
     signIn: async (ask) => {
       const clientName = `konnect (${appExtra().variant})`;
-      const kept = await store.client();
+      // A registration Kolab no longer knows is forgotten before Kolab's page opens (signIn asks),
+      // and a new one is kept before it opens, so closing the page keeps it.
+      const variant = appExtra().variant;
+      const redirect = redirectFor(variant, scheme);
+      const opts = { url, scheme, variant, ask, clientName, onClientGone: () => store.forgetClient(), onRegistered: (id: string) => store.keepClient(id, redirect) };
+      const kept = await store.client(redirect);
       let login;
       try {
-        login = await signInWith({ url, scheme, variant: appExtra().variant, ask, clientName, clientId: kept });
+        login = await signInWith({ ...opts, clientId: kept });
       } catch (e) {
-        // A registration Kolab no longer knows (invalid_client): register again, once. Cancelling
-        // the sheet, or any other failure, keeps the registration.
+        // Kolab refused the registration all the same (invalid_client): register again, once.
+        // Cancelling the sheet, or any other failure, keeps the registration.
         if (!kept || !(e instanceof InvalidClient)) throw e;
         await store.forgetClient();
-        login = await signInWith({ url, scheme, variant: appExtra().variant, ask, clientName });
+        login = await signInWith(opts);
       }
-      await store.keepClient(login.clientId);
+      await store.keepClient(login.clientId, redirect);
       // The sign-in this one replaces is ended at Kolab, not left to lapse; nothing refreshes meanwhile.
       await tokens.replace(login);
       dropClient();
@@ -140,8 +152,11 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
       dropClient();
       await reload();
     },
-    client: () => {
-      const team = state.who?.team ?? '';
+    client: (asked) => {
+      // Always the team the sign-in is in now. A caller that asks for another (it started before a
+      // switch) gets TeamChanged, and the client in use is left alone.
+      const team = latestTeam.current ?? '';
+      if (asked !== undefined && asked !== team) return Promise.reject(new TeamChanged(`asked for ${asked}, but the sign-in is in ${team || 'no team'}`));
       if (!client.current || client.current.team !== team) {
         dropClient();
         const c = teamClient(url, { token: () => tokens.accessToken(team), renew: (refused) => tokens.renew(refused, team) });

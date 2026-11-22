@@ -7,8 +7,8 @@
 //   node scripts/native.mjs tag    --profile preview --platform ios --fingerprint <hash>
 //
 // `verify` takes the fingerprint from the build itself: the runtime version embedded in the
-// artifact (Expo.plist in an .ipa, the app's resources in an .aab) must be the fingerprint this
-// checkout computes, or it fails. `tag` records only a fingerprint `verify` gave. Only GitHub
+// artifact (EXUpdates.bundle/fingerprint in an .ipa, the asset `fingerprint` in an .aab; see
+// embedded-fingerprint.mjs) must be exactly the fingerprint this checkout computes, or it fails. `tag` records only a fingerprint `verify` gave. Only GitHub
 // Actions may create konnect-native/* tags (a tag ruleset; README, Release setup).
 //
 // A binary built for a fingerprint is recorded as the git tag
@@ -20,6 +20,7 @@ import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { embedsFingerprint } from './embedded-fingerprint.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -59,11 +60,13 @@ if (verb === 'check') {
   const [platform] = platforms;
   if (!artifact || platforms.length !== 1) { console.error('verify needs --platform and --artifact'); process.exit(2); }
   const want = fingerprint(platform);
-  const entries = spawnSync('unzip', ['-Z1', artifact], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  if (entries.status !== 0) { console.error(`verify: can't read ${artifact}`); process.exit(1); }
-  const where = entries.stdout.split('\n').filter((e) => /(^|\/)Expo\.plist$|(^|\/)resources\.pb$|res\/values\/strings\.xml$/.test(e));
-  const found = where.some((e) => spawnSync('unzip', ['-p', artifact, e], { maxBuffer: 256 * 1024 * 1024 }).stdout.includes(Buffer.from(want)));
-  if (!found) { console.error(`verify: ${artifact} doesn't embed the runtime version ${want} this checkout's ${platform} fingerprint is (looked in ${where.join(', ') || 'nothing'})`); process.exit(1); }
+  let checked;
+  try { checked = embedsFingerprint(artifact, platform, want); } catch (e) { console.error(`verify: ${e.message}`); process.exit(1); }
+  if (!checked.ok) {
+    const seen = checked.found.map((f) => `${f.entry}: ${JSON.stringify(f.value)}`).join(', ') || 'no fingerprint file';
+    console.error(`verify: ${artifact} doesn't embed the runtime version ${want} this checkout's ${platform} fingerprint is (found ${seen})`);
+    process.exit(1);
+  }
   if (args.includes('--github-output') && process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `fingerprint=${want}\n`);
   console.log(`verified: ${artifact} is ${platform} ${profile} at ${want}`);
 } else {

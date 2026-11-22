@@ -38,6 +38,13 @@ export function variantOf(env: Record<string, string | undefined>): Variant {
   return v as Variant;
 }
 
+/**
+ * Preview's and production's sign-in links, each its own path: src/auth/app-links.ts's, which the
+ * app signs in with (this file can import nothing of the app's; test/config.test.ts checks they agree).
+ */
+const APP_LINK_HOST = 'www.konjir.com';
+const APP_LINK_PATH = { preview: '/konnect/app/preview/oauth', production: '/konnect/app/oauth' } as const;
+
 /** Predawn's surface (libs/brand), the splash screen's and the launch background in dark mode. */
 const PREDAWN_SURFACE = '#16140f';
 /** Daybreak's surface (libs/brand), in light mode. */
@@ -90,8 +97,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       bundleIdentifier: id,
       supportsTablet: false,
       // Preview and production sign in through a verified https link on www.konjir.com (a Universal
-      // Link): the site's apple-app-site-association names both bundle IDs.
-      ...(variant !== 'development' ? { associatedDomains: ['applinks:www.konjir.com'] } : {}),
+      // Link): the site's apple-app-site-association gives each bundle ID its own path. The auth
+      // session's https callback also needs the webcredentials association for that domain.
+      ...(variant !== 'development' ? { associatedDomains: [`applinks:${APP_LINK_HOST}`, `webcredentials:${APP_LINK_HOST}`] } : {}),
       infoPlist: { ITSAppUsesNonExemptEncryption: false },
       // What the App Store's privacy details and Apple's required-reason APIs ask: no tracking; the
       // data konnect keeps is the person's own messages and identifiers, for the app's function;
@@ -114,11 +122,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     android: {
       package: id,
-      // Preview's and production's sign-in link, verified (autoVerify) against www.konjir.com's assetlinks.json.
+      // Preview's or production's own sign-in link, and only that one, verified (autoVerify) against
+      // www.konjir.com's assetlinks.json.
       ...(variant !== 'development' ? {
         intentFilters: [{
           action: 'VIEW', autoVerify: true, category: ['BROWSABLE', 'DEFAULT'],
-          data: [{ scheme: 'https', host: 'www.konjir.com', pathPrefix: '/konnect/app/oauth' }],
+          data: [{ scheme: 'https', host: APP_LINK_HOST, path: APP_LINK_PATH[variant] }],
         }],
       } : {}),
       adaptiveIcon: { foregroundImage: '../../brand/konjir-avatar.png', backgroundColor: PREDAWN_SURFACE },

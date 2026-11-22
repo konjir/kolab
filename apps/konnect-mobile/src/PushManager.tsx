@@ -11,6 +11,7 @@ import { router, type Href } from 'expo-router';
 import Storage from 'expo-sqlite/kv-store';
 import { useEffect, useRef } from 'react';
 import { useAuth, type Auth } from './auth/AuthProvider';
+import { forget, openOrKeep } from './notification-open';
 import { tapHandler, type Tap } from './notification-taps';
 import { kolabHasPush, PUSH_STATUS_KEY, PUSH_TOKEN_KEY, pushToken, registerDevice, routeOf } from './push';
 
@@ -58,9 +59,12 @@ export function PushManager() {
     const handle = tapHandler((data) => {
       const to = routeOf(data);
       if (!to) return;
-      // Push is the person's, from every team: one for another team switches there first, and the
-      // switch resets the screens (the root layout), so the conversation opens after it.
-      void latest.current.switchTeam(to.team).then(() => setTimeout(() => router.push(to.path as Href), 50), () => undefined);
+      // Push is the person's, from every team. One for the team on screen opens now. One for another
+      // team switches there first; the switch resets the screens (the Gate, app/_layout.tsx), and
+      // the Gate opens the conversation after that reset (notification-open.ts).
+      if (openOrKeep(to)) { router.push(to.path as Href); return; }
+      if (latest.current.current?.team === to.team) return; // a switch there is under way: the Gate opens it
+      void latest.current.switchTeam(to.team).catch(() => forget(to));
     });
     if (handle(Notifications.getLastNotificationResponse?.() as Tap | null)) void Notifications.clearLastNotificationResponseAsync?.().catch(() => undefined);
     const sub = Notifications.addNotificationResponseReceivedListener((r) => {

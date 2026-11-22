@@ -23,8 +23,12 @@ const run = (cmd, argv, opts = {}) => spawnSync(cmd, argv, { cwd: root, stdio: '
 // targets a runtime no binary of the channel has (with the dev variant's scheme and Kolab URL).
 export const VARIANT_OF_CHANNEL = { development: 'development', preview: 'preview', production: 'production' };
 if (args[0] === 'update') {
+  // One channel, named once: a second --channel (the target's, then one added after `--`) would
+  // leave eas-cli to pick between them, and the check below to look at only one.
+  const named = args.filter((a) => a === '--channel' || a.startsWith('--channel='));
+  if (named.length > 1) { console.error('eas update: name one channel, once; this asks for --channel more than once. Nothing was sent to EAS.'); process.exit(2); }
   const at = args.indexOf('--channel');
-  const channel = at < 0 ? undefined : args[at + 1];
+  const channel = at >= 0 ? args[at + 1] : named[0]?.slice('--channel='.length);
   const want = VARIANT_OF_CHANNEL[channel];
   if (!want) { console.error(`eas update: name the channel, --channel ${Object.keys(VARIANT_OF_CHANNEL).join('|')}`); process.exit(2); }
   if (process.env.APP_VARIANT !== want) {

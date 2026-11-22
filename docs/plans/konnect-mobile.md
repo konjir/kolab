@@ -180,7 +180,7 @@ Lee's decisions of 2026-11-21: the EAS project is `@icedlee337/konnect`, owned b
 - Actions are pinned to commit SHAs.
 - A personal Expo account has no robot users, so `EXPO_TOKEN` is Lee's own access token.
 
-Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only run `npx nx run @konjir/konnect-mobile:<target>`. The README's "Release setup" lists what Lee sets up, in order.
+Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only run `npx nx run @konjir/konnect-mobile:<target>`, but for the jobs that push the tag: they can write to the repo, so they install nothing and run `node apps/konnect-mobile/scripts/native.mjs tag` on the runner's Node. They tag each platform that was built, even when the other failed. The README's "Release setup" lists what Lee sets up, in order.
 
 ## Information architecture (Slack's, mapped onto konnect)
 

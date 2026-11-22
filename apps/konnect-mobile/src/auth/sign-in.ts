@@ -13,6 +13,7 @@
  * - The code exchanged with its PKCE verifier, and konjir_whoami asked which team and who.
  */
 import { AuthRequest, CodeChallengeMethod, exchangeCodeAsync, ResponseType, type DiscoveryDocument } from 'expo-auth-session';
+import { PREVIEW_REDIRECT, PRODUCTION_REDIRECT } from './app-links';
 import { teamClient } from './mcp';
 import type { Login } from './store';
 import type { Endpoints } from './tokens';
@@ -32,19 +33,22 @@ export async function discover(url: string): Promise<KolabOAuth> {
 }
 
 /**
- * Preview's and production's redirect: a verified https link on Konjir's own site (a Universal Link
- * on iOS, an App Link on Android), which only konnect's apps, signed by Konjir's team, can be sent.
- * Kolab accepts the development scheme only on servers that enable it (KONJIR_APP_DEV_SCHEMES:
- * local-kolab, tests), and the production scheme nowhere.
+ * Preview's and production's redirects are verified https links on Konjir's own site (a Universal
+ * Link on iOS, an App Link on Android), which only konnect's apps, signed by Konjir's team, can be
+ * sent, each at its own path (app-links.ts). Kolab accepts the development scheme only on servers
+ * that enable it (KONJIR_APP_DEV_SCHEMES: local-kolab, tests), and the production scheme nowhere.
  */
-export const PRODUCTION_REDIRECT = 'https://www.konjir.com/konnect/app/oauth';
+export { PREVIEW_REDIRECT, PRODUCTION_REDIRECT } from './app-links';
 
 /**
- * The one redirect a variant registers and is sent back to: the https link for preview and
+ * The one redirect a variant registers and is sent back to: its own https link for preview and
  * production, and for development its own private scheme, `com.konjir.konnect.dev:/oauth`.
  */
 export function redirectFor(variant: string, scheme: string): string {
-  return variant === 'development' ? `${scheme}:/oauth` : PRODUCTION_REDIRECT;
+  if (variant === 'production') return PRODUCTION_REDIRECT;
+  if (variant === 'preview') return PREVIEW_REDIRECT;
+  if (variant === 'development') return `${scheme}:/oauth`;
+  throw new Error(`no redirect for the variant ${JSON.stringify(variant)}`);
 }
 
 /** What the person asks Kolab's page for. */
@@ -63,11 +67,43 @@ export class SignInStopped extends Error { name = 'SignInStopped'; }
 /** Kolab doesn't know the client registration used (invalid_client): register again. */
 export class InvalidClient extends Error { name = 'InvalidClient'; }
 
-export async function signIn(opts: { url: string; scheme: string; variant: string; ask: SignInAsk; clientName: string; clientId?: string | null }): Promise<Login> {
+/**
+ * Whether Kolab still knows the client registration `clientId`. Kolab forgets a registration no
+ * sign-in has used for 30 days, and its authorize page shows an unknown client an error page rather
+ * than redirect (an error that never comes back to the app), so the app asks first: a refresh with a
+ * token that is no token. Kolab answers an unknown client 401 invalid_client and a known one 400
+ * invalid_grant (oauth.controller.ts, token), and nothing changes for a known one but that the
+ * registration counts as used.
+ */
+export async function clientKnown(tokenEndpoint: string, clientId: string, send: typeof fetch = fetch): Promise<boolean> {
+  const res = await send(tokenEndpoint, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: 'kjr_konnect-asks-whether-its-client-is-known', client_id: clientId }).toString(),
+  });
+  if (res.status !== 401) return true;
+  const body = await res.json().catch(() => ({})) as { error?: string };
+  return body.error !== 'invalid_client';
+}
+
+export interface SignInOptions {
+  url: string; scheme: string; variant: string; ask: SignInAsk; clientName: string;
+  /** The registration kept from an earlier sign-in, if any. */
+  clientId?: string | null;
+  /** Kolab no longer knows the kept registration: forget it. */
+  onClientGone?: () => Promise<void>;
+  /** A new registration, to keep before Kolab's page opens, so closing the page doesn't lose it. */
+  onRegistered?: (clientId: string) => Promise<void>;
+}
+
+export async function signIn(opts: SignInOptions): Promise<Login> {
   const kolab = await discover(opts.url);
   const redirectUri = redirectFor(opts.variant, opts.scheme);
-  // The registration kept from an earlier sign-in, or a new one.
+  // The registration kept from an earlier sign-in, while Kolab knows it, or a new one.
   let client: { client_id?: string; error_description?: string } = { client_id: opts.clientId ?? undefined };
+  if (client.client_id && !(await clientKnown(kolab.tokenEndpoint, client.client_id))) {
+    await opts.onClientGone?.();
+    client = {};
+  }
   if (!client.client_id) {
     const reg = await fetch(kolab.registrationEndpoint, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -75,6 +111,7 @@ export async function signIn(opts: { url: string; scheme: string; variant: strin
     });
     client = await reg.json().catch(() => ({})) as typeof client;
     if (!reg.ok || !client.client_id) throw new Error(`Kolab didn't register the app: ${client.error_description ?? reg.status}`);
+    await opts.onRegistered?.(client.client_id);
   }
 
   const request = new AuthRequest({
