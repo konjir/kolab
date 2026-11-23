@@ -4455,7 +4455,7 @@ export class Kolab {
       for (const c of ACTOR_ID_COLUMNS) {
         const where = c.where ? ` and ${c.where}` : '';
         await tx.query(c.key
-          ? `update ${c.table} set ${c.column} = jsonb_set(${c.column}, array[$3], $2::jsonb -> (${c.column} ->> $3)) where ${c.column} ->> $3 = any($1::text[])${where}`
+          ? `update ${c.table} set ${c.column} = jsonb_set(${c.column}, array[$3::text], $2::jsonb -> (${c.column} ->> $3::text)) where ${c.column} ->> $3::text = any($1::text[])${where}`
           : `update ${c.table} set ${c.column} = $2::jsonb ->> ${c.column} where ${c.column} = any($1::text[])${where}`,
         c.key ? [mine, JSON.stringify(rekey), c.key] : [mine, JSON.stringify(rekey)]);
       }
