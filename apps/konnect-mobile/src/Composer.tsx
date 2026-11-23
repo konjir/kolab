@@ -3,12 +3,12 @@
  * character limit; Send is off when there is nothing to send or too much. A reply shows what it
  * answers, with a way to drop it. It sits above the home indicator, and on the keyboard while it is up.
  */
-import { MAX_MESSAGE_TEXT, textLength } from '@konjir/types';
+import { DELETED_ACCOUNT, MAX_MESSAGE_TEXT, textLength } from '@konjir/types';
 import { useEffect, useState } from 'react';
 import { Keyboard, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './icons';
-import { complete, completing, suggestions } from './kolab/names';
+import { complete, completing, isGone, suggestions } from './kolab/names';
 import { quoteOf } from './kolab/thread';
 import { FAMILIES, RADII, useAppTheme } from './theme';
 
@@ -33,7 +33,8 @@ export function useBottomInset(): number {
 
 export function Composer({ people, channels, replyTo, onCancelReply, onSend, placeholder }: {
   people: string[]; channels: string[];
-  replyTo?: { id: string; from: string; message: string }; onCancelReply: () => void;
+  /** The message answered, `from` as the app names its sender (a deleted account's as DELETED_ACCOUNT, whatever the caller gives). */
+  replyTo?: { id: string; from: string; message: string; from_deleted?: boolean }; onCancelReply: () => void;
   onSend: (text: string) => void; placeholder: string;
 }) {
   const { colors } = useAppTheme();
@@ -60,7 +61,7 @@ export function Composer({ people, channels, replyTo, onCancelReply, onSend, pla
       {replyTo && (
         <View style={styles.reply}>
           <Icon name="reply" size={14} tintColor={colors['ink-muted']} />
-          <Text numberOfLines={1} style={[styles.replyText, { color: colors['ink-muted'] }]}>Replying to {replyTo.from}: {quoteOf(replyTo.message, 60)}</Text>
+          <Text numberOfLines={1} style={[styles.replyText, { color: colors['ink-muted'] }]}>Replying to {isGone(replyTo.from, replyTo.from_deleted) ? DELETED_ACCOUNT : replyTo.from}: {quoteOf(replyTo.message, 60)}</Text>
           <Pressable accessibilityLabel="Don't reply" onPress={onCancelReply}><Text style={{ color: colors.accent }}>✕</Text></Pressable>
         </View>
       )}

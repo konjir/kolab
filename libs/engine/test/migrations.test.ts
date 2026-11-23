@@ -3147,10 +3147,32 @@ test('a database at 0056 with messages reaches 0057: two indexes for conversatio
   });
 });
 
+/**
+ * A trigger function as the newest migration before `before` made it, from that migration's own
+ * text, as create or replace: so an undo puts back exactly what was there.
+ */
+function definitionBefore(name: string, before: number): string {
+  const pattern = new RegExp(`create (?:or replace )?function ${name}\\(\\)[\\s\\S]*?\\n\\$\\$;`, 'g');
+  const m = MIGRATIONS.filter((x) => x.version < before).reverse().map((x) => [...x.sql.matchAll(pattern)].at(-1)?.[0]).find(Boolean);
+  if (!m) throw new Error(`no migration before ${before} makes ${name}`);
+  return m.replace(/^create (?:or replace )?function/, 'create or replace function');
+}
+
+/** The functions 0060 makes again, to let a re-key through: each put back as it was. */
+const REKEYED_FUNCTIONS = ['kj_message_fixed', 'kj_channel_fixed', 'kj_audit_event_fixed', 'kj_archive_event_fixed', 'kj_work_event_fixed',
+  'kj_evidence_fixed', 'kj_repository_fixed', 'kj_job_fixed', 'kj_case_fixed', 'kj_actor_frozen', 'kj_kolab_writable', 'kj_admin_audited'];
+
 const UNDO_0060 = String.raw`drop trigger account_deleted_kept on account;
   drop function kj_account_deleted_kept();
   drop trigger actor_deleted_kept on actor;
   drop function kj_actor_deleted_kept();
+  drop trigger account_name_free on account;
+  drop trigger actor_name_free on actor;
+  drop function kj_name_free();
+  drop function kj_name_retired(text);
+  drop function kj_name_digest(text);
+  drop table retired_name;
+  drop function kj_retired_name_fixed();
 create or replace function kj_identity_of_person() returns trigger
 language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
 begin
@@ -3160,7 +3182,21 @@ begin
   return new;
 end
 $$;
+` + REKEYED_FUNCTIONS.map((f) => definitionBefore(f, 60)).join('\n') + String.raw`
+  drop function kj_rekey_only(jsonb, jsonb);
+  drop function kj_unkeyed(jsonb, text[]);
+  drop function kj_rekeying();
   drop function kj_actor_deleted(text);
+  do $$
+  declare c record;
+  begin
+    for c in select f.conrelid::regclass::text as tbl, f.conname, pg_get_constraintdef(f.oid) as def from pg_constraint f
+              where f.contype = 'f' and f.confupdtype = 'c' and f.confrelid in ('public.actor'::regclass, 'public.account'::regclass) loop
+      execute format('alter table %s drop constraint %I, add constraint %I %s', c.tbl, c.conname, c.conname, replace(c.def, ' ON UPDATE CASCADE', ''));
+    end loop;
+  end
+  $$;
+  alter table actor alter constraint actor_person_is_user not deferrable;
   alter table account drop constraint account_deleted_check;
   alter table account drop column deleted_at;
   alter table audit_event drop constraint audit_event_action_check;
@@ -3172,17 +3208,21 @@ $$;
      'host.ended', 'kolab.erased', 'push_device.unregistered'));
   delete from kj_migration where version = 60;`;
 
-test('a database at 0059 reaches 0060: a person\'s account may be deleted, for good, and a deleted account\'s rows and names are kept as a tombstone', async () => {
+test('a database at 0059 reaches 0060: a person\'s account may be deleted, for good, re-keyed to an opaque id that every row carries, its old names retired, and a deleted account\'s rows kept as a tombstone', async () => {
   const at = MIGRATIONS.findIndex((x) => x.name === 'delete_account');
   expect(MIGRATIONS[at].version).toBe(60);
   await withDb(async (db) => {
     await migrate(db);
     await db.exec(UNDO_0060);
-    // People and an agent from before: none deleted.
+    // People and an agent from before, none deleted; a kolab of Bo's, archived, with what they said there.
     await db.exec(`insert into account(id, kind, name, created_by) values ('ann', 'user', 'Ann A.', 'ann'), ('bo', 'user', 'Bo B.', 'bo'), ('acme', 'organization', 'Acme', 'admin')`);
     await db.exec(`insert into actor(id, name, kind, created_by) values ('ann', 'Ann A.', 'person', 'ann'), ('bo', 'Bo B.', 'person', 'bo')`);
     await db.exec(`insert into actor(id, name, kind, owner_id, created_by) values ('bo-claude', 'bo-claude', 'agent', 'bo', 'bo')`);
     await db.exec(`insert into identity(provider, subject, actor_id, login, linked_by) values ('github', '22', 'bo', 'bo', 'bo')`);
+    await db.exec(`insert into kolab(id, owner_id, title, created_by) values ('bos', 'bo', 'Bo''s', 'bo')`);
+    await db.exec(`insert into message(id, kolab_id, sent_by, sent_to, body) values ('01M1', 'bos', 'bo', 'ann', 'Hi Ann'), ('01M2', 'bos', 'bo-claude', 'ann', 'Hi from the agent')`);
+    await db.exec(`insert into audit_event(action, kolab_id, subject, detail, done_by) values ('grant.removed', 'bos', 'bo-claude', '{"owner": "bo"}', 'bo')`);
+    await db.exec(`update kolab set archived_at = now() where id = 'bos'`);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [60] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
@@ -3190,28 +3230,76 @@ test('a database at 0059 reaches 0060: a person\'s account may be deleted, for g
       { id: 'acme', deleted_at: null }, { id: 'ann', deleted_at: null }, { id: 'bo', deleted_at: null },
     ]);
     expect((await db.query(`select kj_actor_deleted('bo') as bo, kj_actor_deleted('bo-claude') as agent, kj_actor_deleted('nobody') as nobody`)).rows).toStrictEqual([{ bo: false, agent: false, nobody: false }]);
+    // Each foreign key to an actor or an account carries a change of its id, but those that hold a
+    // generated kind; a person's actor's to their account may wait for the transaction's end.
+    const fks = (await db.query<{ fk: string; cascades: boolean; deferrable: boolean }>(
+      `select conrelid::regclass::text || '.' || conname as fk, confupdtype = 'c' as cascades, condeferrable as deferrable from pg_constraint
+        where contype = 'f' and confrelid in ('actor'::regclass, 'account'::regclass) order by 1`)).rows;
+    expect(fks.filter((f) => !f.cascades).map((f) => f.fk)).toStrictEqual([
+      'actor.actor_person_is_user', 'kolab_grant.kolab_grant_agent_id_agent_kind_fkey', 'kolab_grant.kolab_grant_user_id_user_kind_fkey',
+      'org_member.org_member_org_id_org_kind_fkey', 'org_member.org_member_user_id_user_kind_fkey', 'team.team_org_id_org_kind_fkey',
+      'team_member.team_member_user_id_user_kind_fkey',
+    ]);
+    expect(fks.filter((f) => f.cascades).length).toBeGreaterThan(40);
+    expect(fks.filter((f) => f.deferrable).map((f) => f.fk)).toStrictEqual(['actor.actor_person_is_user']);
     // Deleted only with archived, and only a user's account.
     expect(await rejection(db.exec(`update account set deleted_at = now() where id = 'ann'`))).toMatch(/account_deleted_check/);
     expect(await rejection(db.exec(`update account set archived_at = now(), deleted_at = now() where id = 'acme'`))).toMatch(/account_deleted_check/);
-    // Bo's account deleted, as Kolab deletes it: identity first, names to ids, then the account.
-    await db.exec(`delete from identity where actor_id = 'bo'`);
-    await db.exec(`update actor set name = id where id in ('bo', 'bo-claude')`);
-    await db.exec(`update account set name = id, archived_at = now(), deleted_at = now() where id = 'bo'`);
-    expect((await db.query(`select kj_actor_deleted('bo') as bo, kj_actor_deleted('bo-claude') as agent, kj_actor_deleted('ann') as ann`)).rows).toStrictEqual([{ bo: true, agent: true, ann: false }]);
-    // Never back, never renamed, never removed, never linked again.
-    for (const sql of [`update account set archived_at = null where id = 'bo'`, `update account set deleted_at = null where id = 'bo'`, `update account set name = 'Bo B.' where id = 'bo'`]) {
+    // Rows that are never edited, and an archived kolab's, change only by a re-key, by Kolab's own login.
+    expect(await rejection(db.exec(`update message set sent_by = 'ann', sent_to = 'bo' where id = '01M1'`))).toMatch(/never edited or removed/);
+    expect(await rejection(db.exec(`begin; select set_config('kj.rekey', '{"bo": "deleted-0123456789ab"}', true); update message set body = 'Edited' where id = '01M1'; commit`))).toMatch(/never edited or removed/);
+    await db.exec(`rollback`).catch(() => undefined);
+    expect(await rejection(db.exec(`begin; select set_config('kj.rekey', '{"bo": "deleted-0123456789ab"}', true); set local role kj_system; update message set sent_by = 'ann' where id = '01M1'; commit`))).toMatch(/never edited|permission denied/);
+    await db.exec(`rollback`).catch(() => undefined);
+    // No one takes a deleted account's kind of name.
+    expect(await rejection(db.exec(`insert into actor(id, name, kind, owner_id, created_by) values ('deleted-x', 'x', 'agent', 'ann', 'admin')`))).toMatch(/a deleted account's, and no one else's/);
+
+    // Bo's account deleted, as Kolab deletes it: the identity, the re-key, the names, then the account.
+    await db.exec(`begin;
+      set constraints all immediate;
+      insert into retired_name(digest) select kj_name_digest(n) from unnest(array['bo', 'bo-claude']) n;
+      select set_config('kj.rekey', '{"bo": "deleted-0123456789ab", "bo-claude": "deleted-0123456789ab-1"}', true);
+      delete from identity where actor_id = 'bo';
+      set constraints actor_person_is_user deferred;
+      update account set id = 'deleted-0123456789ab' where id = 'bo';
+      update actor set id = 'deleted-0123456789ab' where id = 'bo';
+      set constraints actor_person_is_user immediate;
+      update actor set id = 'deleted-0123456789ab-1' where id = 'bo-claude';
+      update audit_event set subject = 'deleted-0123456789ab-1', done_by = 'deleted-0123456789ab', detail = '{"owner": "deleted-0123456789ab"}';
+      update actor set name = id where id like 'deleted-%';
+      update account set name = id, archived_at = now(), deleted_at = now() where id = 'deleted-0123456789ab';
+      select set_config('kj.rekey', '', true);
+      commit`);
+    const gone = 'deleted-0123456789ab';
+    // Every row carries the new id: the kolab's owner, the messages, the agent's owner, the audit row.
+    expect((await db.query(`select owner_id as owner from kolab where id = 'bos'`)).rows).toStrictEqual([{ owner: gone }]);
+    expect((await db.query(`select sent_by from message order by id`)).rows).toStrictEqual([{ sent_by: gone }, { sent_by: `${gone}-1` }]);
+    expect((await db.query(`select id, name, owner_id as owner from actor where id like 'deleted-%' order by id`)).rows)
+      .toStrictEqual([{ id: gone, name: gone, owner: null }, { id: `${gone}-1`, name: `${gone}-1`, owner: gone }]);
+    expect((await db.query(`select subject, done_by, detail from audit_event`)).rows).toStrictEqual([{ subject: `${gone}-1`, done_by: gone, detail: { owner: gone } }]);
+    expect((await db.query(`select kj_actor_deleted($1) as bo, kj_actor_deleted($2) as agent, kj_actor_deleted('ann') as ann`, [gone, `${gone}-1`])).rows).toStrictEqual([{ bo: true, agent: true, ann: false }]);
+    // The old names are retired, as digests: never taken again, in any case, nor `<old>-x`.
+    expect((await db.query(`select kj_name_retired('bo') as a, kj_name_retired('BO') as b, kj_name_retired('bo-x') as c, kj_name_retired('bob') as d, kj_name_retired('ann-bo') as e`)).rows)
+      .toStrictEqual([{ a: true, b: true, c: true, d: false, e: false }]);
+    expect(await rejection(db.exec(`insert into account(id, kind, name, created_by) values ('Bo', 'user', 'Bo', 'admin')`))).toMatch(/never given to anyone again/);
+    expect(await rejection(db.exec(`insert into actor(id, name, kind, owner_id, created_by) values ('bo-y', 'bo-y', 'agent', 'ann', 'admin')`))).toMatch(/never given to anyone again/);
+    expect(await rejection(db.exec(`delete from retired_name`))).toMatch(/never removed/);
+    // Never back, never renamed, re-keyed, re-owned or removed, never linked again.
+    for (const sql of [`update account set archived_at = null where id = '${gone}'`, `update account set deleted_at = null where id = '${gone}'`, `update account set name = 'Bo B.' where id = '${gone}'`]) {
       expect([sql, await rejection(db.exec(sql))]).toStrictEqual([sql, expect.stringMatching(/a deleted account never changes again/)]);
     }
-    expect(await rejection(db.exec(`delete from account where id = 'bo'`))).toMatch(/a deleted account is kept/);
-    expect(await rejection(db.exec(`update actor set name = 'Bo B.' where id = 'bo'`))).toMatch(/kept as they are/);
-    expect(await rejection(db.exec(`delete from actor where id = 'bo-claude'`))).toMatch(/kept as they are/);
-    expect(await rejection(db.exec(`insert into identity(provider, subject, actor_id, login, linked_by) values ('github', '22', 'bo', 'bo', 'admin')`))).toMatch(/bo deleted their account/);
+    expect(await rejection(db.exec(`delete from account where id = '${gone}'`))).toMatch(/a deleted account is kept/);
+    expect(await rejection(db.exec(`update actor set name = 'Bo B.' where id = '${gone}'`))).toMatch(/kept as they are/);
+    expect(await rejection(db.exec(`update actor set owner_id = 'acme' where id = '${gone}-1'`))).toMatch(/kept as they are/);
+    expect(await rejection(db.exec(`delete from actor where id = '${gone}-1'`))).toMatch(/kept as they are/);
+    expect(await rejection(db.exec(`insert into identity(provider, subject, actor_id, login, linked_by) values ('github', '22', '${gone}', 'bo', 'admin')`))).toMatch(/deleted their account/);
     // Everyone else's rows change as before.
     await db.exec(`update actor set name = 'Ann' where id = 'ann'`);
     await db.exec(`update account set archived_at = now() where id = 'ann'`);
     await db.exec(`update account set archived_at = null where id = 'ann'`);
+    expect(await rejection(db.exec(`update actor set owner_id = 'acme' where id = 'ann'`))).toMatch(/kind and owner never change|actor_owner_check/);
     // The audit log takes account.deleted.
-    await db.exec(`insert into audit_event(action, kolab_id, subject, detail, done_by) values ('account.deleted', null, 'bo', '{"left": 1}', 'bo')`);
+    await db.exec(`insert into audit_event(action, kolab_id, subject, detail, done_by) values ('account.deleted', null, '${gone}', '{"left": 1}', '${gone}')`);
   });
 });
 

@@ -104,16 +104,25 @@ export interface MyTeams { teams: MyTeam[]; invitations: MyInvitation[] }
 export interface TeamSwitched { kolab: string; role: Role }
 /**
  * How an app names whoever sent a message from an account since deleted (`from_deleted`, Lee's
- * decision of 2026-11-23): the person, or one of their agents.
+ * decision of 2026-11-23): the person, or one of their agents. Their id is opaque by then,
+ * `deleted-<random>` (migration 0060), never the login it was.
  */
 export const DELETED_ACCOUNT = 'a deleted account';
+/** Whether an actor id is a deleted account's, or one of its agents' (migration 0060): `deleted-<random>`. */
+export const isDeletedActor = (actor: string) => actor.startsWith('deleted-');
 /**
- * What keeps a person from deleting their account (konjir_delete_my_account): a kolab they own
- * where someone else is a member (`members`, to hand over or erase first), one of theirs that holds
- * documents (`documents`, to archive first), or an organization they alone own that has other
- * members (`organization`). `why` says it in a sentence.
+ * What keeps a person from deleting their account (konjir_delete_my_account), always live (an
+ * archived kolab never does): a kolab of theirs, or of an organization they alone own, that anyone
+ * else is a member of (`members`: archive it, or remove them), that holds documents (`documents`:
+ * archive it), or that has a repository registered to it (`repository`: archive it); or an
+ * organization they alone own that has other members (`organization`) or owns live agents
+ * (`agents`), which a Konjir admin deals with. `why` says it in a sentence, with what to do.
  */
-export interface AccountDeletionBlocker { name: string; kind: 'kolab' | 'organization'; reason: 'members' | 'documents' | 'organization'; why: string }
+export interface AccountDeletionBlocker {
+  name: string; kind: 'kolab' | 'organization';
+  reason: 'members' | 'documents' | 'repository' | 'organization' | 'agents';
+  why: string;
+}
 /**
  * What deleting one's account did (konjir_delete_my_account): the account deleted, the kolabs left
  * and erased (those they alone were in), how many of their agents went, sign-ins revoked, sessions

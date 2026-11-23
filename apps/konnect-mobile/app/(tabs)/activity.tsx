@@ -3,9 +3,9 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { useAgentActivity, useAgentStatus, useAnswers, useMembers } from '@/kolab/hooks';
-import { displayName } from '@/kolab/names';
+import { senderName } from '@/kolab/names';
 import { quoteOf } from '@/kolab/thread';
-import { activityOf } from '@/kolab/unread';
+import { activityOf, opensTo } from '@/kolab/unread';
 import { at, contextOf, ownAgents, whereOf, yourAgentsActivity } from '@/kolab/your-agents';
 import type { Member } from '@konjir/types';
 import { Avatar, presenceOf } from '@/Avatar';
@@ -69,11 +69,14 @@ export default function Activity() {
             {!answers.isLoading && items.length === 0 && <Hint>Nothing waits for you: no unread mentions, replies or capped messages.</Hint>}
             {items.map(({ kind, item }) => {
               const where = 'channel' in item ? `#${item.channel}` : 'a direct message';
-              const name = displayName(item.from, members);
+              const name = senderName(item, members);
+              // A direct message from a deleted account opens nothing: there is no one to write back to.
+              const to = opensTo(item);
+              const open = to ? () => router.push(conversationHref(to.kind, to.name)) : undefined;
               return (
                 <ListRow key={`${kind}-${item.id}`} testID={`activity-${item.id}`} leading={<Who actor={item.from} members={members} mark={KIND[kind].icon} />}
                   title={`${name} ${KIND[kind].says} in ${where}`} unread subtitle={quoteOf(item.message, 100)} time={shortWhen(item.sent_at)}
-                  onPress={() => router.push('channel' in item ? conversationHref('channel', item.channel) : conversationHref('dm', item.from))} />
+                  onPress={open} />
               );
             })}
           </Section>

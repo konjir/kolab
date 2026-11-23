@@ -15,7 +15,7 @@ import { markReader, type MarkReader } from '@/kolab/mark-read';
 import { isAgent, useAgentConversation, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
 import { agentsIn, at, disclosureOf, marksRead, onlyAgent, ownAgents, readingAs, readOnlyBanner } from '@/kolab/your-agents';
 import { Button } from '@/ui';
-import { displayName, handleOf, mentionsIn, senderName } from '@/kolab/names';
+import { displayName, handleOf, isGone, mentionsIn, senderName } from '@/kolab/names';
 import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
 import { readThrough } from '@/kolab/unread';
 import { Markdown } from '@/markdown';
@@ -134,7 +134,7 @@ export default function Conversation() {
     const sender = members?.find((x) => x.actor === m.from);
     const owner = sender?.owner ? members?.find((x) => x.actor === sender.owner) : undefined;
     // A deleted account has no profile to open.
-    const profile = () => { if (!m.from_deleted) router.push(memberHref(m.from, sender?.kind)); };
+    const profile = () => { if (!isGone(m.from, m.from_deleted)) router.push(memberHref(m.from, sender?.kind)); };
     return (
       <Pressable testID={`msg-${m.id}`} onLongPress={() => actions(m)} style={[styles.msg, item.head && styles.head]}>
         <View style={styles.gutter}>
@@ -168,8 +168,10 @@ export default function Conversation() {
   // Your agent's DM with you is your own DM with it, never read as its owner.
   if (redirect) return <Redirect href={{ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: redirect } }} />;
   const people = (members ?? []).filter((m) => m.actor !== me).map(handleOf);
-  // A DM with someone who deleted their account: named as Kolab's messages say (from_deleted, to_deleted).
-  const partnerGone = kind === 'dm' && all.some((x) => (x.from === name && x.from_deleted) || (x.to === name && x.to_deleted));
+  // A DM with someone who deleted their account: its id says so (a deleted account's), or Kolab's
+  // messages do (from_deleted, to_deleted). It has no profile to open, and no one to write to.
+  const partnerGone = kind === 'dm' && (isGone(name) || all.some((x) => (x.from === name && x.from_deleted) || (x.to === name && x.to_deleted)));
+  const otherGone = readOnly && isGone(name);
   const title = kind === 'channel' ? `#${name}` : partnerGone ? DELETED_ACCOUNT : displayName(name, members);
   const agentHandle = readOnly ? at(as!, members) : '';
   const otherHandle = at(name, members);
@@ -179,9 +181,10 @@ export default function Conversation() {
     : undefined;
   return (
     <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.surface }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
-      <Stack.Screen options={{ headerShown: true, title: readOnly ? `${agentHandle} · ${otherHandle}` : title, headerTitle: () => (
+      <Stack.Screen options={{ headerShown: true, title: readOnly ? `${agentHandle} · ${otherHandle}` : title, headerTitle: () => (partnerGone
+        ? <Text testID="conversation-title" numberOfLines={1} style={[styles.title, { color: colors.ink }]}>{title}</Text>
         // The title opens what it names: a channel's details, or the person or agent of a DM.
-        <Pressable testID="conversation-title" accessibilityRole="button" accessibilityLabel={`${readOnly ? `${agentHandle} · ${otherHandle}` : title}, details`} hitSlop={8}
+        : <Pressable testID="conversation-title" accessibilityRole="button" accessibilityLabel={`${readOnly ? `${agentHandle} · ${otherHandle}` : title}, details`} hitSlop={8}
           onPress={() => router.push(kind === 'channel' ? { pathname: '/details/[name]', params: { name, only: filterBy?.actor ?? '' } } : memberHref(readOnly ? as! : name, members?.find((x) => x.actor === (readOnly ? as : name))?.kind))}
           style={styles.titleButton}>
           <Text numberOfLines={1} style={[styles.title, { color: colors.ink }]}>{readOnly ? `${agentHandle} · ${otherHandle}` : title}</Text>
@@ -216,12 +219,17 @@ export default function Conversation() {
       {readOnly ? (
         // Not yours to write in: write to the other side yourself. A long-press forwards a message, to your agent or anyone.
         <View testID="read-only-actions" style={[styles.actions, { borderColor: colors.line, backgroundColor: colors['surface-raised'], paddingBottom: 12 + bottom }]}>
-          <Button quiet testID="message-other" label={`Message ${otherHandle} yourself`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name } })} />
+          {!otherGone && <Button quiet testID="message-other" label={`Message ${otherHandle} yourself`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name } })} />}
           <Text style={[styles.note, { color: colors['ink-muted'], textAlign: 'center' }]}>Long-press a message to forward it.</Text>
         </View>
+      ) : partnerGone ? (
+        // Nobody reads what is sent to a deleted account: no composer, only why.
+        <View testID="deleted-note" style={[styles.actions, { borderColor: colors.line, backgroundColor: colors['surface-raised'], paddingBottom: 12 + bottom }]}>
+          <Text style={[styles.note, { color: colors['ink-muted'], textAlign: 'center' }]}>This account was deleted, so there&apos;s no one to message. What was said here stays.</Text>
+        </View>
       ) : (
-        <Composer people={people} channels={(channels ?? []).map((c) => c.channel)} replyTo={replyTo} onCancelReply={() => setReplyTo(undefined)}
-          onSend={(t) => void send(t)} placeholder={`Message ${title}`} />
+        <Composer people={people} channels={(channels ?? []).map((c) => c.channel)} replyTo={replyTo && { ...replyTo, from: senderName(replyTo, members) }}
+          onCancelReply={() => setReplyTo(undefined)} onSend={(t) => void send(t)} placeholder={`Message ${title}`} />
       )}
     </KeyboardAvoidingView>
   );

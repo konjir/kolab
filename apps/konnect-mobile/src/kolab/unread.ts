@@ -4,6 +4,7 @@
  * into view.
  */
 import type { Answers, AnswerChannelItem, AnswerMessage } from './api';
+import { isGone } from './names';
 
 export interface Unread { count: number; mentions: number }
 
@@ -23,6 +24,13 @@ export function unreadOf(a: Answers | undefined): { dms: Map<string, Unread>; ch
   const total = (a?.messages?.unread ?? a?.messages?.items?.length ?? 0) + [...channels.values()].reduce((s, u) => s + u.count, 0);
   return { dms, channels, total };
 }
+
+/**
+ * Where an Activity row opens: a channel message's channel, or a direct message's conversation;
+ * nothing for a direct message from a deleted account, with no one to write back to.
+ */
+export const opensTo = (item: AnswerMessage | AnswerChannelItem): { kind: 'channel' | 'dm'; name: string } | undefined =>
+  ('channel' in item ? { kind: 'channel', name: item.channel } : isGone(item.from, item.from_deleted) ? undefined : { kind: 'dm', name: item.from });
 
 export type ActivityItem =
   | { kind: 'mention'; item: AnswerChannelItem }

@@ -2,14 +2,16 @@ import { Stack } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
-import { AccountBlocked, DELETION_EXPLAINED, type AccountDeletionBlocker } from '@/kolab/account';
+import { AccountBlocked, BLOCKER_LABEL, BLOCKERS_HINT, DELETION_EXPLAINED, type AccountDeletionBlocker } from '@/kolab/account';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
 import { Body, Hint, Problem, Row, Screen, Section } from '@/ui';
 
 /**
  * Delete account, from You (App Store guideline 5.1.1(v); Lee's decision of 2026-11-23, "remove me,
  * keep my words"): what deleting does, in plain words, and the person's name to type before it
- * runs. Kolab refuses while they own a team someone else is in, and the app lists each such team.
+ * runs. Kolab refuses while they own a team someone else is in, or one that holds documents (an
+ * archived team never blocks), and the app lists each, with what to do: archive it, or remove its
+ * other members.
  * Deleted, the phone is signed out of every team, as Sign out does, and lands on the sign-in screen.
  */
 export default function DeleteAccount() {
@@ -45,10 +47,10 @@ export default function DeleteAccount() {
       </Section>
       {blockers.length > 0 && (
         <Section title="First, deal with these">
-          <Hint>Kolab won&apos;t delete your account yet. Hand each of these over or delete it, then try again.</Hint>
+          <Hint>{BLOCKERS_HINT}</Hint>
           {blockers.map((b) => (
             <View key={`${b.kind}-${b.name}`} testID={`blocker-${b.name}`}>
-              <Row icon="team" label={b.name} detail={b.reason === 'members' ? 'Has other members' : b.reason === 'documents' ? 'Holds documents' : 'Organization'} />
+              <Row icon="team" label={b.name} detail={BLOCKER_LABEL[b.reason]} />
               <Hint>{b.why.charAt(0).toUpperCase() + b.why.slice(1)}.</Hint>
             </View>
           ))}

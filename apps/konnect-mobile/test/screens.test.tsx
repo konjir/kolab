@@ -4,6 +4,9 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react-
 import type { ReactNode } from 'react';
 import type { SecureKV } from '../src/auth/store';
 
+/** A deleted account's id, as Kolab re-keys it (migration 0060). */
+const GONE = 'deleted-0123456789ab';
+
 // The phone's kv-store, as a Map.
 const mockKept = new Map<string, string>();
 jest.mock('expo-sqlite/kv-store', () => ({
@@ -16,6 +19,10 @@ jest.mock('expo-sqlite/kv-store', () => ({
   },
 }));
 jest.mock('expo-device', () => ({ isDevice: false }));
+// The screens are rendered without the app's SafeAreaProvider: the library's own stand-in.
+jest.mock('react-native-safe-area-context', () => jest.requireActual<{ default: unknown }>('react-native-safe-area-context/jest/mock').default);
+// The conversation screen's list, as React Native's own: FlashList ships as ES modules Jest doesn't load.
+jest.mock('@shopify/flash-list', () => ({ FlashList: jest.requireActual<typeof import('react-native')>('react-native').FlatList }));
 jest.mock('expo-notifications', () => ({ setNotificationHandler: jest.fn(), AndroidImportance: {} }));
 // The screens are rendered alone: no navigator, only what they ask of expo-router.
 const mockRedirects: unknown[] = [];
@@ -45,6 +52,13 @@ jest.mock('../src/auth/mcp', () => ({
           { actor: 'bo-builder', kind: 'agent', owner: 'bo', label: 'builder', here: false, owner_reads: true },
         ] });
         case 'konjir_list_channels': return ok({ channels: [] });
+        // A DM with an account since deleted, re-keyed (migration 0060): its words, under the new id.
+        case 'konjir_list_messages': return ok({ messages: args.with === GONE ? [
+          { id: '01M2', from: GONE, to: 'ann', message: 'Bye now', reply_to: null, sent_at: '2026-11-23T10:01:00Z', read_at: null, from_deleted: true },
+          { id: '01M1', from: 'ann', to: GONE, message: 'Hi Bo', reply_to: null, sent_at: '2026-11-23T10:00:00Z', read_at: null, to_deleted: true },
+        ] : [] });
+        case 'konjir_list_channel_messages': return ok({ messages: [] });
+        case 'konjir_whoami': return ok({ actor: 'ann', kolab: 'hub', role: 'product', kind: 'person', subscribe: [] });
         case 'konjir_get_notification_prefs': return ok(mockPrefs);
         case 'konjir_set_notification_prefs': {
           mockPrefs = { ...mockPrefs, level: args.level as string, agents: { ...mockPrefs.agents, ...(args.agents as Record<string, string> | undefined) } };
@@ -60,6 +74,7 @@ jest.mock('../src/auth/mcp', () => ({
 import { AuthProvider } from '../src/auth/AuthProvider';
 import NotificationSettings from '../app/notifications';
 import YourAgent from '../app/agent/[actor]';
+import Conversation from '../app/c/[kind]/[name]';
 /* eslint-enable import/first */
 
 const NS = 'konnect.kolab.konjir.com_mcp';
@@ -139,6 +154,16 @@ describe('the agent screen', () => {
     expect(mockCalls.filter((c) => ['konjir_agent_activity', 'konjir_list_agent_conversations'].includes(c.name))).toEqual([]);
   });
 
+  test('a deleted account\'s agent is named so, with no one to message', async () => {
+    mockParams = { actor: `${GONE}-1` };
+    await render(app(<YourAgent />));
+    await settle();
+    expect(screen.getByTestId('agent-owner').props.children).toBe('An agent of a deleted account');
+    expect(screen.getByText('a deleted account')).toBeTruthy();
+    expect(screen.queryByText(new RegExp(GONE))).toBeNull();
+    expect(screen.queryByTestId('message-agent')).toBeNull();
+  });
+
   test('your own agent\'s are asked once the members list says it is yours', async () => {
     mockParams = { actor: 'ann-helper' };
     await render(app(<YourAgent />));
@@ -147,5 +172,27 @@ describe('the agent screen', () => {
     expect(mockCalls.find((c) => c.name === 'konjir_agent_activity')?.args).toMatchObject({ agent: 'ann-helper' });
     expect(screen.getByTestId('agent-owner').props.children).toBe('Your agent');
     expect(screen.getByTestId('agent-tab-activity')).toBeTruthy();
+  });
+});
+
+describe('a direct message with a deleted account', () => {
+  test('is named "a deleted account", never by its id, opens no profile, and has a note in place of the composer', async () => {
+    mockParams = { kind: 'dm', name: GONE };
+    await render(app(<Conversation />));
+    await settle();
+    expect(screen.getByTestId('deleted-note')).toBeTruthy();
+    expect(screen.getByText(/This account was deleted, so there's no one to message/)).toBeTruthy();
+    expect(screen.queryByTestId('composer')).toBeNull();
+    expect(screen.getAllByText('a deleted account').length).toBeGreaterThan(0);
+    expect(screen.queryByText(new RegExp(GONE))).toBeNull();
+    expect(screen.getByText('Bye now')).toBeTruthy();
+  });
+
+  test('anyone else\'s has its composer', async () => {
+    mockParams = { kind: 'dm', name: 'bo' };
+    await render(app(<Conversation />));
+    await settle();
+    expect(screen.getByTestId('composer')).toBeTruthy();
+    expect(screen.queryByTestId('deleted-note')).toBeNull();
   });
 });
