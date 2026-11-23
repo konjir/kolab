@@ -24,13 +24,39 @@ variable "cli_npm_spec" {
   default = ""
 }
 
+# Sign in with Apple (Lee, 2026-11-23): the Services ID, the team id and the key id, none of them
+# secret, each a String parameter when given, /konjir/<name>/apple-signin-<what>. The key's private
+# key is never Terraform's: Lee puts it himself as the SecureString
+# /konjir/<name>/apple-signin-private-key (README, "Deploying to AWS"), as he does GitHub's secret.
+variable "apple_signin_services_id" {
+  type    = string
+  default = ""
+}
+
+variable "apple_signin_team_id" {
+  type    = string
+  default = ""
+}
+
+variable "apple_signin_key_id" {
+  type    = string
+  default = ""
+}
+
 data "aws_partition" "current" {}
 data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
 locals {
-  github_client_secret_name = "/konjir/${var.name}/github-client-secret"
-  admin_token_name          = "/konjir/${var.name}/admin-token"
+  github_client_secret_name     = "/konjir/${var.name}/github-client-secret"
+  admin_token_name              = "/konjir/${var.name}/admin-token"
+  apple_signin_private_key_name = "/konjir/${var.name}/apple-signin-private-key"
+  # Only those given are made.
+  apple_signin = { for k, v in {
+    services-id = var.apple_signin_services_id
+    team-id     = var.apple_signin_team_id
+    key-id      = var.apple_signin_key_id
+  } : k => v if v != "" }
 }
 
 # Read by name, whether or not the parameter exists yet: a new stack's Kolab starts once
@@ -57,6 +83,28 @@ output "github_param_arns" {
 }
 
 output "github_client_secret_param_name" { value = local.github_client_secret_name }
+
+resource "aws_ssm_parameter" "apple_signin" {
+  for_each    = local.apple_signin
+  name        = "/konjir/${var.name}/apple-signin-${each.key}"
+  description = "Sign in with Apple's ${each.key} for Kolab (not secret); the private key is apple-signin-private-key, which Lee puts by hand"
+  type        = "String"
+  value       = each.value
+}
+
+# Kolab's start script finds them beside the admin token, and the private key Lee puts by hand,
+# named here by its ARN whether or not it exists yet.
+output "apple_param_arns" {
+  value = concat([for p in aws_ssm_parameter.apple_signin : p.arn], [
+    "arn:${data.aws_partition.current.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.apple_signin_private_key_name}",
+  ])
+}
+
+output "apple_signin_param_names" {
+  value = { for k, p in aws_ssm_parameter.apple_signin : k => p.name }
+}
+
+output "apple_signin_private_key_param_name" { value = local.apple_signin_private_key_name }
 
 resource "aws_ssm_parameter" "cli_npm_spec" {
   count       = var.cli_npm_spec == "" ? 0 : 1

@@ -1,8 +1,10 @@
+import { createHash, createPrivateKey, createPublicKey, sign, verify, type KeyObject } from 'node:crypto';
+
 /**
  * Who a person is, according to an identity provider (D55). Kolab signs people up and in with an
- * identity provider, GitHub first; others can be added later behind this interface. A provider
- * only says who signed in. Kolab keeps nothing of theirs but the provider's stable id for the
- * person and their login: no provider token is stored, and none is passed on (DEL4).
+ * identity provider: GitHub, and Sign in with Apple (Lee, 2026-11-23), behind this interface. A
+ * provider only says who signed in. Kolab keeps nothing of theirs but the provider's stable id for
+ * the person and their login: no provider token is stored, and none is passed on (DEL4).
  */
 export interface IdentityProvider {
   /** Its name in the identity table and in Kolab's callback URL, /oauth/callback/<id>: lowercase. */
@@ -12,9 +14,11 @@ export interface IdentityProvider {
   /**
    * Where to send the browser to sign in. Kolab is the provider's OAuth client: `redirectUri` is
    * Kolab's callback, `state` binds the answer to this sign-in (CSRF), and `codeChallenge` is the
-   * S256 PKCE challenge of the verifier `identify` will be given. `prompt: 'select_account'` asks
-   * the provider to let the person choose which of their accounts signs in, rather than going on
-   * with the one their browser is signed in to there.
+   * S256 PKCE challenge of the verifier `identify` will be given. A provider without PKCE binds its
+   * answer to the challenge another way: Apple's id_token carries it back as its `nonce`.
+   * `prompt: 'select_account'` asks the provider to let the person choose which of their accounts
+   * signs in, rather than going on with the one their browser is signed in to there; one that has
+   * no such prompt ignores it.
    */
   authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; prompt?: 'select_account' }): string;
   /**
@@ -25,15 +29,17 @@ export interface IdentityProvider {
   readonly authorizationOrigin?: string;
   /**
    * Who signed in, from the code the provider sent to Kolab's callback. `subject` is the
-   * provider's own id for the person, which never changes hands (GitHub's numeric user id);
-   * `login` what they are called there now. Throws if the code is no good.
+   * provider's own id for the person, which never changes hands (GitHub's numeric user id, Apple's
+   * `sub`); `login` what they are called there now. A provider that has no usernames (Apple) gives
+   * no `login`: the first time such an account signs in, Kolab's page asks the person to choose
+   * their username (Kolab.chooseUsername). Throws if the code is no good.
    */
-  identify(p: { code: string; redirectUri: string; codeVerifier: string }): Promise<{ subject: string; login: string; name?: string }>;
+  identify(p: { code: string; redirectUri: string; codeVerifier: string }): Promise<{ subject: string; login?: string; name?: string }>;
   /**
    * The account a username names now, for an invitation by account (migration 0053): its permanent
    * `subject`, as `identify` gives it, the login as the provider spells it, and whether it is a
    * person's account (not an organization's). Undefined when no account has that name. Throws when
-   * the provider can't be asked. A provider without it takes no invitations by account.
+   * the provider can't be asked. A provider without it takes no invitations by account: Apple's.
    */
   lookup?(login: string): Promise<{ subject: string; login: string; person: boolean } | undefined>;
 }
@@ -136,33 +142,227 @@ export class GitHubIdentity implements IdentityProvider {
   }
 }
 
+/** Apple's sign-in origin: where the browser signs in, the token endpoint, its keys, and every id_token's `iss`. */
+export const APPLE_ORIGIN = 'https://appleid.apple.com';
+/** An Apple Developer team id or key id: ten uppercase letters and digits. */
+const APPLE_ID10 = /^[A-Z0-9]{10}$/;
+/** A Services ID, Apple's client id for the web: a reverse-DNS identifier. */
+const SERVICES_ID = /^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$/;
+/** What Kolab keeps as a person's id at a provider (the identity table's subject check). */
+const SUBJECT = /^[A-Za-z0-9._@|:-]{1,200}$/;
+/** How long a client secret Kolab signs lasts: one token request needs seconds; Apple allows up to six months. */
+const CLIENT_SECRET_S = 300;
+/** Clock skew allowed when checking an id_token's times. */
+const SKEW_S = 60;
+/** Apple's keys are kept this long, and asked for again sooner only for a key id Kolab hasn't seen, at most once a minute. */
+const JWKS_TTL_MS = 60 * 60_000;
+const JWKS_RETRY_MS = 60_000;
+
+const b64url = (b: Buffer | string) => Buffer.from(b).toString('base64url');
+const json64 = (v: unknown) => b64url(JSON.stringify(v));
+
+/**
+ * The Sign in with Apple private key, as Lee puts it in SSM (/konjir/<name>/apple-signin-private-key):
+ * the .p8 file Apple gives, a PKCS #8 PEM, with its lines as they are or joined by a literal `\n`,
+ * or its base64 body alone. It must be an EC P-256 key, which ES256 signs with.
+ */
+export function applePrivateKey(text: string): KeyObject {
+  const t = text.trim().replace(/\\n/g, '\n');
+  const pem = t.includes('-----BEGIN') ? t : `-----BEGIN PRIVATE KEY-----\n${t.replace(/\s+/g, '').replace(/(.{64})/g, '$1\n')}\n-----END PRIVATE KEY-----\n`;
+  let key: KeyObject;
+  try { key = createPrivateKey(pem); } catch { throw new Error('the Sign in with Apple private key isn\'t a PEM private key: put the .p8 file Apple gave'); }
+  if (key.asymmetricKeyType !== 'ec' || key.asymmetricKeyDetails?.namedCurve !== 'prime256v1') throw new Error('the Sign in with Apple private key isn\'t an EC P-256 key, as Apple\'s .p8 keys are');
+  return key;
+}
+
+/**
+ * Sign in with Apple, on the web (Lee, 2026-11-23): Apple's guideline 4.8 asks an app that signs
+ * people in with a third party, as konnect's app does with GitHub on Kolab's page, to offer Sign in
+ * with Apple beside it. Kolab is the OAuth client of a Services ID (`servicesId`, the client id)
+ * of Lee's Apple Developer team (`teamId`), whose return URL is Kolab's callback,
+ * https://<host>/oauth/callback/apple. Its client secret is a JWT Kolab signs, ES256, with a Sign in
+ * with Apple key of the team's (`keyId`, `privateKey`), afresh for each token request, lasting five
+ * minutes. In production these come from SSM (deploy/release/start.sh: KONJIR_APPLE_*).
+ *
+ * - **No scope.** Kolab asks for neither name nor email, so Apple answers with a GET redirect
+ *   (`response_mode=query`) to Kolab's callback, which the binding cookie (SameSite=Lax) follows;
+ *   asking for either would make Apple POST the answer cross-site (`form_post`), which it wouldn't.
+ *   Kolab keeps no email. Apple gives no username either: the person chooses theirs at their first
+ *   sign-in (Kolab.chooseUsername), and their avatar is their initials (Member.login is null).
+ * - **Who signed in** is the id_token's `sub`, Apple's stable id for the person within the team,
+ *   from the token endpoint. Kolab checks it as a relying party must, though it came straight from
+ *   Apple over TLS: its RS256 signature by one of Apple's keys (/auth/keys), its issuer, its
+ *   audience (the Services ID), its expiry, and its nonce.
+ * - **PKCE.** Apple doesn't document PKCE for this flow, so none is sent. In its place the
+ *   authorization asks for a `nonce` that is the sign-in's PKCE challenge, the sha256 of a verifier
+ *   derived from the browser's binding and the provider's state (OAuthController), and `identify`
+ *   accepts the id_token only if its nonce is the challenge of the verifier it is given. So a code
+ *   works only in the sign-in, in the browser, it was issued for, as PKCE would make it, beside the
+ *   `state` binding Kolab checks before the code goes anywhere.
+ * - **No lookup**, since Apple has no usernames: an Apple account can't be invited by name. An invite
+ *   link (W3.4) reaches one.
+ * - Apple's access and refresh tokens are dropped unread, never stored or revoked, as GitHub's.
+ */
+export class AppleIdentity implements IdentityProvider {
+  readonly id = 'apple';
+  readonly label = 'Apple';
+  private readonly key: KeyObject;
+  private keys = new Map<string, KeyObject>();
+  private keysAt = 0;
+  private keysLoading?: Promise<void>;
+
+  constructor(private readonly config: {
+    servicesId: string; teamId: string; keyId: string; privateKey: string;
+    /** For tests: Apple's origin, the fetch to reach it with, and the clock, in ms. */
+    origin?: string; fetch?: Fetch; timeoutMs?: number; now?: () => number;
+  }) {
+    if (!config.servicesId || !config.teamId || !config.keyId || !config.privateKey) throw new Error('Sign in with Apple needs the Services ID, the team id, the key id and the private key');
+    if (!SERVICES_ID.test(config.servicesId)) throw new Error('the Sign in with Apple Services ID is a reverse-DNS identifier, such as com.konjir.kolab.signin');
+    if (!APPLE_ID10.test(config.teamId)) throw new Error('the Apple Developer team id is ten uppercase letters and digits');
+    if (!APPLE_ID10.test(config.keyId)) throw new Error('the Sign in with Apple key id is ten uppercase letters and digits');
+    this.key = applePrivateKey(config.privateKey);
+  }
+
+  private get origin() { return this.config.origin ?? APPLE_ORIGIN; }
+  private get fetch(): Fetch { return this.config.fetch ?? fetch; }
+  private signal() { return AbortSignal.timeout(this.config.timeoutMs ?? 10_000); }
+  private now() { return this.config.now?.() ?? Date.now(); }
+
+  get authorizationOrigin() { return new URL(this.origin).origin; }
+
+  authorizationUrl(p: { redirectUri: string; state: string; codeChallenge: string; prompt?: 'select_account' }): string {
+    const u = new URL('/auth/authorize', this.origin);
+    u.searchParams.set('client_id', this.config.servicesId);
+    u.searchParams.set('redirect_uri', p.redirectUri);
+    u.searchParams.set('response_type', 'code');
+    // No scope, so the answer may come as a GET: name or email would need form_post, a cross-site POST.
+    u.searchParams.set('response_mode', 'query');
+    u.searchParams.set('state', p.state);
+    // In PKCE's place: the id_token must carry it back (identify).
+    u.searchParams.set('nonce', p.codeChallenge);
+    // No prompt: Apple has no account picker to ask for, and its page offers another Apple Account itself.
+    return u.toString();
+  }
+
+  /** The client secret for one token request: an ES256 JWT of the team's Sign in with Apple key, for the Services ID, lasting five minutes. */
+  clientSecret(): string {
+    const iat = Math.floor(this.now() / 1000);
+    const input = `${json64({ alg: 'ES256', kid: this.config.keyId, typ: 'JWT' })}.${json64({ iss: this.config.teamId, iat, exp: iat + CLIENT_SECRET_S, aud: APPLE_ORIGIN, sub: this.config.servicesId })}`;
+    // JOSE's ES256 signature is r and s, 32 bytes each (IEEE P1363), not DER.
+    return `${input}.${b64url(sign('sha256', Buffer.from(input), { key: this.key, dsaEncoding: 'ieee-p1363' }))}`;
+  }
+
+  async identify(p: { code: string; redirectUri: string; codeVerifier: string }) {
+    const res = await this.fetch(new URL('/auth/token', this.origin), {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: this.config.servicesId, client_secret: this.clientSecret(),
+        code: p.code, grant_type: 'authorization_code', redirect_uri: p.redirectUri,
+      }),
+      signal: this.signal(),
+    });
+    const t = await res.json().catch(() => ({})) as { id_token?: unknown; error?: unknown };
+    // Never the response itself in the error: it carries tokens.
+    if (!res.ok || typeof t.id_token !== 'string') throw new Error(`Apple didn't accept the sign-in (${typeof t.error === 'string' ? t.error.slice(0, 80) : res.status})`);
+    // Its access and refresh tokens are dropped here, unread, never stored, logged or passed on (DEL4).
+    const claims = await this.verifyIdToken(t.id_token, createHash('sha256').update(p.codeVerifier).digest('base64url'));
+    return { subject: claims.sub };
+  }
+
+  /**
+   * An id_token's claims, once it checks out: signed RS256 by one of Apple's keys, the one its
+   * header names; issued by Apple for this Services ID; not expired, nor issued in the future (a
+   * minute's skew either way); carrying `nonce`; and naming a `sub` the identity table can keep.
+   * Throws otherwise, saying which, never with the token.
+   */
+  async verifyIdToken(token: string, nonce: string): Promise<{ sub: string }> {
+    const parts = token.split('.');
+    if (parts.length !== 3 || parts.some((x) => !/^[A-Za-z0-9_-]+$/.test(x))) throw new Error('Apple\'s id_token isn\'t a JWT');
+    const [h, b, sig] = parts;
+    let header: { alg?: unknown; kid?: unknown };
+    let claims: { iss?: unknown; aud?: unknown; exp?: unknown; iat?: unknown; sub?: unknown; nonce?: unknown };
+    try {
+      header = JSON.parse(Buffer.from(h, 'base64url').toString('utf8'));
+      claims = JSON.parse(Buffer.from(b, 'base64url').toString('utf8'));
+    } catch { throw new Error('Apple\'s id_token isn\'t a JWT'); }
+    if (header?.alg !== 'RS256' || typeof header.kid !== 'string') throw new Error('Apple\'s id_token isn\'t signed RS256 with a key id');
+    const key = await this.signingKey(header.kid);
+    if (!key || !verify('sha256', Buffer.from(`${h}.${b}`), key, Buffer.from(sig, 'base64url'))) throw new Error('Apple\'s id_token isn\'t signed by Apple');
+    const now = this.now() / 1000;
+    if (claims?.iss !== APPLE_ORIGIN) throw new Error('Apple\'s id_token wasn\'t issued by Apple');
+    if (claims.aud !== this.config.servicesId) throw new Error('Apple\'s id_token isn\'t for this Services ID');
+    if (typeof claims.exp !== 'number' || claims.exp + SKEW_S < now) throw new Error('Apple\'s id_token expired');
+    if (typeof claims.iat === 'number' && claims.iat - SKEW_S > now) throw new Error('Apple\'s id_token was issued in the future');
+    if (claims.nonce !== nonce) throw new Error('Apple\'s id_token isn\'t for this sign-in (its nonce differs)');
+    if (typeof claims.sub !== 'string' || !SUBJECT.test(claims.sub)) throw new Error('Apple\'s id_token names no usable account');
+    return { sub: claims.sub };
+  }
+
+  /** Apple's public key by its id, from /auth/keys: kept an hour; an id not among them asks again, at most once a minute. */
+  private async signingKey(kid: string): Promise<KeyObject | undefined> {
+    const age = this.now() - this.keysAt;
+    if (!this.keysAt || age > JWKS_TTL_MS || (!this.keys.has(kid) && age > JWKS_RETRY_MS)) {
+      this.keysLoading ??= this.loadKeys().finally(() => { this.keysLoading = undefined; });
+      await this.keysLoading;
+    }
+    return this.keys.get(kid);
+  }
+
+  private async loadKeys() {
+    const res = await this.fetch(new URL('/auth/keys', this.origin), { headers: { accept: 'application/json' }, signal: this.signal() });
+    const set = await res.json().catch(() => ({})) as { keys?: unknown };
+    if (!res.ok || !Array.isArray(set.keys)) throw new Error(`Apple's signing keys couldn't be read (${res.status})`);
+    const keys = new Map<string, KeyObject>();
+    for (const k of set.keys as { kty?: unknown; kid?: unknown; n?: unknown; e?: unknown; use?: unknown }[]) {
+      if (k?.kty !== 'RSA' || typeof k.kid !== 'string' || typeof k.n !== 'string' || typeof k.e !== 'string' || (k.use !== undefined && k.use !== 'sig')) continue;
+      try { keys.set(k.kid, createPublicKey({ key: { kty: 'RSA', n: k.n, e: k.e }, format: 'jwk' })); } catch { /* a key Node can't read is skipped */ }
+    }
+    this.keys = keys;
+    this.keysAt = this.now();
+  }
+}
+
+/** Who a stub provider signs in: `login` left out, as Apple leaves it out. */
+type StubWho = { subject: string; login?: string; name?: string };
+
 /**
  * An identity provider for tests and local development, which signs in whoever the test says,
  * with no browser and no network: `authorizationUrl` sends the browser straight back to Kolab's
  * callback with a code for the next person queued by `next` (or `as`). Only code can configure
- * it (startServer's `identity`); `kolab serve` never does.
+ * it (startServer's `identity`); `kolab serve` never does. By default it is GitHub's stand-in, with
+ * logins and `lookup`; with `usernames: false` it is Apple's, under its own `id` and `label`: it
+ * gives no login, so a new account's person chooses a username, and it has no `lookup`.
  */
 export class StubIdentity implements IdentityProvider {
-  readonly id = 'stub';
-  readonly label = 'Stub';
-  private readonly queue: { subject: string; login: string; name?: string }[] = [];
-  private readonly codes = new Map<string, { who: { subject: string; login: string; name?: string }; redirectUri: string; challenge: string }>();
+  readonly id: string;
+  readonly label: string;
+  private readonly logins: boolean;
+  private readonly queue: StubWho[] = [];
+  private readonly codes = new Map<string, { who: StubWho; redirectUri: string; challenge: string }>();
   private n = 0;
   /** Who signs in when nobody is queued; undefined to refuse. */
-  as?: { subject: string; login: string; name?: string };
+  as?: StubWho;
+
+  constructor(opts: { id?: string; label?: string; usernames?: boolean } = {}) {
+    this.id = opts.id ?? 'stub';
+    this.label = opts.label ?? 'Stub';
+    this.logins = opts.usernames !== false;
+    // Looks a login up among the accounts the test made (account); `lookups` counts the calls. Apple's stand-in has none.
+    this.lookup = this.logins ? async (login: string) => { this.lookups++; return this.accounts.get(login.toLowerCase()); } : undefined;
+  }
 
   /** Accounts `lookup` finds, by login in any case: what GitHub's users would be. */
   private readonly accounts = new Map<string, { subject: string; login: string; person: boolean }>();
 
   /** The next sign-in is this person. */
-  next(who: { subject: string; login: string; name?: string }) { this.queue.push(who); return this; }
+  next(who: StubWho) { this.queue.push(who); return this; }
 
   /** An account `lookup` finds by its login: a person's, unless `person` is false (an organization's). */
   account(who: { subject: string; login: string; person?: boolean }) { this.accounts.set(who.login.toLowerCase(), { subject: who.subject, login: who.login, person: who.person ?? true }); return this; }
 
-  /** Looks a login up among the accounts the test made (account). `lookups` counts the calls. */
   lookups = 0;
-  async lookup(login: string) { this.lookups++; return this.accounts.get(login.toLowerCase()); }
+  readonly lookup?: (login: string) => Promise<{ subject: string; login: string; person: boolean } | undefined>;
 
   /** The prompt each authorizationUrl was asked with, in order: what GitHub would have been asked. */
   readonly prompts: (string | undefined)[] = [];
@@ -173,7 +373,7 @@ export class StubIdentity implements IdentityProvider {
     const u = new URL(p.redirectUri);
     u.searchParams.set('state', p.state);
     if (!who) { u.searchParams.set('error', 'access_denied'); return u.toString(); }
-    const code = `stub-${++this.n}`;
+    const code = `${this.id}-${++this.n}`;
     this.codes.set(code, { who, redirectUri: p.redirectUri, challenge: p.codeChallenge });
     u.searchParams.set('code', code);
     return u.toString();
@@ -182,10 +382,13 @@ export class StubIdentity implements IdentityProvider {
   async identify(p: { code: string; redirectUri: string; codeVerifier: string }) {
     const c = this.codes.get(p.code);
     this.codes.delete(p.code);
-    const { createHash } = await import('node:crypto');
     if (!c || c.redirectUri !== p.redirectUri || createHash('sha256').update(p.codeVerifier).digest('base64url') !== c.challenge) {
       throw new Error('the stub provider didn\'t issue that code');
     }
-    return c.who;
+    if (this.logins) {
+      if (c.who.login === undefined) throw new Error('the stub provider stands in for GitHub here: give each person a login');
+      return c.who;
+    }
+    return { subject: c.who.subject, ...(c.who.name ? { name: c.who.name } : {}) };
   }
 }

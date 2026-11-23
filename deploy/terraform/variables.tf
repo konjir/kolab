@@ -105,6 +105,41 @@ variable "github_oauth_client_id" {
   default     = "Ov23licO2Gy9ngM4tgPE"
 }
 
+# Sign in with Apple, beside GitHub (Lee, 2026-11-23): what Kolab is to Apple, none of it secret.
+# Each non-empty one is kept as a String parameter beside the admin token, /konjir/<name>/apple-signin-*,
+# which start.sh reads. The private key is never Terraform's: Lee puts it himself as the SecureString
+# /konjir/<name>/apple-signin-private-key (README). Kolab signs people in with Apple only when all
+# four are there, and otherwise runs without Apple, saying so in one line.
+variable "apple_signin_services_id" {
+  description = "Sign in with Apple's Services ID, its client id on the web (e.g. com.konjir.kolab.signin), whose return URL is https://<domain_name>/oauth/callback/apple (Apple's developer portal). Empty: no parameter, and no Apple sign-in."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.apple_signin_services_id == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$", var.apple_signin_services_id))
+    error_message = "apple_signin_services_id is a reverse-DNS identifier, such as com.konjir.kolab.signin, or empty."
+  }
+}
+
+variable "apple_signin_team_id" {
+  description = "The Apple Developer team the Services ID and the Sign in with Apple key belong to: the client secret's iss. Empty: no parameter, and no Apple sign-in."
+  type        = string
+  default     = "7Y8QD34KJQ"
+  validation {
+    condition     = var.apple_signin_team_id == "" || can(regex("^[A-Z0-9]{10}$", var.apple_signin_team_id))
+    error_message = "apple_signin_team_id is ten uppercase letters and digits, or empty."
+  }
+}
+
+variable "apple_signin_key_id" {
+  description = "The key id of the Sign in with Apple private key Kolab signs its client secret with, the client secret's kid. The key itself is the SecureString /konjir/<name>/apple-signin-private-key, which Lee puts by hand. Empty: no parameter, and no Apple sign-in."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.apple_signin_key_id == "" || can(regex("^[A-Z0-9]{10}$", var.apple_signin_key_id))
+    error_message = "apple_signin_key_id is ten uppercase letters and digits, or empty."
+  }
+}
+
 variable "cli_npm_spec" {
   description = "The published CLI's npm spec, pinned to an exact version (@konjir/kolab@X.Y.Z; konjir@X.Y.Z up to 0.8.0), that Kolab's web page shows in its npx commands (W3.7). Kept as the SSM parameter /konjir/<name>/cli-npm-spec, which start.sh reads when Kolab starts. Bump it after each CLI release (README). The page shows npx <spec> connect claude with it, which needs a CLI that carries the channel: konjir 0.7.0 or later, or any @konjir/kolab (W9.5). Empty: no parameter, and the page shows no npx commands."
   type        = string

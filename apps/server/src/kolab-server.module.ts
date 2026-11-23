@@ -35,8 +35,12 @@ export interface KolabServerModuleOptions extends ServerOptions {
   publicHost?: string;
   /** How often a web event stream checks its kolab's versions, in ms (3 s by default). */
   webVersionsPollMs?: number;
-  /** Who signs people in (D55): GitHub in production. Without one, there is no OAuth, and only hand-issued tokens work. */
-  identity?: IdentityProvider;
+  /**
+   * Who signs people in (D55): GitHub, and Apple once it is set up, in production; several are
+   * offered on Kolab's sign-in page in this order. Without one, there is no OAuth, and only
+   * hand-issued tokens work.
+   */
+  identity?: IdentityProvider | IdentityProvider[];
   /** Whether the web interface still takes a pasted session token: by default, only when there is no identity provider. */
   webTokenSignIn?: boolean;
   /** The published kolab CLI's npm spec, pinned to an exact version (KONJIR_CLI_NPM_SPEC, W3.7). */
@@ -72,6 +76,9 @@ export class KolabServerModule implements NestModule {
     const { kolab, publicHost, webVersionsPollMs, identity, webTokenSignIn, cliNpmSpec, push, ...serverOptions } = options;
     if (cliNpmSpec !== undefined && !isPinnedNpmSpec(cliNpmSpec)) throw new Error(`KONJIR_CLI_NPM_SPEC is a package pinned to an exact version, such as @konjir/kolab@1.2.3, not ${JSON.stringify(cliNpmSpec)}`);
     const handIssuedTokens = serverOptions.handIssuedTokens !== false;
+    const identities = identity === undefined ? [] : Array.isArray(identity) ? identity : [identity];
+    const ids = identities.map((i) => i.id);
+    if (new Set(ids).size !== ids.length || ids.some((i) => !/^[a-z][a-z0-9-]{0,31}$/.test(i))) throw new Error(`identity providers have distinct lowercase ids, not ${ids.join(', ')}`);
     return {
       module: KolabServerModule,
       imports: [
@@ -100,13 +107,14 @@ export class KolabServerModule implements NestModule {
       providers: [
         { provide: KOLAB, useValue: kolab },
         { provide: SERVER_OPTIONS, useValue: { ...serverOptions, handIssuedTokens } },
-        { provide: OAUTH_OPTIONS, useValue: { identity, publicHost } },
+        { provide: OAUTH_OPTIONS, useValue: { identities, publicHost } },
         { provide: PUSH_OPTIONS, useValue: push ?? { accessToken: null, preview: true } },
         {
           provide: WEB_OPTIONS,
           useValue: {
             adminToken: serverOptions.adminToken, publicHost, versionsPollMs: webVersionsPollMs,
-            tokenSignIn: webTokenSignIn ?? !identity, identityLabel: identity?.label, handIssuedTokens, cliNpmSpec,
+            // One button on the web page, which leads to Kolab's own sign-in page, where each provider has its own.
+            tokenSignIn: webTokenSignIn ?? !identities.length, identityLabel: identities.length ? identities.map((i) => i.label).join(' or ') : undefined, handIssuedTokens, cliNpmSpec,
           },
         },
         WebService,

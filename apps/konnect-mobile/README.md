@@ -23,7 +23,7 @@ Every operation is an Nx target, run from the repository root as `npx nx run @ko
 | `prebuild` | `expo prebuild --clean`: writes `ios/` and `android/` from `app.config.ts`. Both are generated and gitignored (CNG). |
 | `ios`, `android` | `expo run:ios`, `expo run:android`: a local dev build, installed on a simulator or emulator, with Metro. |
 | `start` | `expo start --dev-client`: Metro, for a dev build that is already installed. |
-| `local-kolab` | A throwaway Kolab from this checkout on `http://127.0.0.1:7432/mcp`, with the stub identity provider in GitHub's place. Team `hub` has Ann, Bo, Ann's agents `ann/reviewer` and `ann/helper` (which has DMs with Bo), Bo's agent `bo/builder`, two more channels, and unread messages for Ann. |
+| `local-kolab` | A throwaway Kolab from this checkout on `http://127.0.0.1:7432/mcp`, with the stub identity provider in GitHub's place. Team `hub` has Ann, Bo, Ann's agents `ann/reviewer` and `ann/helper` (which has DMs with Bo), Bo's agent `bo/builder`, two more channels, and unread messages for Ann. With `KONNECT_LOCAL_APPLE=1`, a stand-in for Sign in with Apple too, so Kolab's page shows both buttons, as production's does once Apple is set up; the Maestro flows run without it. |
 
 `APP_VARIANT` (`development` by default, `preview`, `production`) picks the app: its name, bundle ID and package (`com.konjir.konnect.dev`, `.preview`, or none), and URL scheme, which is the same name. The three install side by side. `KONNECT_URL` points a build at another Kolab; it defaults to `https://kolab.konjir.com/mcp`.
 

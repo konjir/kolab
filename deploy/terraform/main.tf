@@ -64,6 +64,10 @@ module "secrets" {
   name             = var.name
   github_client_id = var.github_oauth_client_id
   cli_npm_spec     = var.cli_npm_spec
+
+  apple_signin_services_id = var.apple_signin_services_id
+  apple_signin_team_id     = var.apple_signin_team_id
+  apple_signin_key_id      = var.apple_signin_key_id
 }
 
 # The break-glass admin token is no longer Terraform's (W2.22): forget the generated value and its
@@ -107,6 +111,7 @@ module "iam" {
   metrics_namespace      = module.monitoring.metrics_namespace
 
   expo_access_token_param_arn = module.secrets.expo_access_token_param_arn
+  apple_param_arns            = module.secrets.apple_param_arns
 
   permissions_boundary_arn = "${local.boundary_prefix}-instance-boundary"
 }

@@ -21,7 +21,7 @@ export { isPinnedNpmSpec } from './kolab-server.module.js';
 // Kolab's JSON log lines (P11, D68), for `kolab serve`'s own lines: the CLI loads the server, never the library.
 export { log } from '@konjir/log';
 export { JsonNestLogger, serverErrors } from './json-logger.js';
-export { GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
+export { AppleIdentity, GitHubIdentity, StubIdentity, type IdentityProvider } from './oauth/identity.js';
 export { EXPO_PUSH_URL, expoSender, pushOptionsFromEnv } from './push.js';
 export type { PushOptions } from './tokens.js';
 
@@ -56,8 +56,11 @@ export async function startServer(opts: {
   kolabsPerPerson?: number;
   /** How many days a hand-issued session token lasts (W2.22; 30 by default, KONJIR_HAND_ISSUED_TOKEN_DAYS). */
   handIssuedTokenDays?: number;
-  /** Who signs people in (D55): GitHubIdentity in production, StubIdentity in tests. Without one, no OAuth. */
-  identity?: IdentityProvider;
+  /**
+   * Who signs people in (D55): GitHubIdentity, and AppleIdentity once it is set up, in production;
+   * StubIdentity in tests. Several are offered on Kolab's sign-in page, in this order. Without one, no OAuth.
+   */
+  identity?: IdentityProvider | IdentityProvider[];
   /** Whether the web interface still takes a pasted session token: by default, only without an identity provider. */
   webTokenSignIn?: boolean;
   /** Whether hand-issued session tokens still work beside OAuth's (true by default, during the transition). */

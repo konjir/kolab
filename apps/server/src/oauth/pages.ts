@@ -28,6 +28,14 @@ const STYLE = [
   'ul.choices li:first-child{border-top:0}ul.choices small{display:block;color:var(--ink-muted)}ul.choices .row{margin-top:0}',
   '.note{font-weight:600}',
   'button.link{min-height:0;padding:0;border:0;background:none;color:var(--accent);text-decoration:underline;font-size:.9em}',
+  // The sign-in page's buttons, one per identity provider (signInPage). Sign in with Apple's as
+  // Apple's guidelines draw it: the Apple logo and "Sign in with Apple" in the system font, white on
+  // the dark theme and black on the light, at least as large and as prominent as any other.
+  '.idps{display:flex;flex-direction:column;gap:12px;margin:20px 0 8px}',
+  'a.idp{display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:10px 18px;border-radius:var(--r-md);border:1px solid var(--line-strong);color:var(--ink);font-weight:600;text-decoration:none}',
+  'a.idp svg{width:18px;height:18px;flex:none}',
+  'a.idp.apple{background:#fff;border-color:#fff;color:#000;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Helvetica,Arial,sans-serif;font-size:17px;font-weight:500;letter-spacing:-0.01em}',
+  '@media (prefers-color-scheme: light){a.idp.apple{background:#000;border-color:#000;color:#fff}}',
 ].join('\n');
 const STYLE_HASH = createHash('sha256').update(STYLE).digest('base64');
 const csp = (formTargets: string[]) =>
@@ -311,6 +319,11 @@ interface PersonView {
   /** The redirect is konnect's own app's (appRedirect), on a phone as likely as a computer: the page says "this device". */
   native?: boolean;
   person: string; login: string; provider: string; created: boolean;
+  /**
+   * The provider they signed in with has accounts that can be invited by name (it has a lookup:
+   * GitHub). False for Apple's, which the page says reach a team by an invite link. True if unset.
+   */
+  invitable?: boolean;
   /** The person is a Konjir admin: the app works as them, with every admin verb (D111), and the page says so. */
   konjirAdmin?: boolean;
   error?: string;
@@ -376,7 +389,9 @@ ${v.kolabs.map((k) => `<li><span><code>${esc(k.id)}</code>${k.title && k.title !
 <span class="row"><button type="submit" name="pick" value="kolab:${esc(k.id)}">Sign in to ${esc(k.id)}</button></span></li>`).join('\n')}
 </ul></fieldset>` : '';
   const none = !v.invitations.length && !v.kolabs.length
-    ? `<p><strong>No invitation waits for <code>${esc(v.login)}</code>, and you are a member of no kolab yet.</strong> To make a team of your own, run <code>npx @konjir/konnect team &lt;name&gt;</code>. To join someone else's, ask its owner to invite your ${esc(v.provider)} account, <code>${esc(v.login)}</code>, then sign in again.</p>` : '';
+    ? v.invitable === false
+      ? `<p><strong>You are a member of no kolab yet.</strong> To make a team of your own, run <code>npx @konjir/konnect team &lt;name&gt;</code>. An account you sign in to with ${esc(v.provider)} can't be invited by name, so to join someone else's, ask its owner for an invite link from Kolab's web page, open it, sign in there, then sign in here again.</p>`
+      : `<p><strong>No invitation waits for <code>${esc(v.login)}</code>, and you are a member of no kolab yet.</strong> To make a team of your own, run <code>npx @konjir/konnect team &lt;name&gt;</code>. To join someone else's, ask its owner to invite your ${esc(v.provider)} account, <code>${esc(v.login)}</code>, then sign in again.</p>` : '';
   return `<h1>Choose where to sign in</h1>
 ${personIntro(v)}
 <form class="card" method="post" action="/oauth/consent">
@@ -437,5 +452,75 @@ ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
 ${personHidden(v)}
 <input type="hidden" name="shown" value="${made ? 'make' : 'member'}">
 <div class="row"><button class="primary" type="submit" name="decision" value="allow">${made ? `Make ${esc(plan.kolab)} and sign in` : 'Allow'}</button><button type="submit" name="decision" value="deny">Deny</button></div>
+</form>`;
+}
+
+/** The Apple logo, for Sign in with Apple's button: decoration, since the button's text says it. */
+const APPLE_LOGO = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M16.37 12.73c-.03-2.66 2.17-3.94 2.27-4-1.24-1.81-3.16-2.06-3.84-2.09-1.63-.17-3.19.96-4.02.96-.83 0-2.1-.94-3.46-.91-1.78.03-3.42 1.04-4.34 2.63-1.85 3.21-.47 7.96 1.33 10.56.88 1.27 1.93 2.7 3.31 2.65 1.33-.05 1.83-.86 3.44-.86 1.6 0 2.06.86 3.46.83 1.43-.02 2.34-1.3 3.21-2.58 1.01-1.47 1.43-2.9 1.45-2.98-.03-.01-2.78-1.07-2.81-4.21zM13.74 4.92c.73-.89 1.23-2.12 1.09-3.35-1.05.04-2.33.7-3.08 1.59-.68.78-1.27 2.03-1.11 3.24 1.17.09 2.37-.6 3.1-1.48z"/></svg>';
+
+/** What the sign-in page shows, when Kolab has several identity providers (signInPage). */
+export interface SignInView {
+  /** The client's name, its own say-so, and where it gets its answer. */
+  client: string;
+  redirect: string;
+  /** Kolab's own web page signing in. */
+  web: boolean;
+  /** Each provider, in order, and where its button leads: this same authorization, naming it. */
+  providers: { id: string; label: string; href: string }[];
+}
+
+/**
+ * Kolab's sign-in page, when it has several identity providers (Lee, 2026-11-23): a button for each,
+ * "Sign in with <label>", each a link to the same authorization naming its provider, so nothing is
+ * started until the person picks one. Sign in with Apple comes first, drawn as Apple's guidelines
+ * ask (APPLE_LOGO, black or white); the others as Kolab's own buttons. Whichever they pick, the
+ * consent page that follows says what the app gets.
+ */
+export function signInPage(v: SignInView): string {
+  const order = [...v.providers.filter((p) => p.id === 'apple'), ...v.providers.filter((p) => p.id !== 'apple')];
+  const button = (p: SignInView['providers'][number]) => p.id === 'apple'
+    ? `<a class="idp apple" href="${esc(p.href)}">${APPLE_LOGO}<span>Sign in with Apple</span></a>`
+    : `<a class="idp" href="${esc(p.href)}">Sign in with ${esc(p.label)}</a>`;
+  return `<h1>Sign in to Kolab</h1>
+<div class="card">
+<p>${v.web ? 'Sign in to Kolab\'s web page.' : `<strong>${esc(v.client)}</strong> asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>. Its name is what it calls itself. You choose what it gets once you have signed in.`}</p>
+<div class="idps">
+${order.map(button).join('\n')}
+</div>
+<p class="muted">Kolab keeps only the account's id there, and your username: no email, no password.</p>
+</div>`;
+}
+
+/** What the username page shows (usernamePage): who signed in, and the app asking. */
+export interface UsernameView {
+  signIn: string;
+  csrf: string;
+  client: string;
+  redirect: string;
+  web: boolean;
+  /** The provider they signed in with: Apple. */
+  provider: string;
+  /** What they typed last, shown again with `error`. */
+  username?: string;
+  error?: string;
+}
+
+/**
+ * The page of a first sign-in with a provider that gives no username (Apple): the person is new to
+ * Kolab, and chooses the username they will be known by here, their actor id for good, before
+ * anyone is made. Continue (`decision=choose`) or Cancel; a name Kolab can't take comes back with
+ * why. Posted to /oauth/username, never to the consent form.
+ */
+export function usernamePage(v: UsernameView): string {
+  return `<h1>Choose your username</h1>
+<p class="muted">Signed in with ${esc(v.provider)}. Welcome: you are new to Kolab.</p>
+<form class="card" method="post" action="/oauth/username">
+<p>${v.web ? 'Kolab\'s web page signs you in.' : `<strong>${esc(v.client)}</strong> asks to work in Kolab, and gets its answer at <code>${esc(v.redirect)}</code>.`} First, choose the username people and agents will know you by here. It is yours for good: it can't be changed later, and your agents' names start with it.</p>
+${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
+<input type="hidden" name="sign_in" value="${esc(v.signIn)}">
+<input type="hidden" name="csrf" value="${esc(v.csrf)}">
+<label for="username"><strong>Username</strong><small class="muted"> 2 to 39 lowercase letters, digits and single hyphens</small></label>
+<input type="text" id="username" name="username" value="${esc(v.username ?? '')}" required minlength="2" maxlength="39" pattern="[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="for example ada-l">
+<div class="row"><button class="primary" type="submit" name="decision" value="choose">Continue</button><button type="submit" name="decision" value="cancel" formnovalidate>Cancel</button></div>
 </form>`;
 }

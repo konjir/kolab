@@ -39,6 +39,16 @@ output "expo_access_token_parameter" {
   value       = module.secrets.expo_access_token_param_name
 }
 
+output "apple_signin_private_key_parameter" {
+  description = "SSM SecureString Lee puts Sign in with Apple's private key in (the .p8 file), outside Terraform (README, Deploying to AWS). Kolab signs people in with Apple only once it, and the Services ID, team id and key id parameters, are all there."
+  value       = module.secrets.apple_signin_private_key_param_name
+}
+
+output "apple_signin_parameters" {
+  description = "SSM String parameters Terraform keeps for Sign in with Apple, by what each holds: services-id, team-id and key-id, each only when its variable is set."
+  value       = module.secrets.apple_signin_param_names
+}
+
 output "log_group" {
   description = "CloudWatch Logs group holding Kolab's and Caddy's journal (streams konjir and caddy), kept 30 days."
   value       = module.monitoring.log_group_name

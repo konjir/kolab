@@ -4,6 +4,7 @@
 // (every deployed Kolab has one) and beside GitHub's settings, and the deployed config never sets it.
 import { expect, test } from '@jest/globals';
 import { spawn } from 'node:child_process';
+import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -32,6 +33,37 @@ test('the deployed Kolab can\'t turn the stub on: its config never names it, and
   const start = readFileSync(join(root, 'deploy/release/start.sh'), 'utf8');
   for (const text of [userdata, start]) expect(text).not.toContain('KONJIR_STUB_IDENTITY');
   expect(userdata).toMatch(/^KONJIR_PUBLIC_HOST=\$DOMAIN$/m);
+});
+
+test('Sign in with Apple: on beside GitHub with all four of its settings; with any missing, or a key that isn\'t Apple\'s, off and said so, and Kolab runs on; never beside the stub', async () => {
+  const { AppleIdentity, GitHubIdentity } = await import('@konjir/server');
+  const load = async () => ({ StubIdentity, GitHubIdentity, AppleIdentity });
+  const key = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+  const github = { KONJIR_GITHUB_CLIENT_ID: 'Iv1.x', KONJIR_GITHUB_CLIENT_SECRET: 'shh' };
+  const apple = { KONJIR_APPLE_SERVICES_ID: 'com.konjir.kolab.signin', KONJIR_APPLE_TEAM_ID: '7Y8QD34KJQ', KONJIR_APPLE_KEY_ID: 'ABCDE12345', KONJIR_APPLE_PRIVATE_KEY: key };
+  const ids = (r: { identity?: unknown }) => [r.identity ?? []].flat().map((i) => (i as { id: string }).id);
+
+  const both = signInSettings({ ...github, ...apple });
+  expect([both.github, both.apple, both.appleOff, both.describe, both.webTokenSignIn]).toStrictEqual([true, true, undefined, 'GitHub and Apple; hand-issued session tokens', false]);
+  expect(ids(await both.identity(load))).toStrictEqual(['github', 'apple']);
+  expect(ids(await signInSettings(apple).identity(load))).toStrictEqual(['apple']);
+
+  // Production before Lee sets them all: only the team id's parameter is there.
+  const partial = signInSettings({ ...github, KONJIR_APPLE_TEAM_ID: '7Y8QD34KJQ' });
+  expect([partial.apple, partial.appleOff, partial.describe]).toStrictEqual([false, 'Sign in with Apple is off: KONJIR_APPLE_SERVICES_ID, KONJIR_APPLE_KEY_ID, KONJIR_APPLE_PRIVATE_KEY are unset', 'GitHub; hand-issued session tokens']);
+  expect(ids(await partial.identity(load))).toStrictEqual(['github']);
+  expect(signInSettings(github).appleOff).toBeUndefined();
+
+  // A key that isn't Apple's: off, said through `warn`, never with the key; GitHub goes on.
+  const warned: string[] = [];
+  expect(ids(await signInSettings({ ...github, ...apple, KONJIR_APPLE_PRIVATE_KEY: 'not-a-key' }).identity(load, (m) => warned.push(m)))).toStrictEqual(['github']);
+  expect(warned).toStrictEqual(['Sign in with Apple is off: the Sign in with Apple private key isn\'t a PEM private key: put the .p8 file Apple gave']);
+
+  expect(() => signInSettings({ KONJIR_STUB_IDENTITY: 'ann', KONJIR_APPLE_TEAM_ID: '7Y8QD34KJQ' })).toThrow(/for a local Kolab without Apple/);
+  // The deployed start script reads all four beside the admin token, the key decrypted, and never prints it.
+  const start = readFileSync(join(root, 'deploy/release/start.sh'), 'utf8');
+  for (const name of ['apple-signin-${pair#*:}', 'apple-signin-private-key', 'KONJIR_APPLE_PRIVATE_KEY="$APPLE_KEY"']) expect(start).toContain(name);
+  expect(start).not.toMatch(/(echo|printf)[^\n]*APPLE_KEY/);
 });
 
 test('kolab serve with KONJIR_STUB_IDENTITY and a public host refuses to start', async () => {

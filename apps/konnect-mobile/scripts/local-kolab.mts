@@ -13,6 +13,10 @@
  *   access tokens, fresh each time it is asked. It listens on loopback only, which an iOS
  *   simulator shares with this machine.
  * - Anyone else who signs in at this Kolab's own page, such as the OAuth spike's auth session, is Ann.
+ * - KONNECT_LOCAL_APPLE=1 adds a stand-in for Sign in with Apple beside it, so Kolab's page shows
+ *   both buttons, as production's does once Apple is set up. "Sign in with Apple" there signs in a
+ *   new account the first time, which chooses its username on Kolab's page, and the same one after.
+ *   The Maestro flows expect GitHub's alone, so they run without it.
  *
  * Ctrl-C stops it, and everything goes with it.
  */
@@ -41,7 +45,15 @@ async function allow(start: URL) {
   let url = start;
   let res = await go(url);
   while (res.status >= 300 && res.status < 400) { url = new URL(res.headers.get('location')!, url); res = await go(url); }
-  const html = await res.text();
+  let html = await res.text();
+  // With Apple's stand-in too, Kolab's sign-in page comes first: this browser presses GitHub's stand-in.
+  const stub = /<a class="idp" href="([^"]+)">/.exec(html)?.[1];
+  if (stub && !html.includes('name="csrf"')) {
+    url = new URL(stub.replace(/&amp;/g, '&'), url);
+    res = await go(url);
+    while (res.status >= 300 && res.status < 400) { url = new URL(res.headers.get('location')!, url); res = await go(url); }
+    html = await res.text();
+  }
   const field = (name: string) => new RegExp(`name="${name}" value="([^"]+)"`).exec(html)?.[1];
   const csrf = field('csrf');
   if (!csrf) throw new Error(`no consent page at ${url.pathname}: ${res.status}`);
@@ -66,8 +78,13 @@ const kolab = await Kolab.open({});
 for (const p of Object.values(PEOPLE)) await kolab.signInWith({ provider: 'stub', ...p });
 await kolab.createKolab('hub', { owner: 'ann', ...by });
 await kolab.grant('hub', 'bo', 'write', by);
+// Apple's stand-in (KONNECT_LOCAL_APPLE=1): no usernames and no lookup, as Apple has none; whoever
+// presses it is the same Apple account, new the first time.
+const withApple = process.env.KONNECT_LOCAL_APPLE === '1';
+const appleIdp = new StubIdentity({ id: 'apple', label: 'Apple', usernames: false });
+appleIdp.as = { subject: 'stub-apple-1' };
 // The development build signs in at com.konjir.konnect.dev:/oauth, a scheme Kolab takes only when asked to.
-const server = await startServer({ host: '127.0.0.1', port, kolab, adminToken: null, identity: idp, webRoot: null, appDevSchemes: true });
+const server = await startServer({ host: '127.0.0.1', port, kolab, adminToken: null, identity: withApple ? [idp, appleIdp] : idp, webRoot: null, appDevSchemes: true });
 const url = `${new URL(server.url).origin}/mcp`;
 
 const files: Record<string, string> = {};
@@ -148,6 +165,7 @@ await new Promise<void>((resolve) => handoff.listen(port + 1, '127.0.0.1', resol
 
 console.log(`Kolab on ${url}: team hub, with ann and bo signed in (kept in ${here}), ann's agents ann-reviewer and ann-helper, and bo's bo-builder.`);
 console.log('Sign in from the app as Ann: Kolab\'s stub sign-in is Ann\'s, and "Sign in to hub" on its page.');
+if (withApple) console.log('Sign in with Apple is on its page too (KONNECT_LOCAL_APPLE=1): a new account the first time, which chooses its username there.');
 console.log(`A dev build reads the URL and their tokens from http://127.0.0.1:${port + 1}/spike. Ctrl-C stops it.`);
 
 const stop = async () => { handoff.close(); await server.close(); await kolab.close(); rmSync(here, { recursive: true, force: true }); process.exit(0); };
