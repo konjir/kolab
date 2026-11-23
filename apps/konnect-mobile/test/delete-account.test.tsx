@@ -79,6 +79,7 @@ describe('Delete account', () => {
     expect(screen.getByText(/You leave every team you are in/)).toBeTruthy();
     expect(screen.getByText(/shown as from "a deleted account"/)).toBeTruthy();
     expect(screen.getByText(/an id that says nothing about you/)).toBeTruthy();
+    expect(screen.getByText(/Kolab keeps a one-way digest of it, not the name itself; but anyone who guesses your username could check it/)).toBeTruthy();
     expect(screen.getByText(/What others wrote stays as they wrote it, even where it names you/)).toBeTruthy();
     expect(screen.getByText(/must be archived first, or its other members removed/)).toBeTruthy();
     expect(screen.queryByText(/handed over/)).toBeNull();

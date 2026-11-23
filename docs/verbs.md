@@ -49,6 +49,7 @@ Every verb, as `kolab <verb> key=value …` takes it from a shell and as the MCP
 | [`create_agent`](#create_agent) | For a person's own session only: make, or find again, an agent of yours, <you>-<label>, for a harness to sign in as (kolab connect sets agents up on Kolab's setup page instead, several at once). |
 | [`create_node`](#create_node) | Create a node in your kolab. |
 | [`decline_invitation`](#decline_invitation) | For a person's own session in konnect's app only: decline the invitation waiting for you to a kolab, as konjir_list_my_teams lists your invitations, exactly as Decline on Kolab's sign-in page does: no one can accept it any more, and its owner isn't told. |
+| [`delete_my_account`](#delete_my_account) | For a person's own sign-in through konnect's app only, never an agent's nor any other app's, and only when the person asks for it themselves: delete your own account, for good, naming it. |
 | [`draft`](#draft) | Draft a new version. |
 | [`end_host`](#end_host) | For a person's own session only, never an agent's, and only for your own machines: end your host of that name in this kolab, with every request to it. |
 | [`end_job`](#end_job) | End a job you took, once its agent has exited (done or failed) or you stopped it: its agent's session ends; a build's work package, if its agent still holds it In progress, goes back to To do, released with your note; a review request Kolab gave a reviewing agent that gave no verdict is withdrawn. |
@@ -714,6 +715,18 @@ For a person's own session in konnect's app only: decline the invitation waiting
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `kolab` | `string` | yes | The kolab whose invitation it is, as konjir_list_my_teams lists your invitations |
+
+## delete_my_account
+
+```
+kolab delete_my_account account=<string>
+```
+
+For a person's own sign-in through konnect's app only, never an agent's nor any other app's, and only when the person asks for it themselves: delete your own account, for good, naming it. You leave every kolab, organization and team; every sign-in of yours and your agents' is revoked and every session ends, this one too; your push devices go; your own agents are removed; and your GitHub identity and profile are deleted. A kolab only you (and your agents) are in is erased with it, yours or an organization's you alone own, and an organization you alone own is archived. Your name, and each of your agents', is replaced everywhere Kolab keeps it as who you are by an id that says nothing of you, deleted-<random> (an agent's deleted-<random>-<n>): the messages you and your agents sent stay where they are, from that id, shown as from a deleted account. Your name stays where it is part of something else: text others wrote that names you, the ids of kolabs you made, an archived kolab's host's name and folder, and a repository's URL. Your old name, and any name that starts with it and a -, is never given to anyone again: Kolab keeps a one-way digest of it (unsalted sha256) to refuse it, which isn't anonymous to anyone who guesses the name. Signing in later with the same GitHub account makes a new account, under another name. Refused, with nothing changed, while you own a live kolab (yours, or of an organization you alone own) that anyone else is a member of (archive it, konjir_archive_kolab, which you can do with them in it, or remove them, konjir_remove_member), or that holds documents or has a repository registered to it (archive it); or alone own an organization with other members or live agents (a Konjir admin deals with those). An archived kolab never blocks. The refusal's structuredContent.blocked lists each (name, kind, reason, why). A Konjir admin is refused until another admin revokes that. It can't be undone. deleted is the account as you named it; left and erased, the kolabs; agents, how many agents went; revoked, sign-ins revoked; ended, sessions ended; devices, push devices forgotten.
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | `string` | yes | Your own account's name, as konjir_whoami gives your actor, typed by you: named, so nobody deletes an account by mistake |
 
 ## draft
 

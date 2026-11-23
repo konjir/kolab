@@ -6,7 +6,7 @@ import { Kolab, RoleError, SPLIT_STEP, sessionKey } from '@konjir/engine';
 import { nobodyCanReview, type KolabEvent } from '@konjir/types';
 import { startServer } from '@konjir/server';
 import { call, connect, watch } from '../src/cli.js';
-import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testPolicy, testStore, TestKolab } from '@konjir/engine/testing';
+import { closeAtEnd, els, marksOn, people, persistentStore, setup, rejection, testPolicy, testStore, TestKolab, UNDO_0060 } from '@konjir/engine/testing';
 
 async function specAndBinding() {
   const ctx = await setup();
@@ -112,14 +112,16 @@ test('a database from the previous release is migrated on open', async () => {
     // indexes for agents' last use (0037; job's goes with job), before what screens' questions
     // ask about (0038), before when versions were submitted (0039; its job columns go with job),
     // before sessions per machine (0040), before kolabs' policies, answers' cites and product
-    // reviews (0041), and before every migration since (0042 to 0058: ruling references, node
-    // names, messages, channels, invitations, leases, hosts, erasing a kolab and push devices among them),
-    // newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people
+    // reviews (0041), and before every migration since (0042 to 0060: ruling references, node
+    // names, messages, channels, invitations, leases, hosts, erasing a kolab, push devices and
+    // deleting an account among them; 0060's undoing is the engine's own, UNDO_0060, and 0059's goes
+    // with the tables it changed), newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people
     // and the spec stay, and alice's session is stored by its token again, as 0.5 stored it, so
     // 0011 hashing it in place is what keeps it working. 0014's kj_access goes with 0006's below,
     // since 0006 made it.
     const keyed = ['version', 'element', 'delta', 'edge', 'invalidation', 'invalidation_cause', 'query', 'case_file', 'position', 'ruling', 'precedent'];
     const newlyRls = ['node', 'invalidation', 'invalidation_cause', 'case_file', 'position', 'ruling', 'precedent'];
+    await kolab.db.exec(UNDO_0060);
     await kolab.db.exec(`
       drop table notification_pref;
       drop table push_device;

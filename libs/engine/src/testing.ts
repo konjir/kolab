@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
+import { MIGRATIONS } from '@konjir/db';
 import { ADMIN_DOER, type AccessLevel, type ArchiveTarget, type KolabPolicy, type DeltaInput, type Doer, type ElementInput, type GateResult, type Layer, type LinkRef, type Checks, type OrgRole, type Role, type Visibility } from '@konjir/types';
 import { APP_REDIRECT_URI, Kolab } from './kolab.js';
 
@@ -344,6 +345,88 @@ export async function commitReviewed(kolab: Kolab, author: string, reviewer: str
   if (!r.ok) throw new Error(`expected ${nodeId} to commit: ${r.note ?? ''}`);
   return r.version;
 }
+
+/**
+ * A trigger function as the newest migration before `before` made it, from that migration's own
+ * text, as create or replace: so an undo puts back exactly what was there.
+ */
+export function definitionBefore(name: string, before: number): string {
+  const pattern = new RegExp(`create (?:or replace )?function ${name}\\(\\)[\\s\\S]*?\\n\\$\\$;`, 'g');
+  const m = MIGRATIONS.filter((x) => x.version < before).reverse().map((x) => [...x.sql.matchAll(pattern)].at(-1)?.[0]).find(Boolean);
+  if (!m) throw new Error(`no migration before ${before} makes ${name}`);
+  return m.replace(/^create (?:or replace )?function/, 'create or replace function');
+}
+
+/** The functions 0060 makes again, to let a re-key through: each put back as it was. */
+const REKEYED_FUNCTIONS = ['kj_message_fixed', 'kj_channel_fixed', 'kj_audit_event_fixed', 'kj_archive_event_fixed', 'kj_work_event_fixed',
+  'kj_evidence_fixed', 'kj_repository_fixed', 'kj_job_fixed', 'kj_case_fixed', 'kj_actor_frozen', 'kj_kolab_writable', 'kj_admin_audited'];
+
+/**
+ * Undoes migration 0060 on a database at 0060, to 0059's schema exactly (migrations.test.ts checks
+ * it): for a test of 0060 itself, and for one that rewinds a database to an older release and
+ * migrates it again (apps/cli's questions.test.ts).
+ */
+export const UNDO_0060 = String.raw`do $$
+  declare t text;
+  begin
+    for t in select distinct x.tbl from kj_actor_columns() x loop execute format('drop trigger actor_named on %I', t); end loop;
+    for t in select distinct c.relname::text from pg_trigger g join pg_class c on c.oid = g.tgrelid where g.tgname = 'kolab_rekeyed' loop
+      execute format('drop trigger kolab_rekeyed on %I', t);
+    end loop;
+  end
+  $$;
+  drop function kj_actor_named();
+  drop function kj_kolab_rekeyed();
+  drop trigger account_deleted_kept on account;
+  drop function kj_account_deleted_kept();
+  drop trigger actor_deleted_kept on actor;
+  drop function kj_actor_deleted_kept();
+  drop trigger account_name_free on account;
+  drop trigger actor_name_free on actor;
+  drop function kj_name_free();
+  drop function kj_name_retired(text);
+  drop function kj_name_digest(text);
+  drop table retired_name;
+  drop function kj_retired_name_fixed();
+create or replace function kj_identity_of_person() returns trigger
+language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
+begin
+  if not exists (select 1 from public.actor a where a.id = new.actor_id and a.kind = 'person') then
+    raise exception 'only a person has an identity; % is not one', new.actor_id using errcode = 'check_violation';
+  end if;
+  return new;
+end
+$$;
+` + REKEYED_FUNCTIONS.map((f) => definitionBefore(f, 60)).join('\n') + String.raw`
+  drop function kj_rekey_scrubs(text, jsonb, jsonb);
+  drop function kj_rekey_only(text, jsonb, jsonb);
+  drop function kj_rekeyed_to(jsonb, jsonb, jsonb);
+  drop function kj_rekey_columns(text);
+  drop function kj_names_actor(text, text, jsonb);
+  drop function kj_audit_subject_is_actor(text);
+  drop function kj_actor_columns();
+  drop function kj_rekeying();
+  drop function kj_actor_deleted(text);
+  do $$
+  declare c record;
+  begin
+    for c in select f.conrelid::regclass::text as tbl, f.conname, pg_get_constraintdef(f.oid) as def from pg_constraint f
+              where f.contype = 'f' and f.confupdtype = 'c' and f.confrelid in ('public.actor'::regclass, 'public.account'::regclass) loop
+      execute format('alter table %s drop constraint %I, add constraint %I %s', c.tbl, c.conname, c.conname, replace(c.def, ' ON UPDATE CASCADE', ''));
+    end loop;
+  end
+  $$;
+  alter table actor alter constraint actor_person_is_user not deferrable;
+  alter table account drop constraint account_deleted_check;
+  alter table account drop column deleted_at;
+  alter table audit_event drop constraint audit_event_action_check;
+  alter table audit_event add constraint audit_event_action_check check (action in
+    ('grant.set', 'grant.removed', 'member.set', 'member.removed',
+     'team_member.added', 'team_member.removed', 'outbox.retried',
+     'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
+     'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
+     'host.ended', 'kolab.erased', 'push_device.unregistered'));
+  delete from kj_migration where version = 60;`;
 
 /** If `r` left a version in review, approve it as `reviewer`; the outcome either way. */
 export async function approved(kolab: Kolab, reviewer: string, r: GateResult): Promise<GateResult> {
