@@ -38,8 +38,13 @@ function idToken(claims: Record<string, unknown>, opts: { key?: KeyObject; kid?:
   return `${input}.${sign('sha256', Buffer.from(input), opts.key ?? appleKey.privateKey).toString('base64url')}`;
 }
 
-/** A fake Apple: its keys at /auth/keys, and its token endpoint answering with whatever `answer` gives, each call recorded. */
-function fakeApple(answer: (form: URLSearchParams) => Response | Promise<Response>, keys = [jwk(appleKey.publicKey, 'apple-1')]) {
+/**
+ * A fake Apple: its keys at /auth/keys, its token endpoint answering with whatever `answer` gives,
+ * and its revocation endpoint with whatever `revoke` gives (200, as Apple answers, by default), each
+ * call recorded.
+ */
+function fakeApple(answer: (form: URLSearchParams) => Response | Promise<Response>, keys = [jwk(appleKey.publicKey, 'apple-1')],
+  revoke: (form: URLSearchParams) => Response | Promise<Response> = () => new Response(null, { status: 200 })) {
   const calls: { url: string; method: string; form?: URLSearchParams }[] = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
@@ -47,13 +52,14 @@ function fakeApple(answer: (form: URLSearchParams) => Response | Promise<Respons
     calls.push({ url, method: init?.method ?? 'GET', form });
     if (url === `${FAKE}/auth/keys`) return Response.json({ keys });
     if (url === `${FAKE}/auth/token`) return answer(form!);
+    if (url === `${FAKE}/auth/revoke`) return revoke(form!);
     return new Response(null, { status: 404 });
   };
   return { fetch, calls };
 }
 
-const apple = (fetch: typeof globalThis.fetch, extra: { now?: () => number } = {}) =>
-  new AppleIdentity({ servicesId: SERVICES, teamId: TEAM, keyId: KEY_ID, privateKey: P8, origin: FAKE, fetch, ...extra });
+const apple = (fetch: typeof globalThis.fetch, extra: { now?: () => number; warn?: (m: string) => void } = {}) =>
+  new AppleIdentity({ servicesId: SERVICES, teamId: TEAM, keyId: KEY_ID, privateKey: P8, origin: FAKE, fetch, now: extra.now, warn: extra.warn ?? (() => undefined) });
 
 test('Apple: the authorize URL asks for no scope, so Apple answers with a GET, and carries the state and, as its nonce, the sign-in\'s PKCE challenge', () => {
   const idp = apple(fakeApple(() => new Response(null, { status: 500 })).fetch);
@@ -79,7 +85,7 @@ test('Apple: the client secret is an ES256 JWT the team\'s key signs, kid the ke
   expect(verify('sha256', Buffer.from(`${h}.${b}`), { key: teamKey.publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig, 'base64url'))).toBe(true);
 });
 
-test('Apple: the code is exchanged with a fresh client secret, and who signed in is the id_token\'s sub, once its signature, issuer, audience, expiry and nonce check out; Apple\'s tokens go no further', async () => {
+test('Apple: the code is exchanged with a fresh client secret, and who signed in is the id_token\'s sub, once its signature, issuer, audience, expiry and nonce check out; Apple\'s tokens are revoked, and go no further', async () => {
   const nonce = s256(VERIFIER);
   const { fetch, calls } = fakeApple(() => Response.json({ access_token: 'a.secret', token_type: 'Bearer', expires_in: 3600, refresh_token: 'r.secret', id_token: idToken({ nonce }) }));
   const idp = apple(fetch);
@@ -89,8 +95,8 @@ test('Apple: the code is exchanged with a fresh client secret, and who signed in
   expect([...token.form!.keys()].sort()).toStrictEqual(['client_id', 'client_secret', 'code', 'grant_type', 'redirect_uri']);
   expect(Object.fromEntries([...token.form!].filter(([k]) => k !== 'client_secret'))).toStrictEqual({ client_id: SERVICES, code: 'c0de', grant_type: 'authorization_code', redirect_uri: 'https://kolab.konjir.com/oauth/callback/apple' });
   expect(token.form!.get('client_secret')!.split('.')).toHaveLength(3);
-  // Apple's keys once, then the token; nothing else is called, and nothing is revoked.
-  expect(calls.map((c) => c.url)).toStrictEqual([`${FAKE}/auth/token`, `${FAKE}/auth/keys`]);
+  // The token, Apple's keys once, then the refresh token revoked; nothing else is called.
+  expect(calls.map((c) => c.url)).toStrictEqual([`${FAKE}/auth/token`, `${FAKE}/auth/keys`, `${FAKE}/auth/revoke`]);
   await idp.identify({ code: 'again', redirectUri: 'r', codeVerifier: VERIFIER });
   expect(calls.filter((c) => c.url === `${FAKE}/auth/keys`)).toHaveLength(1);
 
@@ -99,6 +105,53 @@ test('Apple: the code is exchanged with a fresh client secret, and who signed in
   await expect(refusing.identify({ code: 'no', redirectUri: 'r', codeVerifier: VERIFIER })).rejects.toThrow(/^Apple didn't accept the sign-in \(invalid_grant\)$/);
   const noToken = apple(fakeApple(() => Response.json({ access_token: 'a.secret' })).fetch);
   await expect(noToken.identify({ code: 'no', redirectUri: 'r', codeVerifier: VERIFIER })).rejects.toThrow(/^Apple didn't accept the sign-in \(200\)$/);
+});
+
+test('Apple: once the id_token says who signed in, the refresh token Apple gave is revoked (or its access token, when it gave none), as the Services ID with its own client secret', async () => {
+  const nonce = s256(VERIFIER);
+  const warned: string[] = [];
+  const both = fakeApple(() => Response.json({ access_token: 'a.only-access', refresh_token: 'r.the-refresh', id_token: idToken({ nonce }) }));
+  expect(await apple(both.fetch, { warn: (m) => warned.push(m) }).identify({ code: 'c', redirectUri: 'r', codeVerifier: VERIFIER })).toStrictEqual({ subject: SUB });
+  const revoked = both.calls.filter((c) => c.url === `${FAKE}/auth/revoke`);
+  expect(revoked).toHaveLength(1);
+  expect(revoked[0].method).toBe('POST');
+  expect([...revoked[0].form!.keys()].sort()).toStrictEqual(['client_id', 'client_secret', 'token', 'token_type_hint']);
+  expect(Object.fromEntries([...revoked[0].form!].filter(([k]) => k !== 'client_secret'))).toStrictEqual({ client_id: SERVICES, token: 'r.the-refresh', token_type_hint: 'refresh_token' });
+  // Its client secret is the same kind of JWT the token request carries: the team's, for the Services ID.
+  const [h, b, sig] = revoked[0].form!.get('client_secret')!.split('.');
+  expect(JSON.parse(Buffer.from(b, 'base64url').toString())).toMatchObject({ iss: TEAM, aud: APPLE_ORIGIN, sub: SERVICES });
+  expect(verify('sha256', Buffer.from(`${h}.${b}`), { key: teamKey.publicKey, dsaEncoding: 'ieee-p1363' }, Buffer.from(sig, 'base64url'))).toBe(true);
+  expect(warned).toStrictEqual([]);
+
+  // No refresh token: the access token.
+  const accessOnly = fakeApple(() => Response.json({ access_token: 'a.only-access', id_token: idToken({ nonce }) }));
+  await apple(accessOnly.fetch).identify({ code: 'c', redirectUri: 'r', codeVerifier: VERIFIER });
+  expect(accessOnly.calls.filter((c) => c.url === `${FAKE}/auth/revoke`).map((c) => Object.fromEntries([...c.form!].filter(([k]) => k !== 'client_secret'))))
+    .toStrictEqual([{ client_id: SERVICES, token: 'a.only-access', token_type_hint: 'access_token' }]);
+
+  // An id_token that doesn't check out: no one is trusted, and nothing is revoked.
+  const forged = fakeApple(() => Response.json({ access_token: 'a.x', refresh_token: 'r.x', id_token: idToken({ nonce }, { key: otherKey.privateKey }) }));
+  await expect(apple(forged.fetch).identify({ code: 'c', redirectUri: 'r', codeVerifier: VERIFIER })).rejects.toThrow(/isn't signed by Apple/);
+  expect(forged.calls.filter((c) => c.url === `${FAKE}/auth/revoke`)).toStrictEqual([]);
+});
+
+test('Apple: a revocation that fails is a warning that never carries the token, and the sign-in goes on', async () => {
+  const nonce = s256(VERIFIER);
+  const token = 'r.SECRET-refresh-0123456789';
+  const answers: [string, () => Response, RegExp][] = [
+    ['refused', () => Response.json({ error: 'invalid_client' }, { status: 400 }), /^Apple didn't revoke a sign-in's refresh_token \(invalid_client\); the sign-in goes on$/],
+    ['refused, echoing the token', () => Response.json({ error: token }, { status: 400 }), /^Apple didn't revoke a sign-in's refresh_token \(400\); the sign-in goes on$/],
+    ['down', () => new Response('<html>busy</html>', { status: 503 }), /^Apple didn't revoke a sign-in's refresh_token \(503\); the sign-in goes on$/],
+    ['unreachable', () => { throw new TypeError(`fetch failed for ${token}`); }, /^Apple couldn't be asked to revoke a sign-in's refresh_token \(TypeError\); the sign-in goes on$/],
+  ];
+  for (const [what, revoke, said] of answers) {
+    const warned: string[] = [];
+    const { fetch } = fakeApple(() => Response.json({ access_token: 'a.SECRET-access', refresh_token: token, id_token: idToken({ nonce }) }), undefined, revoke);
+    const who = await apple(fetch, { warn: (m) => warned.push(m) }).identify({ code: 'c', redirectUri: 'r', codeVerifier: VERIFIER });
+    expect([what, who]).toStrictEqual([what, { subject: SUB }]);
+    expect([what, warned]).toStrictEqual([what, [expect.stringMatching(said)]]);
+    for (const m of warned) expect(m).not.toContain('SECRET');
+  }
 });
 
 test('Apple: an id_token that isn\'t Apple\'s, isn\'t for this Services ID, has expired, or isn\'t for this sign-in is refused, though it came from the token endpoint', async () => {
@@ -207,14 +260,14 @@ const csp = (res: Response) => res.headers.get('content-security-policy') ?? '';
 const hrefs = (html: string) => [...html.matchAll(/<a class="idp[^"]*" href="([^"]+)"/g)].map((m) => m[1].replace(/&amp;/g, '&'));
 
 /** Kolab with GitHub's stand-in and the real AppleIdentity against a fake Apple, which answers each code with the id_token `tokens` holds for it. */
-async function serve(kolab: Kolab) {
+async function serve(kolab: Kolab, opts: { revoke?: () => Response; warn?: (m: string) => void } = {}) {
   const github = new StubIdentity({ label: 'GitHub' });
   const tokens = new Map<string, string>();
   const fake = fakeApple((form) => {
     const t = tokens.get(form.get('code')!);
-    return t ? Response.json({ access_token: 'a.x', id_token: t }) : Response.json({ error: 'invalid_grant' }, { status: 400 });
-  });
-  const appleIdp = apple(fake.fetch);
+    return t ? Response.json({ access_token: 'a.x', refresh_token: 'r.x', id_token: t }) : Response.json({ error: 'invalid_grant' }, { status: 400 });
+  }, undefined, opts.revoke);
+  const appleIdp = apple(fake.fetch, { warn: opts.warn });
   const server = await startServer({ adminToken: 'admin-token', kolab, webRoot: null, identity: [github, appleIdp] });
   closeAtEnd(server);
   return { base: new URL(server.url).origin, github, tokens, calls: fake.calls };
@@ -403,4 +456,106 @@ test('an Apple person invited by a GitHub username they don\'t have is no one\'s
   expect(github.lookup).toBeDefined();
   const r = await kolab.inviteAccounts(session, ['yuki'], { provider: 'stub', find: github.lookup! }).then(() => '', (e: Error) => e.message);
   expect(r).toMatch(/no GitHub account yuki: check the spelling\. Nothing was invited\. Someone who signs in to Kolab with Apple has no GitHub account to invite by: make them an invite link on Kolab's web page instead/);
+});
+
+test('the username field\'s pattern is one a browser compiles (the v flag) and checks before the form is sent: what Kolab takes, and not a hyphen at either end', async () => {
+  const kolab = await openKolab();
+  const { base, tokens } = await serve(kolab);
+  const first = await withApple(base, tokens, await register(base));
+  const pattern = /id="username"[^>]* pattern="([^"]*)"/.exec(first.html)?.[1];
+  expect(pattern).toBe('[A-Za-z0-9]([A-Za-z0-9\\-]*[A-Za-z0-9])?');
+  // A browser compiles it as ^(?:pattern)$ with the v flag, and skips the check if that throws.
+  const browser = new RegExp(`^(?:${pattern})$`, 'v');
+  for (const ok of ['ada-l', 'Ada-L', 'a1', 'x'.repeat(39)]) expect([ok, browser.test(ok)]).toStrictEqual([ok, true]);
+  for (const no of ['-ada', 'ada-', 'a_b', 'a b', '@ada']) expect([no, browser.test(no)]).toStrictEqual([no, false]);
+  // Every pattern on Kolab's pages compiles so, the consent page's agent label among them.
+  const consent = await first.browser.post('/oauth/username', { sign_in: field(first.html, 'sign_in'), csrf: field(first.html, 'csrf'), decision: 'choose', username: 'ada-l' });
+  const patterns = [...`${first.html}${consent.html}`.matchAll(/ pattern="([^"]*)"/g)].map((m) => m[1]);
+  expect(patterns.length).toBeGreaterThanOrEqual(2);
+  for (const p of patterns) expect(() => new RegExp(`^(?:${p})$`, 'v')).not.toThrow();
+});
+
+test('with GitHub\'s sign-in beside Apple\'s, a username that is a GitHub account\'s is refused on the page, in any case; one GitHub can\'t be asked about is refused, saying to try again; a free one is made; a revocation Apple refuses doesn\'t stop any of it', async () => {
+  const kolab = await openKolab();
+  const warned: string[] = [];
+  const { base, tokens, github, calls } = await serve(kolab, { revoke: () => Response.json({ error: 'invalid_client' }, { status: 400 }), warn: (m) => warned.push(m) });
+  // octocat has a GitHub account and has never signed in to Kolab.
+  github.account({ subject: '583231', login: 'octocat' });
+  const first = await withApple(base, tokens, await register(base));
+  expect(titleOf(first.html)).toBe('Choose your username · Kolab');
+  // Apple's refresh token was revoked as Apple answered, though Apple refused it.
+  expect(calls.filter((c) => c.url === `${FAKE}/auth/revoke`).map((c) => c.form!.get('token_type_hint'))).toStrictEqual(['refresh_token']);
+  expect(warned).toStrictEqual(['Apple didn\'t revoke a sign-in\'s refresh_token (invalid_client); the sign-in goes on']);
+  const form = { sign_in: field(first.html, 'sign_in'), csrf: field(first.html, 'csrf'), decision: 'choose' };
+
+  for (const name of ['octocat', 'OctoCat']) {
+    const held = await first.browser.post('/oauth/username', { ...form, username: name });
+    expect([name, held.res.status]).toStrictEqual([name, 400]);
+    expect(held.html).toContain('That is a GitHub username: to use it, sign in with GitHub.');
+    expect(field(held.html, 'username')).toBe(name);
+  }
+  github.down = true;
+  const down = await first.browser.post('/oauth/username', { ...form, username: 'zara' });
+  expect(down.res.status).toBe(400);
+  expect(down.html).toContain('Kolab couldn&#39;t check with GitHub whether zara is a GitHub username just now: try again in a minute');
+  expect(await kolab.signInKnown({ provider: 'apple', subject: SUB })).toBeUndefined();
+  github.down = false;
+  const made = await first.browser.post('/oauth/username', { ...form, username: 'zara' });
+  expect(titleOf(made.html)).toBe('Sign in · Kolab');
+  expect(await kolab.identities('zara')).toStrictEqual([{ provider: 'apple', subject: SUB, login: 'zara' }]);
+  // The real octocat, signing up with GitHub, is octocat.
+  expect(await kolab.signInWith({ provider: 'stub', subject: '583231', login: 'octocat' })).toStrictEqual({ actor: 'octocat', created: true });
+});
+
+test('Continue posted twice shows the same person\'s consent page both times, and the sign-in goes on; a person archived while the page is open is stopped with 403, as the callback stops them', async () => {
+  const kolab = await openKolab();
+  const { base, tokens } = await serve(kolab);
+  const client = await register(base);
+  const first = await withApple(base, tokens, client);
+  const form = { sign_in: field(first.html, 'sign_in'), csrf: field(first.html, 'csrf'), decision: 'choose' };
+  const once = await first.browser.post('/oauth/username', { ...form, username: 'kim' });
+  const twice = await first.browser.post('/oauth/username', { ...form, username: 'kim' });
+  for (const page of [once, twice]) {
+    expect(page.res.status).toBe(200);
+    expect(titleOf(page.html)).toBe('Sign in · Kolab');
+    expect(page.html).toContain('Signed in with Apple as <code>kim</code>.');
+  }
+  expect((await kolab.db.query(`select count(*)::int as n from actor where kind = 'person'`)).rows).toStrictEqual([{ n: 1 }]);
+  const done = await first.browser.post('/oauth/consent', { sign_in: field(twice.html, 'sign_in'), csrf: field(twice.html, 'csrf'), decision: 'allow', as: 'self', kolab: '@new', new_kolab_name: 'kims', role: 'product' });
+  expect(done.left!.origin + done.left!.pathname).toBe(CB);
+
+  // The same Apple account's username page open in two browsers: one makes lou, who is archived; the other's Continue stops.
+  const sub2 = '000777.feedfacefeedfacefeedfacefeedface.0001';
+  const a = await withApple(base, tokens, client, sub2);
+  const b = await withApple(base, tokens, client, sub2);
+  await a.browser.post('/oauth/username', { sign_in: field(a.html, 'sign_in'), csrf: field(a.html, 'csrf'), decision: 'choose', username: 'lou' });
+  await kolab.archive({ actor: 'lou' });
+  const stopped = await b.browser.post('/oauth/username', { sign_in: field(b.html, 'sign_in'), csrf: field(b.html, 'csrf'), decision: 'choose', username: 'lou2' });
+  expect(stopped.res.status).toBe(403);
+  expect(stopped.html).toContain('lou is archived, so it can&#39;t sign in; an admin can unarchive it');
+  expect(stopped.html).not.toContain('name="username"');
+});
+
+test('a cancel at the wrong provider\'s callback doesn\'t end a sign-in sent to Apple: it is refused, and Apple\'s answer still counts', async () => {
+  const kolab = await openKolab();
+  const { base, tokens } = await serve(kolab);
+  const client = await register(base);
+  const browser = new Browser(base);
+  const page = await browser.go(authorize(base, client));
+  const at = (await browser.go(hrefs(page.html)[0])).left!;
+  const state = at.searchParams.get('state')!;
+  const wrong = await browser.go(`/oauth/callback/stub?error=access_denied&state=${encodeURIComponent(state)}`);
+  expect(wrong.res.status).toBe(400);
+  expect(wrong.left).toBeUndefined();
+  expect(wrong.html).toContain('This sign-in was sent to Apple, not GitHub.');
+  // Apple's own answer, after it: the sign-in is still open.
+  const code = 'code-after-wrong-cancel';
+  tokens.set(code, idToken({ nonce: at.searchParams.get('nonce') }));
+  const back = await browser.go(`/oauth/callback/apple?code=${code}&state=${encodeURIComponent(state)}`);
+  expect(titleOf(back.html)).toBe('Choose your username · Kolab');
+  // Apple's own cancel ends its sign-in, and the app is told.
+  const page2 = await browser.go(authorize(base, client));
+  const at2 = (await browser.go(hrefs(page2.html)[0])).left!;
+  const cancelled = await browser.go(`/oauth/callback/apple?error=user_cancelled_authorize&state=${encodeURIComponent(at2.searchParams.get('state')!)}`);
+  expect(Object.fromEntries(cancelled.left!.searchParams)).toMatchObject({ error: 'access_denied', state: 'client-state' });
 });

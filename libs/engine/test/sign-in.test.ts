@@ -3,7 +3,7 @@
 // row-level security refusing an expired or rotated token on its own.
 import { createHash, randomBytes } from 'node:crypto';
 import { expect, test } from '@jest/globals';
-import { APP_DEV_REDIRECT_URIS, APP_HTTPS_REDIRECT_URIS, APP_PREVIEW_REDIRECT_URI, APP_REDIRECT_URI, Kolab, OAuthGrantError, appRedirect, onPersonsDevice, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
+import { APP_DEV_REDIRECT_URIS, ActorError, ArchivedSignInError, APP_HTTPS_REDIRECT_URIS, APP_PREVIEW_REDIRECT_URI, APP_REDIRECT_URI, Kolab, OAuthGrantError, appRedirect, onPersonsDevice, redirectUriMatches, sessionKey, signUpNames, validRedirectUri } from '../src/index.js';
 import { els, openKolab, people, persistentStore, rejection } from '../src/testing.js';
 
 const onPostgres = !!process.env.KONJIR_TEST_DATABASE_URL;
@@ -762,13 +762,17 @@ test('Sign in with Apple: a first sign-in names no one until its person chooses 
   expect(await rejection(kolab.chooseUsername(w.binding, 'x'.repeat(43), 'ada'))).toMatch(/expired, was already used/);
 
   const made = await kolab.chooseUsername(w.binding, w.csrf, ' @Ada-L ');
-  expect(made).toMatchObject({ actor: 'ada-l', created: true, csrf: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
+  // The form's token stays the sign-in's, for its consent form too.
+  expect(made).toStrictEqual({ actor: 'ada-l', created: true, csrf: w.csrf });
   expect(await kolab.actor('ada-l')).toMatchObject({ kind: 'person', name: 'ada-l', owner: null });
   expect(await kolab.identities('ada-l')).toStrictEqual([{ provider: 'apple', subject: APPLE_SUB, login: 'ada-l' }]);
   expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ person: 'ada-l', choosingUsername: false });
-  // The username form's token is spent; the consent form's is new, and works.
-  expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, 'ada2'))).toMatch(/expired, was already used/);
+  // The same form posted again (Continue pressed twice, or Back and Continue) names whoever it made, whatever name it carries.
+  expect(await kolab.chooseUsername(w.binding, w.csrf, 'ada2')).toStrictEqual({ actor: 'ada-l', created: false, csrf: w.csrf });
+  expect((await kolab.db.query(`select id from actor where id = 'ada2'`)).rows).toStrictEqual([]);
   const { code } = await kolab.consent(w.binding, made.csrf, { as: { kind: 'self' }, kolab: { name: 'adas', title: 'Ada\'s' }, role: 'product' });
+  // Once consented to, the sign-in is spent: its form names no one again.
+  expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, 'ada-l'))).toMatch(/expired, was already used/);
   const t = await kolab.exchangeCode({ code, clientId: w.client, redirectUri: 'http://127.0.0.1:9/cb', codeVerifier: w.verifier });
   expect(t).toMatchObject({ actor: 'ada-l', kolab: 'adas' });
 
@@ -776,7 +780,91 @@ test('Sign in with Apple: a first sign-in names no one until its person chooses 
   expect(await kolab.signInKnown({ provider: 'apple', subject: APPLE_SUB })).toBe('ada-l');
   // An archived person doesn't sign in.
   await kolab.archive({ actor: 'ada-l' });
+  await expect(kolab.signInKnown({ provider: 'apple', subject: APPLE_SUB })).rejects.toThrow(ArchivedSignInError);
   expect(await rejection(kolab.signInKnown({ provider: 'apple', subject: APPLE_SUB }))).toMatch(/ada-l is archived/);
+});
+
+test('a person archived while their username page is open: Continue stops, ArchivedSignInError (an ActorError), whether the page was posted before or not', async () => {
+  const kolab = await openKolab();
+  // The same Apple account, its username page open in two tabs: one makes zoe, who is archived.
+  const one = await awaitingUsername(kolab, APPLE_SUB);
+  const two = await awaitingUsername(kolab, APPLE_SUB);
+  expect(await kolab.chooseUsername(one.binding, one.csrf, 'zoe')).toMatchObject({ actor: 'zoe', created: true });
+  await kolab.archive({ actor: 'zoe' });
+  for (const w of [two, one]) {
+    const e = await kolab.chooseUsername(w.binding, w.csrf, 'zed').then(() => undefined, (x: unknown) => x);
+    expect(e).toBeInstanceOf(ArchivedSignInError);
+    expect(e).toBeInstanceOf(ActorError);
+    expect([(e as Error).name, (e as Error).message]).toStrictEqual(['ActorError', 'zoe is archived, so it can\'t sign in; an admin can unarchive it']);
+  }
+  expect(await kolab.pendingAuthorization(two.binding)).toMatchObject({ person: null, choosingUsername: true });
+});
+
+test('with GitHub\'s sign-in on this Kolab, a username chosen at an Apple sign-up is never a GitHub account\'s, in any case; a name GitHub can\'t be asked about is refused too, and the same form tries again', async () => {
+  const kolab = await openKolab();
+  const accounts = new Map([['octocat', { subject: '583231', login: 'octocat', person: true }], ['acme-inc', { subject: '9', login: 'Acme-Inc', person: false }]]);
+  let down = false;
+  const asked: string[] = [];
+  const find = async (login: string) => {
+    asked.push(login);
+    if (down) throw new Error('GitHub answered 503');
+    return accounts.get(login.toLowerCase());
+  };
+  const w = await awaitingUsername(kolab, APPLE_SUB);
+  for (const name of ['octocat', 'OctoCat', '@octocat']) {
+    expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, name, { github: find }))).toBe('ActorError: That is a GitHub username: to use it, sign in with GitHub.');
+  }
+  expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, 'acme-inc', { github: find }))).toBe('ActorError: acme-inc is a GitHub organization\'s name: choose another username');
+  // Asked lowercased, and only once Kolab's own checks pass: a name Kolab refuses itself isn't looked up.
+  expect(asked).toStrictEqual(['octocat', 'octocat', 'octocat', 'acme-inc']);
+  expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, 'admin', { github: find }))).toMatch(/admin is reserved/);
+  expect(asked).toHaveLength(4);
+  // GitHub can't be asked: refused, never taken on trust.
+  down = true;
+  expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, 'ada', { github: find }))).toBe('ActorError: Kolab couldn\'t check with GitHub whether ada is a GitHub username just now: try again in a minute');
+  expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ person: null, choosingUsername: true });
+  expect((await kolab.db.query(`select id from actor where id in ('octocat', 'ada')`)).rows).toStrictEqual([]);
+  // A name GitHub doesn't have is free.
+  down = false;
+  expect(await kolab.chooseUsername(w.binding, w.csrf, 'ada', { github: find })).toMatchObject({ actor: 'ada', created: true });
+  // octocat, signing up with GitHub later, is octocat.
+  expect(await kolab.signInWith(github('583231', 'octocat'))).toStrictEqual({ actor: 'octocat', created: true });
+});
+
+/**
+ * Two chooseUsername calls held at the GitHub lookup until both have reached it, so both pass every
+ * check before either inserts: the second's insert then meets the first's row (a unique key).
+ */
+function barrier(n: number) {
+  let arrived = 0;
+  let open!: () => void;
+  const opened = new Promise<void>((r) => { open = r; });
+  return async () => { if (++arrived === n) open(); await opened; return undefined; };
+}
+
+test('Continue pressed twice at once makes the person once: the second post meets the first\'s username (account_pkey) and names the person the first made', async () => {
+  const kolab = await openKolab();
+  const w = await awaitingUsername(kolab, APPLE_SUB);
+  const held = barrier(2);
+  const [a, b] = await Promise.all([1, 2].map(() => kolab.chooseUsername(w.binding, w.csrf, 'gail', { github: held })));
+  expect([a, b].map((r) => r.actor)).toStrictEqual(['gail', 'gail']);
+  expect([a, b].map((r) => r.created).sort()).toStrictEqual([false, true]);
+  expect([a.csrf, b.csrf]).toStrictEqual([w.csrf, w.csrf]);
+  expect(await kolab.identities('gail')).toStrictEqual([{ provider: 'apple', subject: APPLE_SUB, login: 'gail' }]);
+  expect(await kolab.pendingAuthorization(w.binding, { csrf: w.csrf })).toMatchObject({ person: 'gail', choosingUsername: false });
+});
+
+test('the same Apple account choosing two names in two tabs at once is one person (identity_pkey): the second names whoever the first made, and its name isn\'t made', async () => {
+  const kolab = await openKolab();
+  const one = await awaitingUsername(kolab, APPLE_SUB);
+  const two = await awaitingUsername(kolab, APPLE_SUB);
+  const held = barrier(2);
+  const [a, b] = await Promise.all([kolab.chooseUsername(one.binding, one.csrf, 'hana', { github: held }), kolab.chooseUsername(two.binding, two.csrf, 'ivo', { github: held })]);
+  expect(a.actor).toBe(b.actor);
+  expect([a, b].map((r) => r.created).sort()).toStrictEqual([false, true]);
+  const loser = a.actor === 'hana' ? 'ivo' : 'hana';
+  expect((await kolab.db.query(`select id from actor where id = $1 union all select id from account where id = $1`, [loser])).rows).toStrictEqual([]);
+  for (const w of [one, two]) expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ person: a.actor, choosingUsername: false });
 });
 
 test('a username chosen at an Apple sign-up never claims a name that is held, in any case, by a live or archived person, account or organization, nor a reserved one, nor one that reads as someone\'s agent; the same form tries again', async () => {

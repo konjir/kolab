@@ -1,10 +1,12 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify, type KeyObject } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 
 /**
  * Who a person is, according to an identity provider (D55). Kolab signs people up and in with an
  * identity provider: GitHub, and Sign in with Apple (Lee, 2026-11-23), behind this interface. A
  * provider only says who signed in. Kolab keeps nothing of theirs but the provider's stable id for
- * the person and their login: no provider token is stored, and none is passed on (DEL4).
+ * the person and their login: no provider token is stored, and none is passed on (DEL4); Apple's
+ * are revoked as soon as the sign-in has read who signed in (AppleIdentity).
  */
 export interface IdentityProvider {
   /** Its name in the identity table and in Kolab's callback URL, /oauth/callback/<id>: lowercase. */
@@ -40,6 +42,8 @@ export interface IdentityProvider {
    * `subject`, as `identify` gives it, the login as the provider spells it, and whether it is a
    * person's account (not an organization's). Undefined when no account has that name. Throws when
    * the provider can't be asked. A provider without it takes no invitations by account: Apple's.
+   * GitHub's also keeps its usernames for their owners: a username chosen at a first Sign in with
+   * Apple is refused if it names an account here, or if this can't say (Kolab.chooseUsername).
    */
   lookup?(login: string): Promise<{ subject: string; login: string; person: boolean } | undefined>;
 }
@@ -201,7 +205,16 @@ export function applePrivateKey(text: string): KeyObject {
  *   `state` binding Kolab checks before the code goes anywhere.
  * - **No lookup**, since Apple has no usernames: an Apple account can't be invited by name. An invite
  *   link (W3.4) reaches one.
- * - Apple's access and refresh tokens are dropped unread, never stored or revoked, as GitHub's.
+ * - **Apple's tokens are revoked at once.** Apple requires an app that offers Sign in with Apple
+ *   to revoke the person's Apple tokens (POST /auth/revoke) when their account is deleted. Kolab
+ *   keeps no provider token (DEL4), so it couldn't revoke one later: instead, as soon as the
+ *   id_token checks out and says who signed in, `identify` revokes the refresh token Apple gave
+ *   (`token_type_hint=refresh_token`), or its access token when it gave none, as the Services ID
+ *   with a client secret of its own. So Kolab never holds a live Apple token, before or after an
+ *   account is deleted, and nothing of Apple's is stored or passed on. Revoking ends the
+ *   authorization at Apple, so Apple may ask the person again, at their next sign-in, to use their
+ *   Apple Account with Kolab. It is best-effort: a revocation Apple refuses, or that can't reach
+ *   Apple, is logged as a warning (`warn`), never with the token, and the sign-in goes on.
  */
 export class AppleIdentity implements IdentityProvider {
   readonly id = 'apple';
@@ -215,6 +228,8 @@ export class AppleIdentity implements IdentityProvider {
     servicesId: string; teamId: string; keyId: string; privateKey: string;
     /** For tests: Apple's origin, the fetch to reach it with, and the clock, in ms. */
     origin?: string; fetch?: Fetch; timeoutMs?: number; now?: () => number;
+    /** Where a revocation that failed is said (Nest's logger by default): never with the token. */
+    warn?: (message: string) => void;
   }) {
     if (!config.servicesId || !config.teamId || !config.keyId || !config.privateKey) throw new Error('Sign in with Apple needs the Services ID, the team id, the key id and the private key');
     if (!SERVICES_ID.test(config.servicesId)) throw new Error('the Sign in with Apple Services ID is a reverse-DNS identifier, such as com.konjir.kolab.signin');
@@ -262,12 +277,37 @@ export class AppleIdentity implements IdentityProvider {
       }),
       signal: this.signal(),
     });
-    const t = await res.json().catch(() => ({})) as { id_token?: unknown; error?: unknown };
+    const t = await res.json().catch(() => ({})) as { id_token?: unknown; access_token?: unknown; refresh_token?: unknown; error?: unknown };
     // Never the response itself in the error: it carries tokens.
     if (!res.ok || typeof t.id_token !== 'string') throw new Error(`Apple didn't accept the sign-in (${typeof t.error === 'string' ? t.error.slice(0, 80) : res.status})`);
-    // Its access and refresh tokens are dropped here, unread, never stored, logged or passed on (DEL4).
     const claims = await this.verifyIdToken(t.id_token, createHash('sha256').update(p.codeVerifier).digest('base64url'));
+    // Who signed in is known: Apple's tokens are revoked now, and dropped, never stored, logged or
+    // passed on (DEL4). A code whose id_token didn't check out revokes nothing: Kolab doesn't act
+    // on what it doesn't trust, and Apple's tokens of it expire on their own.
+    if (typeof t.refresh_token === 'string' && t.refresh_token) await this.revoke(t.refresh_token, 'refresh_token');
+    else if (typeof t.access_token === 'string' && t.access_token) await this.revoke(t.access_token, 'access_token');
     return { subject: claims.sub };
+  }
+
+  /**
+   * Revokes one of Apple's tokens (POST /auth/revoke), as the Services ID with a fresh client
+   * secret: best-effort, so a failure is a warning, naming the kind of token and Apple's answer,
+   * never the token or Apple's body, and never an error.
+   */
+  private async revoke(token: string, hint: 'refresh_token' | 'access_token') {
+    const warn = this.config.warn ?? ((m: string) => new Logger('OAuth').warn(m));
+    try {
+      const res = await this.fetch(new URL('/auth/revoke', this.origin), {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ client_id: this.config.servicesId, client_secret: this.clientSecret(), token, token_type_hint: hint }),
+        signal: this.signal(),
+      });
+      const body = await res.json().catch(() => ({})) as { error?: unknown };
+      if (!res.ok) warn(`Apple didn't revoke a sign-in's ${hint} (${typeof body.error === 'string' && /^[a-z_]{1,40}$/.test(body.error) ? body.error : res.status}); the sign-in goes on`);
+    } catch (e) {
+      warn(`Apple couldn't be asked to revoke a sign-in's ${hint} (${e instanceof Error ? e.name : 'error'}); the sign-in goes on`);
+    }
   }
 
   /**
@@ -349,7 +389,11 @@ export class StubIdentity implements IdentityProvider {
     this.label = opts.label ?? 'Stub';
     this.logins = opts.usernames !== false;
     // Looks a login up among the accounts the test made (account); `lookups` counts the calls. Apple's stand-in has none.
-    this.lookup = this.logins ? async (login: string) => { this.lookups++; return this.accounts.get(login.toLowerCase()); } : undefined;
+    this.lookup = this.logins ? async (login: string) => {
+      this.lookups++;
+      if (this.down) throw new Error(`the stub provider is down: it can't say who ${login} is`);
+      return this.accounts.get(login.toLowerCase());
+    } : undefined;
   }
 
   /** Accounts `lookup` finds, by login in any case: what GitHub's users would be. */
@@ -362,6 +406,8 @@ export class StubIdentity implements IdentityProvider {
   account(who: { subject: string; login: string; person?: boolean }) { this.accounts.set(who.login.toLowerCase(), { subject: who.subject, login: who.login, person: who.person ?? true }); return this; }
 
   lookups = 0;
+  /** While true, `lookup` throws, as GitHub's does when it can't be asked (down, or its rate limit spent). */
+  down = false;
   readonly lookup?: (login: string) => Promise<{ subject: string; login: string; person: boolean } | undefined>;
 
   /** The prompt each authorizationUrl was asked with, in order: what GitHub would have been asked. */

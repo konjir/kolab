@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Body, Controller, Get, HttpCode, Inject, Logger, Options, Param, Post, Query, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, onPersonsDevice, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
+import { AccessError, ActorError, ArchivedSignInError, Kolab, OAuthGrantError, RoleError, TenancyError, isReservedKolabName, maskTokens, namedAgent, onPersonsDevice, personScope, redirectUriMatches, scopeLock, setupScope, signInStep, type ConsentChoice, type TeamIntent, type TeamPlan } from '@konjir/engine';
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
@@ -235,6 +235,13 @@ export class OAuthController {
   private readonly consents = new Limit(30, Infinity, 60_000);
   /** A setup token's one use (POST /oauth/setup): 30 a minute from one address, as consents. */
   private readonly setupUses = new Limit(30, Infinity, 60_000);
+  /**
+   * Usernames chosen at a first Sign in with Apple, checked with GitHub (POST /oauth/username): 30
+   * an hour from one address, 1,000 in all, from the OAuth app's one rate limit (5,000 an hour),
+   * which invitations by account share. Past it, a name isn't checked, so it isn't taken: the page
+   * says to try again.
+   */
+  private readonly usernameLookups = new Limit(30, 1000, 60 * 60_000);
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -436,6 +443,11 @@ export class OAuthController {
     if (!SIGN_IN_ID.test(id) || !state) return sendError(res, 400, `${idp.label}'s answer doesn't name a sign-in of Kolab's. Start again from the app you were connecting.`);
     const binding = cookieOf(req, bindingCookie(this.options, id));
     if (!binding) return this.stopped(res, { state });
+    // The binding and the state together, before the code goes anywhere (RFC 6749 §10.12).
+    const pending = await this.kolab.pendingAuthorization(binding, { state });
+    // Only the provider the sign-in was sent to answers it, a cancel included: another provider's
+    // callback can't end it.
+    if (pending && pending.provider !== idp.id) return sendError(res, 400, `This sign-in was sent to ${this.labelOf(pending.provider)}, not ${idp.label}. Start again from the app you were connecting.`);
     if (typeof q.error === 'string' || typeof q.code !== 'string') {
       const r = await this.kolab.abandonAuthorization(binding, state);
       if (!r) return this.stopped(res, { binding }, id);
@@ -443,11 +455,7 @@ export class OAuthController {
       clearBinding(res, this.options, id);
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: `the sign-in with ${idp.label} was cancelled`, state: r.clientState ?? undefined, iss: base }));
     }
-    // The binding and the state together, before the code goes anywhere (RFC 6749 §10.12).
-    const pending = await this.kolab.pendingAuthorization(binding, { state });
     if (!pending) return this.stopped(res, { binding }, id);
-    // Only the provider the sign-in was sent to answers it.
-    if (pending.provider !== idp.id) return sendError(res, 400, `This sign-in was sent to ${this.labelOf(pending.provider)}, not ${idp.label}. Start again from the app you were connecting.`);
     // The provider's answer came back a second time (the page reloaded, say): it counts once.
     if (pending.person || pending.choosingUsername) return sendError(res, 400, `${idp.label}'s answer for this sign-in was already used. Go back to the page it showed, or start again from the app you were connecting.`);
     let who;
@@ -608,9 +616,11 @@ export class OAuthController {
    * The username a person chose at their first sign-in with a provider that gives none (Apple),
    * from its page's own form: Kolab's origin, its token and this browser's binding, as the consent
    * form. `decision=choose` makes the person, named exactly that (Kolab.chooseUsername: never an
-   * existing person's name, never someone's agent's), and shows the sign-in's consent page, as the
-   * provider's answer does for anyone else; a name Kolab can't take shows the page again, saying
-   * why. Anything else cancels the sign-in, and the app is told.
+   * existing person's name, never someone's agent's, never a GitHub account's while GitHub's
+   * sign-in is here), and shows the sign-in's consent page, as the provider's answer does for
+   * anyone else; a name Kolab can't take shows the page again, saying why. The same form posted
+   * again shows the consent page of the person it made. A person archived meanwhile is stopped
+   * with 403, as the callback stops them. Anything else cancels the sign-in, and the app is told.
    */
   @Post('oauth/username')
   async username(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
@@ -625,7 +635,9 @@ export class OAuthController {
     const binding = cookieOf(req, bindingCookie(this.options, id));
     if (!binding) return this.stopped(res, { csrf });
     const pending = await this.kolab.pendingAuthorization(binding, { csrf });
-    if (!pending?.choosingUsername) return this.stopped(res, { binding }, id);
+    // Waiting for a username; or named already by this same form, posted again (Continue pressed
+    // twice, or Back and Continue), which chooseUsername answers with whoever it named.
+    if (!pending || (!pending.choosingUsername && !pending.person)) return this.stopped(res, { binding }, id);
     if (str('decision') !== 'choose') {
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return this.stopped(res, { binding }, id);
@@ -633,10 +645,20 @@ export class OAuthController {
       if (pending.inviteKey) clearInviteCookie(res, this.options);
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: 'the person cancelled the sign-in', state: r.clientState ?? undefined, iss: base }));
     }
+    // A GitHub username stays that GitHub account's (checkUsername): GitHub's sign-in, when this
+    // Kolab has it, says whether the name is one, at most usernameLookups' share of its rate limit.
+    const github = this.idps.find((i) => i.lookup && i.id !== pending.provider);
+    const address = clientAddress(req, this.options);
+    const lookup = github?.lookup && (async (login: string) => {
+      if (!this.usernameLookups.take(address)) throw new Error('too many usernames checked from here just now');
+      return github.lookup!(login);
+    });
     let made: { actor: string; created: boolean; csrf: string };
     try {
-      made = await this.kolab.chooseUsername(binding, csrf, str('username'));
+      made = await this.kolab.chooseUsername(binding, csrf, str('username'), lookup ? { github: lookup } : {});
     } catch (e) {
+      // Archived meanwhile (the same account, signed in elsewhere and archived): stopped, as the callback stops it.
+      if (e instanceof ArchivedSignInError) return sendError(res, 403, e.message);
       if (e instanceof ActorError) return this.usernamePage(res, 400, id, binding, csrf, { username: str('username').slice(0, 39), error: e.message });
       if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
       throw e;
