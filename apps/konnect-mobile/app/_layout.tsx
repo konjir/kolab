@@ -89,6 +89,7 @@ function Gate() {
           <Stack.Screen name="team" />
           <Stack.Screen name="notifications" />
           <Stack.Screen name="about" />
+          <Stack.Screen name="delete-account" />
           <Stack.Screen name="forward" options={{ presentation: 'modal', headerLeft: () => <CancelButton /> }} />
           <Stack.Screen name="details/[name]" />
           <Stack.Screen name="dev" />

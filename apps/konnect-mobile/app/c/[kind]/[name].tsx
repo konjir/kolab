@@ -5,6 +5,7 @@ import * as Haptics from 'expo-haptics';
 import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActionSheetIOS, Alert, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { DELETED_ACCOUNT } from '@konjir/types';
 import { useAuth } from '@/auth/AuthProvider';
 import { Avatar } from '@/Avatar';
 import { Composer, useBottomInset } from '@/Composer';
@@ -14,7 +15,7 @@ import { markReader, type MarkReader } from '@/kolab/mark-read';
 import { isAgent, useAgentConversation, useAnswers, useApi, useChannels, useConversation, useMembers, type ConversationKind } from '@/kolab/hooks';
 import { agentsIn, at, disclosureOf, marksRead, onlyAgent, ownAgents, readingAs, readOnlyBanner } from '@/kolab/your-agents';
 import { Button } from '@/ui';
-import { displayName, handleOf, mentionsIn } from '@/kolab/names';
+import { displayName, handleOf, mentionsIn, senderName } from '@/kolab/names';
 import { nonce, quoteOf, rowsOf, type Msg, type Row } from '@/kolab/thread';
 import { readThrough } from '@/kolab/unread';
 import { Markdown } from '@/markdown';
@@ -132,23 +133,24 @@ export default function Conversation() {
     const agent = isAgent(members, m.from);
     const sender = members?.find((x) => x.actor === m.from);
     const owner = sender?.owner ? members?.find((x) => x.actor === sender.owner) : undefined;
-    const profile = () => router.push(memberHref(m.from, sender?.kind));
+    // A deleted account has no profile to open.
+    const profile = () => { if (!m.from_deleted) router.push(memberHref(m.from, sender?.kind)); };
     return (
       <Pressable testID={`msg-${m.id}`} onLongPress={() => actions(m)} style={[styles.msg, item.head && styles.head]}>
         <View style={styles.gutter}>
           {item.head && (sender
-            ? <Pressable accessibilityRole="button" accessibilityLabel={displayName(m.from, members)} onPress={profile}><Avatar member={sender} owner={owner} size={36} /></Pressable>
+            ? <Pressable accessibilityRole="button" accessibilityLabel={senderName(m, members)} onPress={profile}><Avatar member={sender} owner={owner} size={36} /></Pressable>
             : <View style={[styles.blank, { backgroundColor: colors['accent-soft'] }]} />)}
         </View>
         <View style={styles.content}>
           {item.head && (
             <View style={styles.meta}>
-              <Text onPress={profile} style={[styles.from, { color: colors.ink }]}>{displayName(m.from, members)}</Text>
+              <Text onPress={profile} style={[styles.from, { color: colors.ink }]}>{senderName(m, members)}</Text>
               {agent && <Text style={[styles.tag, { color: colors['ink-muted'], borderColor: colors.line }]}>agent</Text>}
               <Text style={[styles.time, { color: colors['ink-muted'] }]}>{time(m.sent_at)}</Text>
             </View>
           )}
-          {m.reply_to && <Text numberOfLines={1} style={[styles.quote, { color: colors['ink-muted'], borderLeftColor: colors.line }]}>{parent ? `${displayName(parent.from, members)}: ${quoteOf(parent.message)}` : 'Replying to an earlier message'}</Text>}
+          {m.reply_to && <Text numberOfLines={1} style={[styles.quote, { color: colors['ink-muted'], borderLeftColor: colors.line }]}>{parent ? `${senderName(parent, members)}: ${quoteOf(parent.message)}` : 'Replying to an earlier message'}</Text>}
           {agent ? <Markdown source={m.message} colors={colors} /> : <Text style={[styles.body, { color: colors.ink }]}>{m.message}</Text>}
           {m.capped && <Text style={[styles.note, { color: colors.stale }]}>Past the agent reply cap: it woke no agent.</Text>}
           {m.pending === 'sending' && <Text style={[styles.note, { color: colors['ink-muted'] }]}>Sending…</Text>}
@@ -166,7 +168,9 @@ export default function Conversation() {
   // Your agent's DM with you is your own DM with it, never read as its owner.
   if (redirect) return <Redirect href={{ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: redirect } }} />;
   const people = (members ?? []).filter((m) => m.actor !== me).map(handleOf);
-  const title = kind === 'channel' ? `#${name}` : displayName(name, members);
+  // A DM with someone who deleted their account: named as Kolab's messages say (from_deleted, to_deleted).
+  const partnerGone = kind === 'dm' && all.some((x) => (x.from === name && x.from_deleted) || (x.to === name && x.to_deleted));
+  const title = kind === 'channel' ? `#${name}` : partnerGone ? DELETED_ACCOUNT : displayName(name, members);
   const agentHandle = readOnly ? at(as!, members) : '';
   const otherHandle = at(name, members);
   // Who else can read a DM with an agent, from Kolab's fields: said under the header, always.

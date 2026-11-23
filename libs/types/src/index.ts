@@ -102,6 +102,24 @@ export interface MyInvitation { kolab: string; invited_by: string; invited_at: s
 export interface MyTeams { teams: MyTeam[]; invitations: MyInvitation[] }
 /** What a person's switch of their sign-in to another of their teams returns (konjir_switch_team): where it works now. */
 export interface TeamSwitched { kolab: string; role: Role }
+/**
+ * How an app names whoever sent a message from an account since deleted (`from_deleted`, Lee's
+ * decision of 2026-11-23): the person, or one of their agents.
+ */
+export const DELETED_ACCOUNT = 'a deleted account';
+/**
+ * What keeps a person from deleting their account (konjir_delete_my_account): a kolab they own
+ * where someone else is a member (`members`, to hand over or erase first), one of theirs that holds
+ * documents (`documents`, to archive first), or an organization they alone own that has other
+ * members (`organization`). `why` says it in a sentence.
+ */
+export interface AccountDeletionBlocker { name: string; kind: 'kolab' | 'organization'; reason: 'members' | 'documents' | 'organization'; why: string }
+/**
+ * What deleting one's account did (konjir_delete_my_account): the account deleted, the kolabs left
+ * and erased (those they alone were in), how many of their agents went, sign-ins revoked, sessions
+ * ended and push devices forgotten.
+ */
+export interface AccountDeleted { deleted: string; left: string[]; erased: string[]; agents: number; revoked: number; ended: number; devices: number }
 /** What an invite's link shows whoever holds it, before they accept: the kolab, the access, and who invites them. */
 export interface InvitePreview {
   kolab: string; title: string; owner: string; level: InviteLevel; layers: Layer[];
@@ -173,8 +191,8 @@ export const ADMIN_DOER = 'admin';
  * a Konjir admin, and each admin verb the break-glass token runs; a kolab's lease length for work
  * set (PLN15, W5.1b); a repository registered or archived by a person (KON7, D98, W5.2a); a
  * kolab's autonomy policy changed by one of its Admins (POL2, W6.2); a ruling recorded with a
- * date before the day it was recorded (W6.3); a host ended by its owner (0055); and a kolab
- * erased by its owner (0056).
+ * date before the day it was recorded (W6.3); a host ended by its owner (0055); a kolab
+ * erased by its owner (0056); and a person's own account deleted by them (0060).
  */
 export const AUDIT_ACTIONS = [
   'grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed', 'outbox.retried',
@@ -187,6 +205,8 @@ export const AUDIT_ACTIONS = [
   'kolab.erased',
   // A person's push device unregistered by them (migration 0058): its row goes, and this says so.
   'push_device.unregistered',
+  // A person deleted their own account (migration 0060): the event, never the person's data.
+  'account.deleted',
 ] as const;
 export type AuditAction = typeof AUDIT_ACTIONS[number];
 /** One row of the audit log: what was done, in which kolab if any, to whom, by whom and when. */
@@ -828,6 +848,10 @@ export const isSessionEnded = (e: KolabEvent): e is SessionEndedEvent => 'sessio
  */
 export interface Message {
   id: string; from: string; to: string; message: string;
+  /** Present, true, when its sender's account is deleted (theirs, or an agent's owner's): show them as DELETED_ACCOUNT. */
+  from_deleted?: true;
+  /** Present, true, when its recipient's account is deleted: show them as DELETED_ACCOUNT. */
+  to_deleted?: true;
   /** The message it answers, between the same two members, if any. */
   reply_to: string | null;
   sent_at: string;
@@ -1055,6 +1079,8 @@ export interface HostRequestState {
 /** A message in a channel: every member of its kolab reads it. */
 export interface ChannelMessage {
   id: string; channel: string; from: string; message: string;
+  /** Present, true, when its sender's account is deleted (theirs, or an agent's owner's): show them as DELETED_ACCOUNT. */
+  from_deleted?: true;
   /** The message of the same channel it answers, if any. */
   reply_to: string | null;
   /** The members it mentions, by name. */

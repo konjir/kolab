@@ -31,7 +31,7 @@ import {
   DEFAULT_POLICY, FUNCTIONAL_ANSWERERS, POLICY_SETTINGS, VERSION_APPROVERS, WORK_APPROVERS,
   type KolabPolicy, type PolicySet, type PolicyView, type VersionApprover, type WorkApprover,
 } from '@konjir/types';
-import type { MyTeam, MyTeams, TeamSwitched } from '@konjir/types';
+import type { AccountDeleted, AccountDeletionBlocker, MyTeam, MyTeams, TeamSwitched } from '@konjir/types';
 
 // ---------------------------------------------------------------------------
 // Row types used only inside the engine (shared types are in @konjir/types)
@@ -494,6 +494,15 @@ export function redirectUriMatches(registered: string[], given: string, devSchem
   });
 }
 /**
+ * A person's account deletion refused while something of theirs must be dealt with first
+ * (deleteOwnAccount): `blockers` names each, so an app can list them. Nothing was changed.
+ */
+export class AccountDeletionBlocked extends TenancyError {
+  constructor(readonly blockers: AccountDeletionBlocker[]) {
+    super(`your account can't be deleted yet: ${blockers.map((b) => b.why).join('; ')}. Deal with ${blockers.length === 1 ? 'it' : 'each'} first, then delete your account again`);
+  }
+}
+/**
  * A name another kolab, account or actor holds. The message is the same whether that one is live
  * or archived, so whoever asked learns only that the name is taken; `archived` names the archived
  * holder, for the admin token's verbs to say so (D52).
@@ -514,6 +523,11 @@ const TEAM_NAME = /^[a-z0-9][a-z0-9-]*$/;
  */
 const ACCESS_LOCK = 0x4b4a0006;
 /**
+ * Why a deleted account (deleteOwnAccount, migration 0060), or an agent of one, can't come back:
+ * not unarchived, nor linked to an identity again.
+ */
+const DELETED_FOR_GOOD = (person: string) => `${person} deleted their account, which is for good: it can't be unarchived or signed in to again, and its name is never given to anyone`;
+/**
  * What erasing a kolab removes besides its grants, oauth codes and sessions (eraseOwnKolab,
  * migration 0056), each by kolab_id, in this order: each before what it refers to. A host's
  * requests go with it (on delete cascade).
@@ -524,6 +538,9 @@ const ERASED_WITH_KOLAB = [
   'message_run', 'message_receipt', 'message', 'kolab_chat_agent', 'kolab_chat',
   'kolab_policy', 'node_name', 'outbox', 'notification_pref',
 ] as const;
+
+/** Why kolab `k` can't be erased: it holds documents, which archiving keeps. */
+const erasedKeeps = (k: string) => `kolab ${k} holds documents, so it can't be erased: archive it instead, which keeps them`;
 
 /** The identity provider whose login is a member's `login` (Member): GitHub's, as GitHubIdentity names it. */
 const GITHUB_PROVIDER = 'github';
@@ -1847,6 +1864,11 @@ export class Kolab {
       `select id, name, kind, owner_id as owner from actor where id = $1`, [id])).rows[0];
   }
 
+  /** Whether an actor's account is deleted (deleteOwnAccount, migration 0060): a deleted person, or an agent of one. */
+  private async deletedActor(id: string): Promise<boolean> {
+    return (await this.db.query<{ deleted: boolean }>(`select kj_actor_deleted($1) as deleted`, [id])).rows[0].deleted;
+  }
+
   /** Whether an actor is archived: by itself, or, for an agent, through its owner (D52); as kj_actor_archived computes it. */
   private async archivedActor(id: string): Promise<boolean> {
     return (await this.db.query<{ archived: boolean }>(`select kj_actor_archived($1) as archived`, [id])).rows[0].archived;
@@ -2447,6 +2469,7 @@ export class Kolab {
     if (!IDP_NAME.test(who.provider) || !IDP_SUBJECT.test(who.subject)) throw new ActorError('name the provider (github) and its id for the person (GitHub\'s numeric user id)');
     const a = await this.actor(actorId);
     if (a.kind !== 'person') throw new ActorError(`${actorId} is an agent: only a person signs in`);
+    if (await this.deletedActor(actorId)) throw new ActorError(DELETED_FOR_GOOD(actorId));
     try {
       await this.db.query(`insert into identity(provider, subject, actor_id, login, linked_by) values ($1, $2, $3, $4, $5)`,
         [who.provider, who.subject, actorId, who.login ?? who.subject, by]);
@@ -4021,62 +4044,73 @@ export class Kolab {
     const s = await this.ownKolabSession(sessionId, named, 'erase');
     const k = s.kolab;
     const by = s.actor_id;
-    const keep = `kolab ${k} holds documents, so it can't be erased: archive it instead, which keeps them`;
     return this.inTransaction(async (tx, signal) => {
       await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
-      // Its row first: a write into the kolab that comes after waits on it, then finds it gone.
-      if (!(await tx.query(`select 1 from kolab where id = $1 and archived_at is null for update`, [k])).rows.length) {
-        throw new TenancyError(`kolab ${k} is archived, so it can't be erased here`);
-      }
-      if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
-        throw new RoleError('no open session for that token');
-      }
-      if (!(await ownsKolab(tx, by, k))) throw new AccessError(`only the owner of kolab ${k} can erase it`);
-      if ((await tx.query(`select 1 from node where kolab_id = $1 limit 1`, [k])).rows.length) throw new TenancyError(keep);
-      await tx.query(`select set_config('kj.erasing', $1, true)`, [k]);
-      // konnect's app's sign-ins here move to another of their person's teams first (moveAppGrantsIn),
-      // as a removal moves them; one with none left is revoked there. Then nothing below reaches them.
-      const here = (await tx.query<{ id: string; redirect_uris: string[] | null }>(
-        `select s.id, c.redirect_uris from session s join actor a on a.id = s.actor_id and a.kind = 'person'
-           join oauth_grant g on g.id = s.grant_id and g.revoked_at is null and g.expires_at > now() join oauth_client c on c.id = g.client_id
-          where s.kolab_id = $1 and s.ended_at is null`, [k])).rows.filter((r) => appClient(r.redirect_uris, this.appRedirects.devSchemes)).map((r) => r.id);
-      if (here.length) {
-        await tx.query(`update session set ended_at = now(), ended_by = $2 where id = any($1::text[])`, [here, by]);
-        for (const id of here) await signal({ session: 'ended', id });
-        await this.moveAppGrantsIn(tx, here, by, k);
-      }
-      // The sign-ins whose sessions are here, and those that began here (a grant's scope names the
-      // kolab it began in) with no live session elsewhere now: a session switched to another kolab
-      // keeps its grant, and its person stays signed in there.
-      const revoked = (await tx.query(
-        `update oauth_grant g set revoked_at = now(), revoked_by = $3
-          where g.revoked_at is null
-            and (g.id in (select s.grant_id from session s where s.kolab_id = $1 and s.ended_at is null and s.grant_id is not null)
-                 or (position($2 in ' ' || g.scope || ' ') > 0
-                     and not exists (select 1 from session s where s.grant_id = g.id and s.kolab_id <> $1 and s.ended_at is null)))
-          returning g.id`, [k, ` kolab:${k} `, by])).rows.length;
-      // Setups for it not yet exchanged or used can't be, now: a later kolab of its name owes them nothing.
-      await tx.query(`update oauth_setup set revoked_at = now() where kolab = $1 and revoked_at is null`, [k]);
-      const ended = await tx.query<{ id: string }>(
-        `update session set ended_at = now(), ended_by = $2 where kolab_id = $1 and ended_at is null returning id`, [k, by]);
-      for (const { id } of ended.rows) await signal({ session: 'ended', id });
-      const grants = await tx.query<{ subject: string }>(`select coalesce(user_id, agent_id, team_id) as subject from kolab_grant where kolab_id = $1`, [k]);
-      for (const g of grants.rows) await audit(tx, by, 'grant.removed', { kolab: k, subject: g.subject, detail: { erased: true } });
-      await tx.query(`delete from kolab_grant where kolab_id = $1`, [k]);
-      const messages = Number((await tx.query<{ n: string }>(
-        `select (select count(*) from message where kolab_id = $1) + (select count(*) from channel_message where kolab_id = $1) as n`, [k])).rows[0].n);
-      for (const t of ERASED_WITH_KOLAB) await tx.query(`delete from ${t} where kolab_id = $1`, [k]);
-      await tx.query(`delete from oauth_code where kolab = $1`, [k]);
-      await tx.query(`delete from session where kolab_id = $1`, [k]);
-      await audit(tx, by, 'kolab.erased', { kolab: k, subject: k, detail: { messages, sessions: ended.rows.length, grants: grants.rows.length } });
-      await tx.query(`delete from kolab where id = $1`, [k]);
-      log.info(`kolab ${k} erased by ${by}`, { event: 'erased', target: 'kolab', name: k, actor: by, kolab: k });
-      return { erased: k, ended: ended.rows.length, revoked, messages };
+      return { erased: k, ...await this.eraseKolabIn(tx, signal, k, by, async () => {
+        if (!(await tx.query(`select 1 from session s where s.id = $2 and ${LIVE_SESSION}`, [sessionKey(sessionId), s.id])).rows.length) {
+          throw new RoleError('no open session for that token');
+        }
+        if (!(await ownsKolab(tx, by, k))) throw new AccessError(`only the owner of kolab ${k} can erase it`);
+      }) };
     }).catch((e: unknown) => {
       // Something the erase doesn't remove still refers to the kolab: it holds more than messages.
-      if ((e as { code?: string })?.code === '23503') throw new TenancyError(keep);
+      if ((e as { code?: string })?.code === '23503') throw new TenancyError(erasedKeeps(k));
       throw e;
     });
+  }
+
+  /**
+   * In `tx`, under the access lock, erases kolab `k` for `by` (eraseOwnKolab, and deleteOwnAccount
+   * for a kolab its person alone is in): its row locked first, then `check`, then everything in it
+   * goes. Refused, with nothing changed, if it is archived or holds documents; anything else that
+   * still refers to it fails the transaction on a foreign key (23503).
+   */
+  private async eraseKolabIn(tx: Q, signal: Signal, k: string, by: string, check: () => Promise<void> = async () => undefined): Promise<{ ended: number; revoked: number; messages: number }> {
+    // Its row first: a write into the kolab that comes after waits on it, then finds it gone.
+    if (!(await tx.query(`select 1 from kolab where id = $1 and archived_at is null for update`, [k])).rows.length) {
+      throw new TenancyError(`kolab ${k} is archived, so it can't be erased here`);
+    }
+    await check();
+    if ((await tx.query(`select 1 from node where kolab_id = $1 limit 1`, [k])).rows.length) throw new TenancyError(erasedKeeps(k));
+    await tx.query(`select set_config('kj.erasing', $1, true)`, [k]);
+    // konnect's app's sign-ins here move to another of their person's teams first (moveAppGrantsIn),
+    // as a removal moves them; one with none left is revoked there. Then nothing below reaches them.
+    const here = (await tx.query<{ id: string; redirect_uris: string[] | null }>(
+      `select s.id, c.redirect_uris from session s join actor a on a.id = s.actor_id and a.kind = 'person'
+         join oauth_grant g on g.id = s.grant_id and g.revoked_at is null and g.expires_at > now() join oauth_client c on c.id = g.client_id
+        where s.kolab_id = $1 and s.ended_at is null`, [k])).rows.filter((r) => appClient(r.redirect_uris, this.appRedirects.devSchemes)).map((r) => r.id);
+    if (here.length) {
+      await tx.query(`update session set ended_at = now(), ended_by = $2 where id = any($1::text[])`, [here, by]);
+      for (const id of here) await signal({ session: 'ended', id });
+      await this.moveAppGrantsIn(tx, here, by, k);
+    }
+    // The sign-ins whose sessions are here, and those that began here (a grant's scope names the
+    // kolab it began in) with no live session elsewhere now: a session switched to another kolab
+    // keeps its grant, and its person stays signed in there.
+    const revoked = (await tx.query(
+      `update oauth_grant g set revoked_at = now(), revoked_by = $3
+        where g.revoked_at is null
+          and (g.id in (select s.grant_id from session s where s.kolab_id = $1 and s.ended_at is null and s.grant_id is not null)
+               or (position($2 in ' ' || g.scope || ' ') > 0
+                   and not exists (select 1 from session s where s.grant_id = g.id and s.kolab_id <> $1 and s.ended_at is null)))
+        returning g.id`, [k, ` kolab:${k} `, by])).rows.length;
+    // Setups for it not yet exchanged or used can't be, now: a later kolab of its name owes them nothing.
+    await tx.query(`update oauth_setup set revoked_at = now() where kolab = $1 and revoked_at is null`, [k]);
+    const ended = await tx.query<{ id: string }>(
+      `update session set ended_at = now(), ended_by = $2 where kolab_id = $1 and ended_at is null returning id`, [k, by]);
+    for (const { id } of ended.rows) await signal({ session: 'ended', id });
+    const grants = await tx.query<{ subject: string }>(`select coalesce(user_id, agent_id, team_id) as subject from kolab_grant where kolab_id = $1`, [k]);
+    for (const g of grants.rows) await audit(tx, by, 'grant.removed', { kolab: k, subject: g.subject, detail: { erased: true } });
+    await tx.query(`delete from kolab_grant where kolab_id = $1`, [k]);
+    const messages = Number((await tx.query<{ n: string }>(
+      `select (select count(*) from message where kolab_id = $1) + (select count(*) from channel_message where kolab_id = $1) as n`, [k])).rows[0].n);
+    for (const t of ERASED_WITH_KOLAB) await tx.query(`delete from ${t} where kolab_id = $1`, [k]);
+    await tx.query(`delete from oauth_code where kolab = $1`, [k]);
+    await tx.query(`delete from session where kolab_id = $1`, [k]);
+    await audit(tx, by, 'kolab.erased', { kolab: k, subject: k, detail: { messages, sessions: ended.rows.length, grants: grants.rows.length } });
+    await tx.query(`delete from kolab where id = $1`, [k]);
+    log.info(`kolab ${k} erased by ${by}`, { event: 'erased', target: 'kolab', name: k, actor: by, kolab: k });
+    return { ended: ended.rows.length, revoked, messages };
   }
 
   /**
@@ -4124,6 +4158,159 @@ export class Kolab {
     });
     const label = agent.startsWith(`${s.actor_id}-`) ? agent.slice(s.actor_id.length + 1) : null;
     return { kolab: s.kolab, removed: agent, label, revoked, ended: r.ended + ended };
+  }
+
+  /**
+   * A person deletes their own account (konjir_delete_my_account; Lee's decision of 2026-11-23,
+   * "remove me, keep my words"), from their sign-in through konnect's own app (appSession), naming
+   * themselves, as the app has them type it. Refused, with each named (AccountDeletionBlocked),
+   * while they own a kolab where anyone else is a member (hand it over or erase it first), or one
+   * that holds documents (archive it first), or are the only owner of an organization with other
+   * members; refused to a Konjir admin, whom another admin must revoke first. Otherwise, in one
+   * transaction under the access lock:
+   *
+   * - every sign-in of theirs and their agents' is revoked, with its refresh tokens, codes, pending
+   *   sign-ins and setups, and every session of theirs and their agents' ends, their streams told
+   *   (D41) and the jobs they ran stopped; an app registration (OAuth client) only they used goes;
+   * - each kolab they alone are in (their agents aside) is erased, as eraseOwnKolab erases it;
+   * - they and their agents leave every other kolab, organization and team (dropMemberGrants, each
+   *   grant's removal audited), and their leases and hosts go;
+   * - their push devices and notification prefs go, as do invitations naming their identity;
+   * - their identity (the GitHub account) is deleted, and their profile with it: the account's and
+   *   each actor's name become its id;
+   * - their account is archived and marked deleted (migration 0060): it, and their agents, hold
+   *   nothing anywhere again, and since the rows stay, the id is never handed out again
+   *   (requireFreeName), so a later sign-up with the same GitHub account is a new person.
+   *
+   * What they and their agents wrote stays, shown as from DELETED_ACCOUNT (from_deleted). The audit
+   * log records the event (account.deleted), with counts, never the person's data.
+   */
+  async deleteOwnAccount(sessionId: string, named: string): Promise<AccountDeleted> {
+    const say = { does: 'deletes their account', doing: 'deleting an account', instead: 'delete it in konnect\'s app: You, then Delete account' };
+    const first = await this.appSession(this.db, sessionId, say);
+    const me = first.actor_id;
+    if (typeof named !== 'string' || named.trim().replace(/^@/, '') !== me) {
+      throw new TenancyError(`name the account to delete: type ${me}, the account this sign-in is, so nobody deletes one by mistake`);
+    }
+    const r = await this.inTransaction(async (tx, signal) => {
+      await tx.query(`select pg_advisory_xact_lock($1)`, [ACCESS_LOCK]);
+      const s = await this.appSession(tx, sessionId, say, true);
+      if (s.actor_id !== me) throw new RoleError('no open session for that token');
+      const account = (await tx.query<{ archived: boolean }>(`select archived_at is not null as archived from account where id = $1 and kind = 'user' for update`, [me])).rows[0];
+      if (!account || account.archived) throw new AccessError(`${me} is archived, so its account can't be deleted here`);
+      if ((await tx.query(`select 1 from konjir_admin where actor_id = $1`, [me])).rows.length) {
+        throw new TenancyError('you are a Konjir admin: another admin must revoke that first, so Konjir is never left without the admins it needs');
+      }
+      const agents = (await tx.query<{ id: string }>(`select id from actor where owner_id = $1 and kind = 'agent' order by id`, [me])).rows.map((x) => x.id);
+      const mine = [me, ...agents];
+      // What must be dealt with first: each kolab of theirs, live, where anyone else is a member,
+      // or that holds documents; and each live organization they alone own that has other members.
+      const blockers: AccountDeletionBlocker[] = [];
+      const solo: string[] = [];
+      for (const { id: k } of (await tx.query<{ id: string }>(`select id from kolab where owner_id = $1 and archived_at is null order by id`, [me])).rows) {
+        const others = (await holderRows(tx, k)).filter((h) => h.rank > 0 && !mine.includes(h.id)).length;
+        if (others) {
+          blockers.push({ name: k, kind: 'kolab', reason: 'members', why: `kolab ${k} is yours and has ${others} other member${others === 1 ? '' : 's'}: hand it over, or erase it (konjir_erase_kolab)` });
+        } else if ((await tx.query(`select 1 from node where kolab_id = $1 limit 1`, [k])).rows.length) {
+          blockers.push({ name: k, kind: 'kolab', reason: 'documents', why: `kolab ${k} is yours and holds documents: archive it (konjir_archive_kolab), which keeps them` });
+        } else solo.push(k);
+      }
+      const orgs = (await tx.query<{ org_id: string }>(
+        `select m.org_id from org_member m join account o on o.id = m.org_id and o.archived_at is null
+          where m.user_id = $1 and m.role = 'owner'
+            and not exists (select 1 from org_member x where x.org_id = m.org_id and x.role = 'owner' and x.user_id <> $1)
+            and exists (select 1 from org_member x where x.org_id = m.org_id and x.user_id <> $1)
+          order by m.org_id`, [me])).rows;
+      for (const { org_id: o } of orgs) blockers.push({ name: o, kind: 'organization', reason: 'organization', why: `you are the only owner of organization ${o}, which has other members: make one of them an owner too` });
+      if (blockers.length) throw new AccountDeletionBlocked(blockers);
+
+      // Who the change can affect, found before it (changeAccess).
+      const holders = await holdersOf(tx, { users: mine });
+      // Every sign-in revoked first, so no app's sign-in moves to another team as kolabs go below.
+      const grants = (await tx.query<{ id: string }>(
+        `update oauth_grant set revoked_at = now(), revoked_by = $2
+          where revoked_at is null and (person_id = $1 or actor_id = any($3::text[])) returning id`, [me, me, mine])).rows.map((x) => x.id);
+      await tx.query(`delete from oauth_refresh_token where grant_id in (select id from oauth_grant where person_id = $1 or actor_id = any($2::text[]))`, [me, mine]);
+      await tx.query(`delete from oauth_code where person_id = $1 or actor_id = any($2::text[])`, [me, mine]);
+      await tx.query(`delete from oauth_request where actor_id = $1`, [me]);
+      await tx.query(`update oauth_setup set revoked_at = now() where person_id = $1 and revoked_at is null`, [me]);
+      const ended = (await tx.query<{ id: string }>(
+        `update session set ended_at = now(), ended_by = $2 where actor_id = any($1::text[]) and ended_at is null returning id`, [mine, me])).rows.map((x) => x.id).sort();
+      for (const id of ended) await signal({ session: 'ended', id });
+      await this.endRunnersJobsIn(tx, signal, ended, me);
+
+      // The kolabs they alone are in go, as their owner erases one.
+      for (const k of solo) await this.eraseKolabIn(tx, signal, k, me);
+      // Every other kolab: they leave it, and their agents with them; an archived one's grants go
+      // too (0014 lets them), while its leases and hosts are kept with the rest of it.
+      const left = (await tx.query<{ kolab_id: string; archived: boolean }>(
+        `select distinct g.kolab_id, kj_kolab_archived(g.kolab_id) as archived from kolab_grant g
+          where g.user_id = $1 or g.agent_id = any($2::text[]) order by g.kolab_id`, [me, agents])).rows;
+      for (const { kolab_id: k, archived } of left) {
+        if (!archived) {
+          await this.dropMemberGrants(tx, signal, k, me, me);
+          continue;
+        }
+        for (const g of (await tx.query<{ subject: string }>(
+          `delete from kolab_grant where kolab_id = $1 and (user_id = $2 or agent_id = any($3::text[])) returning coalesce(user_id, agent_id) as subject`, [k, me, agents])).rows) {
+          await audit(tx, me, 'grant.removed', { kolab: k, subject: g.subject, detail: { deleted: true } });
+        }
+      }
+      // Leases and hosts of theirs in any live kolab where no grant was theirs.
+      await tx.query(`delete from kolab_lease where holder = any($1::text[]) and not kj_kolab_archived(kolab_id)`, [mine]);
+      await tx.query(`delete from kolab_host_request where owner = $1 and not kj_kolab_archived(kolab_id)`, [me]);
+      await tx.query(`delete from kolab_host where owner = $1 and not kj_kolab_archived(kolab_id)`, [me]);
+      // Organizations and their teams.
+      for (const { org_id: o } of (await tx.query<{ org_id: string }>(`select org_id from org_member where user_id = $1 order by org_id`, [me])).rows) {
+        const teams = (await tx.query<{ team_id: string }>(
+          `delete from team_member where user_id = $2 and team_id in (select id from team where org_id = $1) returning team_id`, [o, me])).rows.map((x) => x.team_id).sort();
+        await tx.query(`delete from org_member where org_id = $1 and user_id = $2`, [o, me]);
+        await audit(tx, me, 'member.removed', { subject: me, detail: { org: o, ...(teams.length ? { teams } : {}), deleted: true } });
+      }
+      for (const { team_id: t } of (await tx.query<{ team_id: string }>(`delete from team_member where user_id = $1 returning team_id`, [me])).rows) {
+        await audit(tx, me, 'team_member.removed', { subject: me, detail: { team: t } });
+      }
+
+      // Push, and what names their identity.
+      const devices = (await tx.query(`delete from push_device where actor_id = $1 returning token`, [me])).rows.length;
+      await tx.query(`delete from notification_pref where actor_id = $1 and not kj_kolab_archived(kolab_id)`, [me]);
+      await tx.query(
+        `delete from kolab_invitation i using identity d
+          where d.actor_id = $1 and i.provider = d.provider and i.subject = d.subject and not kj_kolab_archived(i.kolab_id)`, [me]);
+      await tx.query(`delete from identity where actor_id = $1`, [me]);
+      // An app's registration (an OAuth client) that only they ever used.
+      await tx.query(
+        `delete from oauth_client c
+          where c.id in (select client_id from oauth_grant where person_id = $1)
+            and not exists (select 1 from oauth_grant g where g.client_id = c.id and g.person_id <> $1)
+            and not exists (select 1 from oauth_setup x where x.client_id = c.id and x.person_id <> $1)
+            and not exists (select 1 from oauth_request q where q.client_id = c.id and q.actor_id is distinct from $1)`, [me]);
+
+      // The tombstone: their names become their ids, and the account is archived and deleted for good.
+      await tx.query(`update actor set name = id where id = any($1::text[])`, [mine]);
+      await tx.query(`update account set name = id, archived_at = now(), deleted_at = now() where id = $1`, [me]);
+      await tx.query(`insert into archive_event(target_kind, target_id, archived, done_by) values ('actor', $1, true, $1)`, [me]);
+
+      // As any change of access ends: links and forks marked, other sessions that lost their kolab
+      // ended, and work they held released (changeAccess).
+      const catchUps = await this.reconcileAccessIn(tx, signal, holders);
+      if (catchUps.length) await this.notifyWork(tx);
+      const more = await endUnreachableIn(tx, signal, me);
+      await this.moveAppGrantsIn(tx, more, me);
+      await this.releaseLostWorkIn(tx, signal);
+
+      const out: AccountDeleted = {
+        deleted: me, left: left.map((x) => x.kolab_id).filter((k) => !solo.includes(k)), erased: solo, agents: agents.length,
+        revoked: grants.length, ended: ended.length + more.length, devices,
+      };
+      await audit(tx, me, 'account.deleted', {
+        subject: me, detail: { left: out.left.length, erased: solo.length, agents: out.agents, revoked: out.revoked, ended: out.ended, devices },
+      });
+      return { out, catchUps };
+    });
+    if (r.catchUps.length) this.wake();
+    log.info('account deleted by its person', { event: 'deleted', target: 'account', actor: me });
+    return r.out;
   }
 
   // ---- a person's own sign-in that leaves the kolab to the page (personScope) ----
@@ -4837,6 +5024,8 @@ export class Kolab {
           }
           throw new ActorError(`no actor ${name}`);
         }
+        // A deleted account (migration 0060) is never unarchived, nor anything of it.
+        if (!archive && (await tx.query<{ d: boolean }>(`select kj_actor_deleted($1) as d`, [name])).rows[0].d) throw new TenancyError(DELETED_FOR_GOOD(a.owner ?? name));
         if (a.kind === 'person') {
           changed = await tx.query(`update account set archived_at = ${stamp} where id = $1 and ${which} returning id`, [name]);
           owner = name;
@@ -16755,17 +16944,22 @@ function requireText(text: unknown, what: string, max = MAX_TEXT): string {
 const iso = (t: Date | string | null) => (t === null ? null : new Date(t).toISOString());
 
 /** A message as it is read, with its receipt if it has one: `m` the message, `r` its receipt, left joined. */
-const MESSAGE_COLUMNS = 'm.id, m.sent_by, m.sent_to, m.body, m.reply_to, m.sent_at, r.read_at';
-interface MessageRow { id: string; sent_by: string; sent_to: string; body: string; reply_to: string | null; sent_at: Date | string; read_at: Date | string | null }
+/** Whether a message's sender and recipient deleted their accounts (migration 0060): shown as DELETED_ACCOUNT. */
+const MESSAGE_COLUMNS = `m.id, m.sent_by, m.sent_to, m.body, m.reply_to, m.sent_at, r.read_at,
+  kj_actor_deleted(m.sent_by) as from_deleted, kj_actor_deleted(m.sent_to) as to_deleted`;
+interface MessageRow { id: string; sent_by: string; sent_to: string; body: string; reply_to: string | null; sent_at: Date | string; read_at: Date | string | null; from_deleted?: boolean; to_deleted?: boolean }
 const messageOf = (m: MessageRow): Message => ({
   id: m.id, from: m.sent_by, to: m.sent_to, message: m.body, reply_to: m.reply_to, sent_at: iso(m.sent_at)!, read_at: iso(m.read_at),
+  ...(m.from_deleted ? { from_deleted: true as const } : {}), ...(m.to_deleted ? { to_deleted: true as const } : {}),
 });
-/** A channel message as it is read: `m` the message, `c` its channel, with the members it mentions. */
+/** A channel message as it is read: `m` the message, `c` its channel, with the members it mentions, and whether its sender deleted their account. */
 const CHANNEL_MESSAGE_COLUMNS = `m.id, c.name as channel, m.sent_by, m.body, m.reply_to, m.agent_run, m.sent_at,
-  array(select x.actor_id from channel_mention x where x.message_id = m.id order by x.actor_id) as mentions`;
-interface ChannelMessageRow { id: string; channel: string; sent_by: string; body: string; reply_to: string | null; agent_run: number; sent_at: Date | string; mentions: string[] | null }
+  array(select x.actor_id from channel_mention x where x.message_id = m.id order by x.actor_id) as mentions,
+  kj_actor_deleted(m.sent_by) as from_deleted`;
+interface ChannelMessageRow { id: string; channel: string; sent_by: string; body: string; reply_to: string | null; agent_run: number; sent_at: Date | string; mentions: string[] | null; from_deleted?: boolean }
 const channelMessageOf = (m: ChannelMessageRow): ChannelMessage => ({
   id: m.id, channel: m.channel, from: m.sent_by, message: m.body, reply_to: m.reply_to, mentions: m.mentions ?? [], sent_at: iso(m.sent_at)!,
+  ...(m.from_deleted ? { from_deleted: true as const } : {}),
 });
 /** A channel's name as given, with or without its `#`, checked against CHANNEL_NAME. */
 function channelName(name: unknown): string {

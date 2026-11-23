@@ -10,7 +10,8 @@ import { Button, ChoiceRow, Hint, Problem, Row, Screen, Section, SwitchRow } fro
 
 /**
  * You: the GitHub account signed in, how Home lists things on this phone, its theme (the phone's
- * appearance, or Predawn or Daybreak always), signing this phone out,
+ * appearance, or Predawn or Daybreak always), signing this phone out, deleting the account (App
+ * Store guideline 5.1.1(v), on a screen of its own that says what it does),
  * and About, which says which build this is. What belongs to a team (its settings, inviting, what
  * notifies you from it) is in the team menu, from the team at the top of Home.
  */
@@ -55,6 +56,11 @@ export default function You() {
       </Section>
       {me && <Button testID="sign-out" quiet label="Sign out" busy={busy} onPress={() => void signOut()} />}
       {problem && <Problem>{problem}</Problem>}
+      {me && (
+        <Section title="Account">
+          <Row testID="delete-account" icon="delete" label="Delete account" destructive chevron onPress={() => router.push('/delete-account')} />
+        </Section>
+      )}
     </Screen>
   );
 }

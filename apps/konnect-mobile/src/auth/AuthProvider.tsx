@@ -10,6 +10,7 @@ import * as SecureStore from 'expo-secure-store';
 import Storage from 'expo-sqlite/kv-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { appExtra } from '@/config';
+import { deleteAccount, type AccountDeleted } from '@/kolab/account';
 import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { teamClient } from './mcp';
@@ -40,6 +41,13 @@ export interface Auth {
   signIn(ask: SignInAsk): Promise<string>;
   /** Signs this phone out: the sign-in is revoked at Kolab and forgotten. */
   signOut(): Promise<{ revoked: boolean }>;
+  /**
+   * Deletes the person's account at Kolab (konjir_delete_my_account), named `account` as they typed
+   * it; then this phone forgets the sign-in, as signing out does, and its app registration, which
+   * Kolab deleted with the account. Refused (AccountBlocked, with the teams to deal with first), the
+   * phone stays signed in.
+   */
+  deleteAccount(account: string): Promise<AccountDeleted>;
   /** Moves the sign-in to another of the person's teams. */
   switchTeam(team: string): Promise<void>;
   /**
@@ -153,6 +161,16 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
       const r = await tokens.signOut();
       await reload();
       return r;
+    },
+    deleteAccount: async (account) => {
+      const deleted = await deleteAccount(await auth.client(), account);
+      // Kolab ended every sign-in and forgot every device already: the phone forgets its own, as
+      // signing out does (whose revoke Kolab no longer needs), and the registration Kolab deleted.
+      dropClient();
+      await tokens.signOut().catch(() => undefined);
+      await store.forgetClient().catch(() => undefined);
+      await reload();
+      return deleted;
     },
     switchTeam: async (team) => {
       if (!state.who || team === state.who.team) return;
