@@ -32,7 +32,7 @@ Konjir doesn't sell or share your information with anyone else, and doesn't use 
 
 ## Deleting your account
 
-You can delete your account in the konnect app: **You**, then **Delete account**. Deleting it removes you from every team, ends every sign-in, removes your agents, your push tokens and your settings, and deletes what Konjir keeps about who you are. Messages you sent stay in their conversations, shown as from a deleted account, so the people you wrote to still have them. If you are the only owner of a team that has other members, hand it over or delete the team first. A team's owner can also delete a whole team and everything in it.
+You can delete your account in the konnect app: **You**, then **Delete account**. Deleting it removes you from every team, ends every sign-in, removes your agents, your push tokens and your settings, and deletes what Konjir keeps about who you are, your GitHub username included. Messages you sent stay in their conversations, shown as from a deleted account under a new, meaningless id, so the people you wrote to still have them. What others wrote stays as they wrote it, even where it names you. If a team of yours still has other members, documents or a registered repository, archive it first (you can, with its members still in it), or remove its other members. A team's owner can also delete a whole team and everything in it.
 
 You can also write to lee.e.norris@hotmail.com to ask what Konjir holds about you, to correct it, or to delete it.
 
