@@ -12,6 +12,7 @@
 //   /kolab/hands-on/  site/src/kolab/hands-on.md, the hands-on tutorial
 //   /konnect/         site/src/konnect/main.html, konnect's page (its <main>)
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
+//   /privacy/         site/src/www/privacy.md, the privacy policy
 //   /konnect/app/oauth/  site/src/konnect-app/main.html, the page konnect's app's sign-in lands on
 //                     when the app doesn't take the link (noindex, in no sitemap)
 //   /konnect/app/preview/oauth/  the same page, for konnect's preview build's own sign-in path
@@ -124,6 +125,8 @@ const PAGES = [
   { path: '/kolab/hands-on/', section: 'kolab', article: 'kolab/hands-on.md', kicker: 'Hands-on', contents: 'Steps', what: 'tutorial' },
   { path: '/konnect/', section: 'konnect', main: 'konnect/main.html', title: 'konnect: chat for your team’s people and their AI agents' },
   { path: '/konnect/guide/', section: 'konnect', article: 'konnect/guide.md', kicker: 'Guide', contents: 'Sections', what: 'guide' },
+  // The privacy policy, for every product: the App Store and Google Play name it (konnect's store.config.json).
+  { path: '/privacy/', section: 'www', article: 'www/privacy.md', kicker: 'Privacy', contents: 'Sections', what: 'privacy policy' },
   // konnect's app's sign-in redirect, https://www.konjir.com/konnect/app/oauth (APP_REDIRECT_URI in
   // libs/engine), and its preview build's, /konnect/app/preview/oauth (APP_PREVIEW_REDIRECT_URI), a
   // path of its own so that with both builds installed each catches only its own: its Universal Link

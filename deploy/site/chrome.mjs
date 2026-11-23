@@ -103,6 +103,7 @@ export const SOURCE_LINKS = [
   { href: 'https://github.com/konjir/kolab/blob/main/LICENSE.md', text: 'Kolab server licence (FSL-1.1-ALv2)' },
   { href: 'https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE', text: 'kolab CLI licence (Apache-2.0)' },
   { href: 'https://github.com/konjir/kolab/blob/main/apps/konnect/LICENSE', text: 'konnect licence (Apache-2.0)' },
+  { href: '/privacy/', text: 'Privacy' },
 ];
 export const SOURCE_NAV = `<nav aria-label="Source and licences" style="display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 13px; line-height: 20px; flex-basis: 100%;">
 ${SOURCE_LINKS.map((l) => `<a href="${l.href}">${esc(l.text)}</a>`).join('\n')}
