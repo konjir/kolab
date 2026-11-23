@@ -2,6 +2,7 @@ import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
+import { DELETED_ACCOUNT } from '@konjir/types';
 import { useAuth } from '@/auth/AuthProvider';
 import { Avatar, presenceOf } from '@/Avatar';
 import { useShowUnreads } from '@/device-prefs';
@@ -82,7 +83,7 @@ export default function Home() {
           <Section title="Unreads">
             {home.unreads.map((r) => r.kind === 'channel'
               ? <ChannelRow key={`c-${r.name}`} row={r} onPress={() => open(r)} />
-              : <DmRow key={`d-${r.with}`} row={r} name={displayName(r.with, all)} onPress={() => open(r)} />)}
+              : <DmRow key={`d-${r.with}`} row={r} name={r.deleted ? DELETED_ACCOUNT : displayName(r.with, all)} onPress={() => open(r)} />)}
           </Section>
         )}
         <Section title="Channels">
@@ -91,7 +92,7 @@ export default function Home() {
           {!searching && <ChannelRow row={{ kind: 'channel', name: 'Browse channels' }} browse onPress={() => router.push('/browse')} />}
         </Section>
         <Section title="Direct messages">
-          {home.dms.map((r) => <DmRow key={r.with} row={r} name={displayName(r.with, all)} onPress={() => open(r)} />)}
+          {home.dms.map((r) => <DmRow key={r.with} row={r} name={r.deleted ? DELETED_ACCOUNT : displayName(r.with, all)} onPress={() => open(r)} />)}
           {!conversations.isLoading && home.dms.length === 0 && <Hint>{searching ? 'Nobody matches.' : 'No direct messages yet: the pencil at the top starts one.'}</Hint>}
         </Section>
         {(home.agents.length > 0 || all.some((m) => m.kind === 'agent' && m.owner === me)) && (

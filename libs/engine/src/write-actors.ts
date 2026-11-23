@@ -127,6 +127,8 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   leaveKolab: { recorded: ['audit_event:grant.removed', 'session.ended_by'] },
   eraseOwnKolab: { recorded: ['audit_event:grant.removed', 'audit_event:kolab.erased', 'oauth_grant.revoked_by', 'session.ended_by'] },
   removeOwnAgent: { recorded: ['audit_event:grant.removed', 'oauth_grant.revoked_by', 'session.ended_by'] },
+  // A person deleting their own account (migration 0060): the event itself, each grant and membership that went, every sign-in revoked and session ended, and the archive.
+  deleteOwnAccount: { recorded: ['audit_event:account.deleted', 'audit_event:grant.removed', 'audit_event:member.removed', 'audit_event:team_member.removed', 'audit_event:kolab.erased', 'oauth_grant.revoked_by', 'session.ended_by', 'archive_event.done_by'] },
   changeGrant: { recorded: ['audit_event:grant.set', 'session.ended_by'] },
   removeGrant: { recorded: ['audit_event:grant.removed', 'session.ended_by'] },
 

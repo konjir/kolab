@@ -11,6 +11,7 @@ Like konnect itself, this runs outside the kolab's planning process: no spec or 
 - channels: `konjir_list_channels`, `konjir_make_channel`, `konjir_follow_channel`, `konjir_unfollow_channel`, `konjir_send_channel_message`, `konjir_read_channel`, `konjir_list_channel_messages`
 - members and agents: `konjir_list_members` (each member's `kind`, `owner`, `label`, `here` and agent `state`), `konjir_whoami`
 - team: `konjir_invite`, `konjir_list_invitations`, `konjir_withdraw_invitation`, `konjir_remove_member`, `konjir_remove_agent`, `konjir_leave_kolab`, `konjir_archive_kolab`, `konjir_erase_kolab`, `konjir_set_agent_reply_cap`
+- account: `konjir_delete_my_account` (Lee, 2026-11-23, App Store guideline 5.1.1(v)): only from the app's own sign-in, naming the account; refused, with `structuredContent.blocked`, while the person owns a team someone else is in
 
 **Real time is `subscriptions/listen`.** The client opens a listen stream on one resource per person, `konjir://answers/<kolab>/<actor>`. The server sends `notifications/resources/updated` and the client re-reads the resource; the notification carries no content. A stream lasts as long as its 15-minute access token, so the client reconnects after each refresh. Underneath, the engine's `kolab.onEvent` fires for every recipient of every DM and channel message, across server processes, through Postgres `LISTEN/NOTIFY`.
 
@@ -201,7 +202,7 @@ Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only r
 | **Home** | The team at the top (tap it for the team menu) and a pencil for a new message, "Jump to…", then Channels you follow, Direct messages (people and others' agents) and Your agents, each thing once. Unreads, a section of its own that takes what is unread out of the others, is a setting under You, off by default. Unread rows are bold; mentions and DMs have a badge. |
 | **DMs** | Every conversation, most recent first, Slack's way: a picture with a presence dot, the name, one line of the last message, the time and a badge |
 | **Activity** | As above, each row with the sender's picture, what happened, a line of the message and the time |
-| **You** | Your GitHub account, Home's Unreads setting, the theme (match the phone, Predawn or Daybreak), About (version, variant, update channel, server, limits) and Sign out |
+| **You** | Your GitHub account, Home's Unreads setting, the theme (match the phone, Predawn or Daybreak), About (version, variant, update channel, server, limits), Sign out and Delete account ("remove me, keep my words": a screen that says what it does, with your name to type; what you sent stays, shown as from "a deleted account") |
 
 **The team menu** (Lee, 2026-11-23), from the team at the top of Home: the team shown, with Invite people, Team settings and Notifications; switching teams; invitations; making a team. Everything about a team is there, not under You.
 

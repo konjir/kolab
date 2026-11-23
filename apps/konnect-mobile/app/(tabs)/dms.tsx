@@ -1,9 +1,10 @@
 import { useRouter } from 'expo-router';
+import { DELETED_ACCOUNT } from '@konjir/types';
 import { useAuth } from '@/auth/AuthProvider';
 import { Avatar, presenceOf } from '@/Avatar';
 import { Icon } from '@/icons';
 import { useConversations, useMembers } from '@/kolab/hooks';
-import { displayName } from '@/kolab/names';
+import { displayName, partnerDeleted } from '@/kolab/names';
 import { quoteOf } from '@/kolab/thread';
 import { conversationHref, shortWhen } from '@/routes';
 import { useAppTheme } from '@/theme';
@@ -32,7 +33,7 @@ export default function DirectMessages() {
         {list.map((c) => {
           const m = members.find((x) => x.actor === c.with);
           const owner = m?.owner ? members.find((x) => x.actor === m.owner) : undefined;
-          const name = displayName(c.with, members);
+          const name = partnerDeleted(c) ? DELETED_ACCOUNT : displayName(c.with, members);
           return (
             <ListRow key={c.with} testID={`dm-${c.with}`}
               leading={m ? <Avatar member={m} owner={owner} size={40} presence={m.kind === 'agent' ? presenceOf(m.state) : m.here ? 'here' : undefined} /> : <Icon name="person" size={24} tintColor={colors['ink-muted']} />}

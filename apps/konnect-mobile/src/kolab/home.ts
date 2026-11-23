@@ -5,11 +5,11 @@
  * agents always keep their row, for their state; their DM's unread moves with the rest.
  */
 import type { AgentStatus, Conversation, Member } from '@konjir/types';
-import { displayName, handleOf } from './names';
+import { displayName, handleOf, partnerDeleted } from './names';
 import type { Unread } from './unread';
 
 export interface HomeChannel { kind: 'channel'; name: string; unread?: Unread }
-export interface HomeDm { kind: 'dm'; with: string; member?: Member; unread?: Unread; last_at?: string }
+export interface HomeDm { kind: 'dm'; with: string; member?: Member; unread?: Unread; last_at?: string; /** They deleted their account: shown as DELETED_ACCOUNT. */ deleted?: boolean }
 export interface HomeAgent { kind: 'agent'; member: Member; status?: AgentStatus; unread?: Unread }
 export type HomeUnread = HomeChannel | HomeDm;
 
@@ -19,7 +19,7 @@ export interface HomeInput {
   channels: readonly { channel: string; following: boolean }[];
   members: readonly Member[];
   /** Each DM, with its own unread count: Kolab's answers list only the first unread messages, across everyone. */
-  conversations: readonly (Pick<Conversation, 'with' | 'last_at'> & Partial<Pick<Conversation, 'unread'>>)[];
+  conversations: readonly (Pick<Conversation, 'with' | 'last_at'> & Partial<Pick<Conversation, 'unread' | 'last'>>)[];
   unread: { dms: ReadonlyMap<string, Unread>; channels: ReadonlyMap<string, Unread> };
   statuses?: readonly AgentStatus[] | null;
   /** What "Jump to…" holds: only what matches it is listed. */
@@ -47,7 +47,7 @@ export function homeOf(i: HomeInput): HomeModel {
   const listed = new Set(i.conversations.map((c) => c.with));
   const dmsAll: HomeDm[] = [
     ...[...i.unread.dms.keys()].filter((p) => !listed.has(p)).map((p) => ({ kind: 'dm' as const, with: p, member: byActor.get(p), unread: dmUnread(p) })),
-    ...i.conversations.map((c) => ({ kind: 'dm' as const, with: c.with, member: byActor.get(c.with), unread: dmUnread(c.with), last_at: c.last_at })),
+    ...i.conversations.map((c) => ({ kind: 'dm' as const, with: c.with, member: byActor.get(c.with), unread: dmUnread(c.with), last_at: c.last_at, ...(partnerDeleted(c) ? { deleted: true } : {}) })),
   ].filter((d) => d.with !== i.me && match(d.with, displayName(d.with, i.members), d.member ? handleOf(d.member) : ''));
 
   const agents: HomeAgent[] = i.members.filter((m) => m.kind === 'agent' && m.owner === i.me && match(m.actor, handleOf(m)))

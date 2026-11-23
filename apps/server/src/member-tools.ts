@@ -1,11 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { McpTool, type McpToolContext } from '@onivoro/server-mcp';
 import * as z from 'zod/v4';
-import { AccessError, Kolab, LimitError } from '@konjir/engine';
+import { AccessError, AccountDeletionBlocked, Kolab, LimitError, RoleError } from '@konjir/engine';
 import { args } from './args.js';
 import { Limit } from './oauth/oauth.controller.js';
 import { PAGED, paging } from './paging.js';
-import { asAgent } from './results.js';
+import { asAgent, fail, ok, sessionOf } from './results.js';
 import { KOLAB, OAUTH_OPTIONS, type OAuthOptions } from './tokens.js';
 
 const invite = args({
@@ -16,6 +16,7 @@ const withdrawInvitation = args({ invitation: z.string().describe('The invitatio
 const removeMember = args({ member: z.string().describe('The person to remove, by name, as konjir_list_members names them') });
 const leaveKolab = args({});
 const ownKolab = args({ kolab: z.string().describe('Your kolab\'s name, the one this session is in: named, so nobody does this to the wrong one') });
+const deleteMyAccount = args({ account: z.string().describe('Your own account\'s name, as konjir_whoami gives your actor, typed by you: named, so nobody deletes an account by mistake') });
 const removeAgent = args({ agent: z.string().describe('Your agent to remove: its label (as konjir_list_agents and konjir_list_members give it), its whole name, or <you>/<label>') });
 
 /**
@@ -115,6 +116,23 @@ export class MemberTools {
   })
   eraseKolab({ kolab }: z.infer<typeof ownKolab>, context?: McpToolContext) {
     return asAgent(context, (s) => this.kolab.eraseOwnKolab(s, kolab));
+  }
+
+  @McpTool({
+    name: 'konjir_delete_my_account',
+    description: 'For a person\'s own sign-in through konnect\'s app only, never an agent\'s nor any other app\'s, and only when the person asks for it themselves: delete your own account, for good, naming it. You leave every kolab, organization and team; every sign-in of yours and your agents\' is revoked and every session ends, this one too; your push devices go; your own agents are removed; and your GitHub identity and profile are deleted. A kolab only you (and your agents) are in is erased with it. The messages you and your agents sent stay where they are, shown as from a deleted account, and your name is never given to anyone again: signing in later with the same GitHub account makes a new account. Refused, with nothing changed, while you own a kolab anyone else is a member of (hand it over or erase it first, konjir_erase_kolab), or one that holds documents (archive it, konjir_archive_kolab), or are the only owner of an organization with other members; the refusal\'s structuredContent.blocked lists each (name, kind, reason, why). A Konjir admin is refused until another admin revokes that. It can\'t be undone. deleted is the account; left and erased, the kolabs; agents, how many agents went; revoked, sign-ins revoked; ended, sessions ended; devices, push devices forgotten.',
+    schema: deleteMyAccount,
+    annotations: { destructiveHint: true },
+  })
+  async deleteMyAccount({ account }: z.infer<typeof deleteMyAccount>, context?: McpToolContext) {
+    const session = sessionOf(context?.authInfo);
+    if (!session) return fail(new RoleError('this tool needs a person\'s own sign-in, not the admin token'));
+    try {
+      return ok(await this.kolab.deleteOwnAccount(session, account));
+    } catch (e) {
+      // What must be dealt with first, for an app to list.
+      return e instanceof AccountDeletionBlocked ? { ...fail(e), structuredContent: { blocked: e.blockers } } : fail(e);
+    }
   }
 
   @McpTool({

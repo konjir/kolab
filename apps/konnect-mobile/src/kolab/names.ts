@@ -3,7 +3,7 @@
  * agent, and `#channel`. The composer completes the one being typed, and a channel message names
  * the members it mentions (konjir_send_channel_message's `mentions`, at most MAX_MENTIONS).
  */
-import type { Member } from '@konjir/types';
+import { DELETED_ACCOUNT, type Member } from '@konjir/types';
 
 export const MAX_MENTIONS = 20;
 const NAME = '[a-z0-9][a-z0-9-]*';
@@ -23,6 +23,17 @@ export function displayName(actor: string, members: readonly Pick<Member, 'actor
   const m = members?.find((x) => x.actor === actor);
   return m ? displayOf(m) : actor;
 }
+
+/**
+ * Who sent a message, as the app shows them: DELETED_ACCOUNT for someone whose account is deleted
+ * (Kolab's from_deleted: the person, or one of their agents), else displayName.
+ */
+export const senderName = (m: { from: string; from_deleted?: boolean }, members: Parameters<typeof displayName>[1]) =>
+  (m.from_deleted ? DELETED_ACCOUNT : displayName(m.from, members));
+
+/** Whether the other end of a direct conversation deleted their account, as its newest message says. */
+export const partnerDeleted = (c: { with: string; last?: { from: string; from_deleted?: boolean; to_deleted?: boolean } }) =>
+  !!(c.last && (c.last.from === c.with ? c.last.from_deleted : c.last.to_deleted));
 
 /**
  * The members `text` mentions, each once, in the order first written, as Kolab names them: only
