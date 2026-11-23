@@ -11,13 +11,17 @@ import {
 } from '@konjir/db';
 import { IMPORT_FORMAT, Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
-import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testPolicy, testStore, thrown, type Store, TestKolab, UNDO_0060 } from '@konjir/engine/testing';
+import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testPolicy, testStore, thrown, type Store, TestKolab, UNDO_0060_SCHEMA } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   EVIDENCE_KINDS, HOST_REQUEST_KINDS, NOTIFICATION_LEVELS, PUSH_PLATFORMS, JOB_ENDS, JOB_KINDS, JOB_OUTCOMES, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
 } from '@konjir/types';
 
 const versions = MIGRATIONS.map((m) => m.version);
+
+/** Undoes 0060 on a database at 0060: its schema (the engine's UNDO_0060_SCHEMA), and its record. */
+const UNDO_0060 = `${UNDO_0060_SCHEMA}
+  delete from kj_migration where version = 60;`;
 
 /**
  * The SCHEMA string of main before migrations, frozen: what the test server's RDS database and
