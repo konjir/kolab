@@ -127,7 +127,8 @@ test('a person deletes their account: they leave every kolab, a kolab only they 
   // named Bo names the new id now.
   const audited = (await k.auditLog({ subject: gone })).find((e) => e.action === 'account.deleted')!;
   expect(audited).toMatchObject({ action: 'account.deleted', kolab: null, subject: gone, by: gone, detail: { left: 1, erased: 1, agents: 1, revoked: 1, ended: 2, devices: 1 } });
-  expect(JSON.stringify(audited)).not.toMatch(/22|github/);
+  expect(Object.keys(audited.detail!).sort()).toStrictEqual(['agents', 'devices', 'ended', 'erased', 'left', 'revoked']);
+  expect(JSON.stringify(audited)).not.toMatch(/github|"bo"/);
   expect(await k.auditLog({ subject: 'bo' })).toStrictEqual([]);
   // And nothing anywhere names bo or bo-claude.
   expect(await naming(k, ['bo', 'bo-claude'])).toStrictEqual([]);
