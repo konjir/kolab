@@ -25,6 +25,26 @@ if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJI
     unset GITHUB_SECRET
   fi
 fi
+# Sign in with Apple beside GitHub (Lee, 2026-11-23): the Services ID, team id and key id, which
+# Terraform keeps beside the admin token (/konjir/<name>/apple-signin-services-id, -team-id and
+# -key-id), and the key's private key, which Lee puts there by hand as a SecureString
+# (/konjir/<name>/apple-signin-private-key). Whatever of them can be read is exported; Kolab signs
+# people in with Apple only when all four are there, and otherwise says in one line that Apple is
+# off and runs without it. Read here, not in the boot script, like GitHub's. The key is never printed.
+if [ -n "${AWS_REGION:-}" ] && [ -n "${KONJIR_TOKEN_PARAM:-}" ] && [ -z "${KONJIR_APPLE_SERVICES_ID:-}" ]; then
+  PARAMS="${KONJIR_TOKEN_PARAM%/admin-token}"
+  for pair in SERVICES_ID:services-id TEAM_ID:team-id KEY_ID:key-id; do
+    if VALUE=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAMS/apple-signin-${pair#*:}" \
+        --query Parameter.Value --output text 2>/dev/null) && [ -n "$VALUE" ]; then
+      export "KONJIR_APPLE_${pair%%:*}=$VALUE"
+    fi
+  done
+  if APPLE_KEY=$(aws ssm get-parameter --region "$AWS_REGION" --name "$PARAMS/apple-signin-private-key" \
+      --with-decryption --query Parameter.Value --output text 2>/dev/null) && [ -n "$APPLE_KEY" ]; then
+    export KONJIR_APPLE_PRIVATE_KEY="$APPLE_KEY"
+  fi
+  unset VALUE APPLE_KEY pair
+fi
 # The published kolab CLI's npm spec (W3.7), which Terraform keeps beside the admin token
 # (/konjir/<name>/cli-npm-spec), so the web page shows npx commands for it. Without the
 # parameter, the page shows none. Like the GitHub app's, it is read here, not in the boot script.

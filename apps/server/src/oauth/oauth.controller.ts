@@ -5,7 +5,8 @@ import { AccessError, ActorError, Kolab, OAuthGrantError, RoleError, TenancyErro
 import { isKolabName } from '@konjir/address';
 import { ROLES, type Role } from '@konjir/types';
 import { MCP_ROUTE, OAUTH_OPTIONS, KOLAB, type OAuthOptions } from '../tokens.js';
-import { choosePage, consentPage, continuePage, formActionSource, lockAllowed, lockedTitle, sendError, sendPage, setupPage, teamPage, type ChooseView, type ConsentView, type ContinueView, type SetupView, type TeamView } from './pages.js';
+import { choosePage, consentPage, continuePage, formActionSource, lockAllowed, lockedTitle, sendError, sendPage, setupPage, signInPage, teamPage, usernamePage, type ChooseView, type ConsentView, type ContinueView, type SetupView, type TeamView } from './pages.js';
+import type { IdentityProvider } from './identity.js';
 import { oauthWording, worded, type Wording } from '../wording.js';
 
 /** The web interface's own client: first party, never registered, and only ever a person (W3.1). */
@@ -103,6 +104,9 @@ const CLAIMED = 'This sign-in is being allowed right now: it can\'t be denied or
 const USED = 'This sign-in was already used: it was allowed, denied or cancelled. If the app you were connecting isn\'t signed in, start again from there.';
 /** What a `choose:kolab` sign-in's app is told when its page had nothing to choose: no invitation for the account, and no kolab of the person's. */
 export const NOTHING_TO_CHOOSE = 'nothing to sign in to: no invitation waits for this account, and it is a member of no kolab. Make a team, or ask a team\'s owner to invite this GitHub account';
+/** The same, for an account of a provider no one can invite by name (Apple's, which has no lookup): an invite link reaches it (W3.4). */
+export const NOTHING_TO_CHOOSE_UNINVITABLE = 'nothing to sign in to: this account is a member of no kolab, and an account signed in with Apple can\'t be invited by name. Make a team, or ask a team\'s owner for an invite link from Kolab\'s web page';
+const nothingToChoose = (idp: IdentityProvider | undefined) => (idp && !idp.lookup ? NOTHING_TO_CHOOSE_UNINVITABLE : NOTHING_TO_CHOOSE);
 const NOT_HERE = `This sign-in didn't start in this browser, or the browser let it go: it holds ${OPEN_SIGN_INS} sign-ins at most, and newer ones took its place. Finish it in the browser the app opened, or start again from the app you were connecting.`;
 
 /**
@@ -237,7 +241,12 @@ export class OAuthController {
     @Inject(OAUTH_OPTIONS) private readonly options: OAuthOptions,
   ) {}
 
-  private get idp() { return this.options.identity; }
+  /** The identity providers, in the order the sign-in page offers them. */
+  private get idps() { return this.options.identities; }
+  /** The provider of that id, if this Kolab has it. */
+  private providerOf(id: string | undefined) { return this.idps.find((i) => i.id === id); }
+  /** What a provider is called on the pages: its label, or its id for one no longer set up. */
+  private labelOf(id: string) { return this.providerOf(id)?.label ?? id; }
 
   // ---- metadata ---------------------------------------------------------------
 
@@ -245,7 +254,7 @@ export class OAuthController {
   protectedResource(@Req() req: Request, @Res() res: Response) {
     cors(res);
     const base = originOf(req, this.options);
-    if (!base || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!base || !this.idps.length) return json(res, 404, { error: 'not_found' });
     // No scopes_supported here (RFC 9728 makes it optional): an MCP client asks with the scope its
     // configuration gives only when the resource names none (MCP's scope selection), and a scope is
     // how a harness's configuration preselects its agent, kolab and role at consent (D59). Kolab
@@ -262,7 +271,7 @@ export class OAuthController {
   authorizationServer(@Req() req: Request, @Res() res: Response) {
     cors(res);
     const base = originOf(req, this.options);
-    if (!base || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!base || !this.idps.length) return json(res, 404, { error: 'not_found' });
     json(res, 200, {
       issuer: base,
       authorization_endpoint: `${base}/oauth/authorize`,
@@ -289,7 +298,7 @@ export class OAuthController {
   @Post('oauth/register')
   async register(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
     cors(res);
-    if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!originOf(req, this.options) || !this.idps.length) return json(res, 404, { error: 'not_found' });
     if (!this.registrations.take(clientAddress(req, this.options))) return oauthError(res, 429, 'temporarily_unavailable', 'too many clients registered from here just now; try again later');
     const uris = body?.redirect_uris;
     if (!Array.isArray(uris) || !uris.every((u) => typeof u === 'string')) return oauthError(res, 400, 'invalid_redirect_uri', 'redirect_uris is a list of URIs');
@@ -336,7 +345,7 @@ export class OAuthController {
   async authorize(@Req() req: Request, @Res() res: Response, @Query() q: Record<string, unknown>) {
     const base = originOf(req, this.options);
     if (!base) return sendError(res, 403, 'This Kolab doesn\'t serve that host.');
-    if (!this.idp) return sendError(res, 404, 'Signing in with an identity provider isn\'t set up on this Kolab.');
+    if (!this.idps.length) return sendError(res, 404, 'Signing in with an identity provider isn\'t set up on this Kolab.');
     const str = (k: string) => (typeof q[k] === 'string' ? q[k] as string : undefined);
     const clientId = str('client_id');
     const redirectUri = str('redirect_uri');
@@ -363,9 +372,22 @@ export class OAuthController {
       return refuse(`this authorization server issues tokens for ${base}/${MCP_ROUTE} only`);
     }
     if ((state?.length ?? 0) > 1000 || (str('scope')?.length ?? 0) > 1000) return refuse('state and scope are at most 1000 characters');
+    // With one identity provider the browser goes straight there. With several, Kolab's own sign-in
+    // page offers a button for each, Sign in with Apple first and as Apple's guidelines draw it:
+    // each links to this same request, naming its provider (`provider`), which only picks where the
+    // person signs in.
+    const idp = this.idps.length === 1 ? this.idps[0] : this.providerOf(str('provider'));
+    if (!idp) {
+      const here = new URL(req.originalUrl, base);
+      const providers = this.idps.map((i) => {
+        here.searchParams.set('provider', i.id);
+        return { id: i.id, label: i.label, href: `${here.pathname}${here.search}` };
+      });
+      return sendPage(res, 200, 'Sign in', signInPage({ client: client.name, web: client.web, redirect: redirectShown(redirectUri), providers }));
+    }
     // Only the web interface's own sign-in carries an invite (W3.4), from the cookie its page set.
     const invite = client.web ? cookieOf(req, inviteCookie(this.options)) : undefined;
-    await this.toIdentityProvider(req, res, base, {
+    await this.toIdentityProvider(req, res, base, idp, {
       clientId: clientId!, redirectUri, clientState: state, codeChallenge: challenge, scope: str('scope'), resource, invite,
       // Which of several sign-ins this is (`kolab connect`'s "agent N of M"): display only, kept
       // only when both are whole numbers, never part of the scope, so it grants nothing. Only from
@@ -380,7 +402,7 @@ export class OAuthController {
    * own, and the provider's state naming it (D57). At the cap, the oldest sign-ins in this browser
    * are let go, so this one has room.
    */
-  private async toIdentityProvider(req: Request, res: Response, base: string,
+  private async toIdentityProvider(req: Request, res: Response, base: string, idp: IdentityProvider,
     r: Omit<Parameters<Kolab['beginAuthorization']>[0], 'provider'>) {
     const held = bindingsOf(req, this.options);
     const evict: string[] = [];
@@ -389,13 +411,13 @@ export class OAuthController {
       const drop = new Set(oldest.slice(0, held.length - OPEN_SIGN_INS + 1));
       for (const h of held) if (drop.has(h.binding)) evict.push(h.id);
     }
-    const { binding, state: idpState } = await this.kolab.beginAuthorization({ provider: this.idp!.id, ...r });
+    const { binding, state: idpState } = await this.kolab.beginAuthorization({ provider: idp.id, ...r });
     const id = randomBytes(8).toString('base64url');
     for (const old of evict) clearBinding(res, this.options, old);
     res.append('set-cookie', `${bindingCookie(this.options, id)}=${binding}; ${bindingCookieAttrs(this.options, '/oauth')}; HttpOnly; SameSite=Lax; Max-Age=${this.kolab.oauth.requestTtlS}`);
     res.setHeader('referrer-policy', 'no-referrer');
-    res.redirect(302, this.idp!.authorizationUrl({
-      redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding, idpState)),
+    res.redirect(302, idp.authorizationUrl({
+      redirectUri: `${base}/oauth/callback/${idp.id}`, state: `${id}.${idpState}`, codeChallenge: s256(providerVerifier(binding, idpState)),
     }));
   }
 
@@ -403,14 +425,15 @@ export class OAuthController {
   @Get('oauth/callback/:provider')
   async callback(@Req() req: Request, @Res() res: Response, @Param('provider') provider: string, @Query() q: Record<string, unknown>) {
     const base = originOf(req, this.options);
-    if (!base || !this.idp || provider !== this.idp.id) return sendError(res, 404, 'No such sign-in.');
+    const idp = this.providerOf(provider);
+    if (!base || !idp) return sendError(res, 404, 'No such sign-in.');
     if (!this.callbacks.take(clientAddress(req, this.options))) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
     // The provider's state is `<id>.<state>`: the sign-in's id names its cookie.
     const full = typeof q.state === 'string' ? q.state : '';
     const dot = full.indexOf('.');
     const id = dot < 0 ? '' : full.slice(0, dot);
     const state = dot < 0 ? '' : full.slice(dot + 1);
-    if (!SIGN_IN_ID.test(id) || !state) return sendError(res, 400, `${this.idp.label}'s answer doesn't name a sign-in of Kolab's. Start again from the app you were connecting.`);
+    if (!SIGN_IN_ID.test(id) || !state) return sendError(res, 400, `${idp.label}'s answer doesn't name a sign-in of Kolab's. Start again from the app you were connecting.`);
     const binding = cookieOf(req, bindingCookie(this.options, id));
     if (!binding) return this.stopped(res, { state });
     if (typeof q.error === 'string' || typeof q.code !== 'string') {
@@ -418,25 +441,40 @@ export class OAuthController {
       if (!r) return this.stopped(res, { binding }, id);
       // Cancelled: the sign-in is over, and its cookie goes with it.
       clearBinding(res, this.options, id);
-      return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: `the sign-in with ${this.idp.label} was cancelled`, state: r.clientState ?? undefined, iss: base }));
+      return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: `the sign-in with ${idp.label} was cancelled`, state: r.clientState ?? undefined, iss: base }));
     }
     // The binding and the state together, before the code goes anywhere (RFC 6749 §10.12).
     const pending = await this.kolab.pendingAuthorization(binding, { state });
     if (!pending) return this.stopped(res, { binding }, id);
+    // Only the provider the sign-in was sent to answers it.
+    if (pending.provider !== idp.id) return sendError(res, 400, `This sign-in was sent to ${this.labelOf(pending.provider)}, not ${idp.label}. Start again from the app you were connecting.`);
     // The provider's answer came back a second time (the page reloaded, say): it counts once.
-    if (pending.person) return sendError(res, 400, `${this.idp.label}'s answer for this sign-in was already used. Go back to the consent page it showed, or start again from the app you were connecting.`);
+    if (pending.person || pending.choosingUsername) return sendError(res, 400, `${idp.label}'s answer for this sign-in was already used. Go back to the page it showed, or start again from the app you were connecting.`);
     let who;
     try {
-      who = await this.idp.identify({ code: q.code, redirectUri: `${base}/oauth/callback/${this.idp.id}`, codeVerifier: providerVerifier(binding, state) });
+      who = await idp.identify({ code: q.code, redirectUri: `${base}/oauth/callback/${idp.id}`, codeVerifier: providerVerifier(binding, state) });
     } catch (e) {
-      this.logger.warn(`a sign-in with ${this.idp.label} failed: ${maskTokens(e)}`);
-      return sendError(res, 502, `${this.idp.label} didn't confirm who signed in. Try again.`);
+      this.logger.warn(`a sign-in with ${idp.label} failed: ${maskTokens(e)}`);
+      return sendError(res, 502, `${idp.label} didn't confirm who signed in. Try again.`);
     }
     let person: { actor: string; created: boolean };
     try {
-      person = await this.kolab.signInWith({ provider: this.idp.id, ...who });
+      if (who.login === undefined) {
+        // A provider with no usernames (Apple): its account is a person already, found by the
+        // provider's id alone, never by any name; or it is new, and the person chooses their
+        // username before anyone is made (chooseUsername).
+        const known = await this.kolab.signInKnown({ provider: idp.id, subject: who.subject });
+        if (!known) {
+          const { csrf } = await this.kolab.awaitUsername(binding, state, who.subject);
+          return await this.usernamePage(res, 200, id, binding, csrf, {});
+        }
+        person = { actor: known, created: false };
+      } else {
+        person = await this.kolab.signInWith({ provider: idp.id, subject: who.subject, login: who.login, name: who.name });
+      }
     } catch (e) {
       if (e instanceof ActorError) return sendError(res, 403, e.message);
+      if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
       throw e;
     }
     let csrf: string;
@@ -480,11 +518,11 @@ export class OAuthController {
     const client = await this.client(pending.clientId, '');
     const login = extra.login ?? (await this.kolab.identities(pending.person)).find((i) => i.provider === pending.provider)?.login ?? pending.person;
     const view: ContinueView = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: true, person: pending.person, login, provider: this.idp!.label,
-      created: !!extra.created, konjirAdmin: await this.kolab.isAdmin(pending.person), error: extra.error,
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: true, person: pending.person, login, provider: this.labelOf(pending.provider),
+      invitable: !!this.providerOf(pending.provider)?.lookup, created: !!extra.created, konjirAdmin: await this.kolab.isAdmin(pending.person), error: extra.error,
     };
     // Its forms lead on to the app (Continue) and to the identity provider (another account).
-    const targets = [formActionSource(pending.redirectUri), this.idp!.authorizationOrigin].filter((t): t is string => !!t);
+    const targets = [formActionSource(pending.redirectUri), this.providerOf(pending.provider)?.authorizationOrigin].filter((t): t is string => !!t);
     sendPage(res, status, `Continue as @${login}`, continuePage(view), { formTargets: targets });
     return true;
   }
@@ -499,8 +537,11 @@ export class OAuthController {
    * page is shown again for whoever signs in. Pressed again before the provider answers, it asks
    * again (consented). Undefined for any other answer, which the chooser's handling takes.
    */
-  private async appAnswered(res: Response, base: string, s: { id: string; binding: string; csrf: string; person: string }, pick: string): Promise<true | undefined> {
+  private async appAnswered(res: Response, base: string, s: { id: string; binding: string; csrf: string; person: string; provider: string }, pick: string): Promise<true | undefined> {
     if (pick === 'other-account') {
+      // The provider this sign-in was sent to: the page offered another account of that one.
+      const idp = this.providerOf(s.provider);
+      if (!idp) { sendError(res, 400, `Signing in with ${s.provider} isn't set up on this Kolab any more. Start again from the app you were connecting.`); return true; }
       let state: string;
       try {
         ({ state } = await this.kolab.restartIdentification(s.binding, s.csrf));
@@ -509,8 +550,8 @@ export class OAuthController {
         throw e;
       }
       res.setHeader('referrer-policy', 'no-referrer');
-      res.redirect(303, this.idp!.authorizationUrl({
-        redirectUri: `${base}/oauth/callback/${this.idp!.id}`, state: `${s.id}.${state}`, codeChallenge: s256(providerVerifier(s.binding, state)), prompt: 'select_account',
+      res.redirect(303, idp.authorizationUrl({
+        redirectUri: `${base}/oauth/callback/${idp.id}`, state: `${s.id}.${state}`, codeChallenge: s256(providerVerifier(s.binding, state)), prompt: 'select_account',
       }));
       return true;
     }
@@ -543,6 +584,64 @@ export class OAuthController {
     const status = await this.kolab.signInStatus(by);
     if (id && status !== 'open' && status !== 'claimed') clearBinding(res, this.options, id);
     return sendError(res, 400, status === 'expired' ? EXPIRED(this.kolab.oauth.requestTtlS) : status === 'open' ? NOT_HERE : status === 'claimed' ? CLAIMED : USED);
+  }
+
+  /**
+   * The page of a first sign-in with a provider that gives no username (Apple), while it waits for
+   * one (awaitUsername): who signed in, the app asking, and the username to choose, with what
+   * Kolab couldn't take of the last one (`error`). Continue posts it to /oauth/username, where
+   * chooseUsername makes the person; Cancel ends the sign-in and tells the app.
+   */
+  private async usernamePage(res: Response, status: number, id: string, binding: string, csrf: string, extra: { username?: string; error?: string }) {
+    const pending = await this.kolab.pendingAuthorization(binding);
+    if (!pending?.choosingUsername) return this.stopped(res, { binding }, id);
+    const client = await this.client(pending.clientId, '');
+    // Cancel leads on to the client's redirect URI.
+    const target = formActionSource(pending.redirectUri);
+    sendPage(res, status, 'Choose your username', usernamePage({
+      signIn: id, csrf, client: client?.name ?? 'An app', web: pending.clientId === WEB_CLIENT, redirect: redirectShown(pending.redirectUri),
+      provider: this.labelOf(pending.provider), username: extra.username, error: extra.error,
+    }), { formTargets: target ? [target] : [] });
+  }
+
+  /**
+   * The username a person chose at their first sign-in with a provider that gives none (Apple),
+   * from its page's own form: Kolab's origin, its token and this browser's binding, as the consent
+   * form. `decision=choose` makes the person, named exactly that (Kolab.chooseUsername: never an
+   * existing person's name, never someone's agent's), and shows the sign-in's consent page, as the
+   * provider's answer does for anyone else; a name Kolab can't take shows the page again, saying
+   * why. Anything else cancels the sign-in, and the app is told.
+   */
+  @Post('oauth/username')
+  async username(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
+    const base = originOf(req, this.options);
+    if (!base || !this.idps.length) return sendError(res, 404, 'No such sign-in.');
+    if (req.headers.origin !== base) return sendError(res, 403, 'A username must be chosen on Kolab\'s own page.');
+    if (!this.consents.take(clientAddress(req, this.options))) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
+    const str = (k: string) => (typeof body?.[k] === 'string' ? (body[k] as string).trim() : '');
+    const csrf = str('csrf');
+    const id = str('sign_in');
+    if (!csrf || !SIGN_IN_ID.test(id)) return sendError(res, 400, 'The form arrived without its sign-in. Start again from the app you were connecting.');
+    const binding = cookieOf(req, bindingCookie(this.options, id));
+    if (!binding) return this.stopped(res, { csrf });
+    const pending = await this.kolab.pendingAuthorization(binding, { csrf });
+    if (!pending?.choosingUsername) return this.stopped(res, { binding }, id);
+    if (str('decision') !== 'choose') {
+      const r = await this.kolab.declineAuthorization(binding, csrf);
+      if (!r) return this.stopped(res, { binding }, id);
+      clearBinding(res, this.options, id);
+      if (pending.inviteKey) clearInviteCookie(res, this.options);
+      return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: 'the person cancelled the sign-in', state: r.clientState ?? undefined, iss: base }));
+    }
+    let made: { actor: string; created: boolean; csrf: string };
+    try {
+      made = await this.kolab.chooseUsername(binding, csrf, str('username'));
+    } catch (e) {
+      if (e instanceof ActorError) return this.usernamePage(res, 400, id, binding, csrf, { username: str('username').slice(0, 39), error: e.message });
+      if (e instanceof OAuthGrantError) return sendError(res, 400, e.message);
+      throw e;
+    }
+    await this.consent(res, 200, id, binding, made.csrf, { created: made.created });
   }
 
   private async consent(res: Response, status: number, id: string, binding: string, csrf: string, extra: { login?: string; created?: boolean; error?: string; pick?: ConsentView['pick']; note?: string }) {
@@ -585,7 +684,7 @@ export class OAuthController {
     // A scope naming the agent, kolab and role together locks the page to them (D97).
     const locked = web ? undefined : scopeLock(pending.scope, (a) => namedAgent(a, pending.person!, agents));
     const view: ConsentView = {
-      signIn: id, csrf, client: client?.name ?? 'An app', wording: web ? 'kolab' : oauthWording(client?.name), redirect: redirectShown(pending.redirectUri), web, konjirAdmin: !web && await this.kolab.isAdmin(pending.person), person: pending.person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', wording: web ? 'kolab' : oauthWording(client?.name), redirect: redirectShown(pending.redirectUri), web, konjirAdmin: !web && await this.kolab.isAdmin(pending.person), person: pending.person, login, provider: this.labelOf(pending.provider), created: !!extra.created,
       kolabs, agents: web ? [] : agents, signedIn: web ? [] : signedIn, pick, error: extra.error, invite,
       ...(locked ? { lock: { ...locked, step: pending.step } } : {}),
       ...(unreached ? { unreached: { ...('kolab' in unreached ? { kolab: unreached.kolab } : {}), meant: unreached.meant, yours: unreached.yours } } : {}),
@@ -614,7 +713,7 @@ export class OAuthController {
     const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
     const check = await this.setupCheck(person, pending.scope, client);
     const view: SetupView = {
-      signIn: id, csrf, client: client?.name ?? 'An app', wording: oauthWording(client?.name), redirect: redirectShown(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', wording: oauthWording(client?.name), redirect: redirectShown(pending.redirectUri), person, login, provider: this.labelOf(pending.provider), created: !!extra.created,
       plan: check.plan, refused: extra.error ?? check.refused,
     };
     const target = formActionSource(pending.redirectUri);
@@ -644,7 +743,8 @@ export class OAuthController {
     const login = extra.login ?? (await this.kolab.identities(person)).find((i) => i.provider === pending.provider)?.login ?? person;
     const check = await this.personCheck(person, pending.scope, client);
     const base = {
-      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: this.kolab.appRedirect(pending.redirectUri), person, login, provider: this.idp!.label, created: !!extra.created,
+      signIn: id, csrf, client: client?.name ?? 'An app', redirect: redirectShown(pending.redirectUri), native: this.kolab.appRedirect(pending.redirectUri), person, login, provider: this.labelOf(pending.provider),
+      invitable: !!this.providerOf(pending.provider)?.lookup, created: !!extra.created,
       konjirAdmin: await this.kolab.isAdmin(person), error: extra.error,
     };
     const target = formActionSource(pending.redirectUri);
@@ -664,14 +764,14 @@ export class OAuthController {
    * shows the page again), or `decision` allow with the page's `shown` on the team page; anything
    * else denies it, and a sign-in that can't be allowed tells the app why.
    */
-  private async personConsented(res: Response, base: string, str: (k: string) => string, s: { id: string; binding: string; csrf: string; person: string; scope: string | null; clientId: string }) {
+  private async personConsented(res: Response, base: string, str: (k: string) => string, s: { id: string; binding: string; csrf: string; person: string; scope: string | null; clientId: string; provider: string }) {
     const { id, binding, csrf, person } = s;
     const check = await this.personCheck(person, s.scope, await this.client(s.clientId, ''));
     const pick = str('pick');
     // konnect's app's own page (signInApp) answers Continue or another account here, and nothing else does.
     if (!check.refused && (pick === 'continue' || pick === 'other-account')
         && await this.appChoose(await this.kolab.pendingAuthorization(binding, { csrf }))
-        && await this.appAnswered(res, base, { id, binding, csrf, person }, pick)) return;
+        && await this.appAnswered(res, base, { id, binding, csrf, person, provider: s.provider }, pick)) return;
     const allowing = !check.refused && (check.scope && 'choose' in check.scope ? !!pick : str('decision') === 'allow');
     if (!allowing) {
       if (!check.refused && str('decision') !== 'deny' && (pick || str('decision'))) {
@@ -683,7 +783,7 @@ export class OAuthController {
       const r = await this.kolab.declineAuthorization(binding, csrf);
       if (!r) return this.stopped(res, { binding }, id);
       clearBinding(res, this.options, id);
-      const why = check.refused ? `the sign-in can't be allowed: ${check.refused}` : empty ? NOTHING_TO_CHOOSE : 'the person declined';
+      const why = check.refused ? `the sign-in can't be allowed: ${check.refused}` : empty ? nothingToChoose(this.providerOf(s.provider)) : 'the person declined';
       return res.redirect(303, withParams(r.redirectUri, { error: 'access_denied', error_description: why, state: r.clientState ?? undefined, iss: base }));
     }
     let choice: Parameters<Kolab['consentPerson']>[2];
@@ -716,7 +816,7 @@ export class OAuthController {
   @Post('oauth/consent')
   async consented(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
     const base = originOf(req, this.options);
-    if (!base || !this.idp) return sendError(res, 404, 'No such sign-in.');
+    if (!base || !this.idps.length) return sendError(res, 404, 'No such sign-in.');
     if (req.headers.origin !== base) return sendError(res, 403, 'A sign-in must be confirmed from Kolab\'s own page.');
     if (!this.consents.take(clientAddress(req, this.options))) return sendError(res, 429, 'Too many sign-ins just now; try again in a minute.');
     const str = (k: string) => (typeof body?.[k] === 'string' ? (body[k] as string).trim() : '');
@@ -730,12 +830,12 @@ export class OAuthController {
     // konnect's app's *Use a different account* pressed again, before the provider answered the
     // first press: its form still names this sign-in, which names no one yet, so it asks again.
     if (pending && !pending.person && str('pick') === 'other-account' && await this.appChoose(pending)
-      && await this.appAnswered(res, base, { id, binding, csrf, person: '' }, 'other-account')) return;
+      && await this.appAnswered(res, base, { id, binding, csrf, person: '', provider: pending.provider }, 'other-account')) return;
     if (!pending?.person) return this.stopped(res, { binding }, id);
     const setup = pending.clientId !== WEB_CLIENT && !!setupScope(pending.scope);
     // A sign-in that leaves its kolab to its own page answers there, and nowhere else.
     if (!setup && pending.clientId !== WEB_CLIENT && personScope(pending.scope)) {
-      return this.personConsented(res, base, str, { id, binding, csrf, person: pending.person, scope: pending.scope, clientId: pending.clientId });
+      return this.personConsented(res, base, str, { id, binding, csrf, person: pending.person, scope: pending.scope, clientId: pending.clientId, provider: pending.provider });
     }
     const wording = await this.wordingOf(pending.clientId);
     if (str('decision') !== 'allow') {
@@ -800,7 +900,7 @@ export class OAuthController {
   @Post('oauth/token')
   async token(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
     cors(res);
-    if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!originOf(req, this.options) || !this.idps.length) return json(res, 404, { error: 'not_found' });
     const str = (k: string) => (typeof body?.[k] === 'string' ? body[k] as string : undefined);
     const clientId = str('client_id');
     if (!clientId || clientId === WEB_CLIENT || !(clientId.startsWith('kjcl_') && await this.kolab.oauthClient(clientId, { use: true }))) {
@@ -840,7 +940,7 @@ export class OAuthController {
    */
   @Post('oauth/setup')
   async useSetup(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
-    if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!originOf(req, this.options) || !this.idps.length) return json(res, 404, { error: 'not_found' });
     if (!this.setupUses.take(clientAddress(req, this.options))) return oauthError(res, 429, 'temporarily_unavailable', 'too many setups from here just now; try again in a minute');
     const header = req.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
@@ -868,7 +968,7 @@ export class OAuthController {
   @HttpCode(200)
   async revoke(@Req() req: Request, @Res() res: Response, @Body() body: Record<string, unknown>) {
     cors(res);
-    if (!originOf(req, this.options) || !this.idp) return json(res, 404, { error: 'not_found' });
+    if (!originOf(req, this.options) || !this.idps.length) return json(res, 404, { error: 'not_found' });
     const token = typeof body?.token === 'string' ? body.token : undefined;
     if (!token) return oauthError(res, 400, 'invalid_request', 'send the token to revoke');
     // RFC 7009 §2.1: only a token issued to the client asking. A public client names itself; the

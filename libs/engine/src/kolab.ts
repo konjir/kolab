@@ -134,6 +134,11 @@ export interface PendingAuthorization {
   clientId: string; redirectUri: string; clientState: string | null; scope: string | null; provider: string;
   /** The person, once the identity provider has said who signed in. */
   person: string | null;
+  /**
+   * The provider has said who signed in, an account new to Kolab with no username of its own
+   * (Sign in with Apple), and the sign-in waits for the person to choose one (chooseUsername).
+   */
+  choosingUsername: boolean;
   /** The key of the invite the web interface's sign-in carries (W3.4), if any; never a registered client's. */
   inviteKey: string | null;
   /** Which of several sign-ins this is, as the client said (`kolab connect`'s "agent N of M"): display only, never part of the scope. */
@@ -291,6 +296,13 @@ export type TeamPlan =
   | { kolab: string; kind: 'make' }
   | { kolab: string; kind: 'member'; title: string; access: Access }
   | { kolab: string; kind: 'refused'; refused: string; refusedForApp: string; suggest?: string };
+
+/**
+ * A username a person chooses at their first sign-in with an identity provider that gives none
+ * (Sign in with Apple; Kolab.chooseUsername): lowercase letters, digits and single hyphens, not at
+ * either end, 2 to 39 characters.
+ */
+export const CHOSEN_USERNAME = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){1,38}$/;
 
 /** A GitHub username, as GitHub allows one: letters, digits and single hyphens, not at either end, at most 39. */
 export const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
@@ -2569,6 +2581,117 @@ export class Kolab {
   }
 
   /**
+   * The person an identity provider's account is, when it is linked to one already: their actor id,
+   * noted as seen now; undefined for an account new to Kolab. For a provider that gives no username
+   * (Sign in with Apple), whose new account's person chooses one first (awaitUsername,
+   * chooseUsername). Never matched by name. A person who is archived doesn't sign in.
+   */
+  async signInKnown(who: { provider: string; subject: string }): Promise<string | undefined> {
+    if (!IDP_NAME.test(who.provider) || !IDP_SUBJECT.test(who.subject)) throw new ActorError('that identity provider gave no usable identity');
+    const id = (await this.db.query<{ actor_id: string }>(
+      `update identity set last_seen_at = now() where provider = $1 and subject = $2 returning actor_id`, [who.provider, who.subject])).rows[0]?.actor_id;
+    if (id && await this.archivedActor(id)) throw new ActorError(`${id} is archived, so it can't sign in; an admin can unarchive it`);
+    return id;
+  }
+
+  /**
+   * The identity provider's answer reached the browser that asked (its binding and state, as
+   * identifyAuthorization takes them) and names an account new to Kolab with no username of its
+   * own (Sign in with Apple; signInKnown found no one): the sign-in keeps the provider's id for it
+   * and waits for the person to choose a username (chooseUsername). It names no one meanwhile, so
+   * nothing can be consented to. Returns the username form's token (stored as its key). Refused as
+   * identifyAuthorization refuses.
+   */
+  async awaitUsername(binding: string, state: string, subject: string): Promise<{ csrf: string }> {
+    if (!IDP_SUBJECT.test(subject)) throw new ActorError('that identity provider gave no usable identity');
+    const csrf = randomBytes(32).toString('base64url');
+    const r = await this.db.query(
+      `update oauth_request set pending_subject = $3, csrf_key = $4
+        where id = $1 and state_key = $2 and actor_id is null and pending_subject is null and claimed_at is null and expires_at > now() returning id`,
+      [sessionKey(binding), sessionKey(state), subject, sessionKey(csrf)]);
+    if (!r.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
+    return { csrf };
+  }
+
+  /**
+   * A username a person may choose at their first sign-in (chooseUsername), as their actor id:
+   * what they typed, trimmed, an `@` before it dropped, lowercased. GitHub's shape, lowercase
+   * letters, digits and single hyphens, neither first nor last, 2 to 39 characters, so it never
+   * holds the `_` of signUpNames' variants (`<login>_2`, `gh_<login>`). Not reserved
+   * (isReservedPersonName, isDoerName), not reading as an existing person's or organization's agent
+   * (`<person>-<label>`, D30), and free: no live or archived account or actor holds it, in any
+   * case (D52). ActorError says which.
+   */
+  private async checkUsername(input: unknown): Promise<string> {
+    const name = (typeof input === 'string' ? input : '').trim().replace(/^@/, '').toLowerCase();
+    if (!CHOSEN_USERNAME.test(name)) throw new ActorError('a username is 2 to 39 lowercase letters, digits and single hyphens, starting and ending with a letter or digit');
+    if (isReservedPersonName(name) || isDoerName(name)) throw new ActorError(`${name} is reserved: choose another username`);
+    const prefixes = [...name.matchAll(/-/g)].map((m) => name.slice(0, m.index));
+    const owner = prefixes.length ? (await this.db.query<{ id: string }>(
+      `select lower(id) as id from actor where kind = 'person' and lower(id) = any($1)
+       union select lower(id) from account where kind = 'organization' and lower(id) = any($1) limit 1`, [prefixes])).rows[0]?.id : undefined;
+    if (owner) throw new ActorError(`${name} reads as an agent of ${owner}'s (<person>-<label>): choose a username that doesn't start with ${owner}-`);
+    try {
+      await this.requireFreeName(name, 'ActorError');
+    } catch (e) {
+      if (e instanceof NameTakenError) throw new ActorError(`the username ${name} is taken: choose another`);
+      throw e;
+    }
+    return name;
+  }
+
+  /**
+   * The person signing in for the first time with an identity provider that gives no username
+   * chooses one (awaitUsername), from the page's form, with its token (`csrf`) and the browser's
+   * binding: a new person, and their user account, named exactly that (checkUsername), with their
+   * identity linked and its login the name, all in one transaction, as signInWith signs up; the
+   * sign-in then names them, as identifyAuthorization does, and the consent form gets a new token.
+   * An existing person is never joined: a name that is taken, even between the check and the
+   * insert (the tables' own unique keys, in any case), is refused. If the same account was made a
+   * person meanwhile (another tab's sign-in), the sign-in names that person instead, whatever name
+   * was chosen, and `created` is false. A name that can't be had is ActorError, and the same form
+   * may try again; a sign-in not waiting for a username in this browser is OAuthGrantError.
+   */
+  async chooseUsername(binding: string, csrf: string, username: unknown): Promise<{ actor: string; created: boolean; csrf: string }> {
+    const gone = () => new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
+    const r = (await this.db.query<{ provider: string; subject: string }>(
+      `select provider, pending_subject as subject from oauth_request
+        where id = $1 and csrf_key = $2 and actor_id is null and pending_subject is not null and claimed_at is null and expires_at > now()`,
+      [sessionKey(binding), sessionKey(csrf)])).rows[0];
+    if (!r) throw gone();
+    const next = randomBytes(32).toString('base64url');
+    // The sign-in names the person, only while it still waits for this account's username in this browser.
+    const settle = async (q: Q, actor: string) => {
+      const u = await q.query(
+        `update oauth_request set actor_id = $3, pending_subject = null, csrf_key = $4
+          where id = $1 and csrf_key = $2 and actor_id is null and pending_subject = $5 and claimed_at is null and expires_at > now() returning id`,
+        [sessionKey(binding), sessionKey(csrf), actor, sessionKey(next), r.subject]);
+      if (!u.rows.length) throw gone();
+    };
+    const known = await this.signInKnown(r);
+    if (known) { await settle(this.db, known); return { actor: known, created: false, csrf: next }; }
+    const name = await this.checkUsername(username);
+    try {
+      await this.db.transaction(async (tx) => {
+        // A sign-up is the person's own: they made their account, and linked their identity (W2.20).
+        await tx.query(`insert into account(id, kind, name, created_by) values ($1, 'user', $1, $1)`, [name]);
+        await tx.query(`insert into actor(id, name, kind, created_by) values ($1, $1, 'person', $1)`, [name]);
+        await tx.query(`insert into identity(provider, subject, actor_id, login, linked_by) values ($1, $2, $3, $3, $3)`, [r.provider, r.subject, name]);
+        await settle(tx, name);
+      });
+      return { actor: name, created: true, csrf: next };
+    } catch (e) {
+      // The same account signed up at the same moment, in another tab: it is that person.
+      if (String(e).includes('identity_pkey')) {
+        const again = await this.signInKnown(r);
+        if (again) { await settle(this.db, again); return { actor: again, created: false, csrf: next }; }
+      }
+      if (/actor_pkey|actor_id_lower|account_pkey|account_id_lower|actor_not_doer|account_not_doer/.test(String(e))) throw new ActorError(`the username ${name} is taken: choose another`);
+      throw e;
+    }
+  }
+
+  /**
    * Links an existing person to an identity (admin), so their first sign-in with it reaches them.
    * `by` is who linked it (W2.20).
    */
@@ -2657,7 +2780,7 @@ export class Kolab {
     // as a tombstone, its keys and times only, what signInStatus reads. The update's condition is
     // migration 0021's index predicate, so it reaches only those not yet made tombstones.
     await this.db.query(`delete from oauth_request where expires_at < now() - interval '2 hours'`);
-    await this.db.query(`update oauth_request set client_state = null, scope = null, resource = null, invite_key = null, redirect_uri = ''
+    await this.db.query(`update oauth_request set client_state = null, scope = null, resource = null, invite_key = null, redirect_uri = '', pending_subject = null
       where expires_at < now() and (redirect_uri <> '' or client_state is not null or scope is not null or resource is not null or invite_key is not null)`);
     await this.db.query(`delete from oauth_code where expires_at < now() - interval '1 day'`);
     await this.db.query(`delete from oauth_setup where created_at < now() - interval '1 day'`);
@@ -2678,7 +2801,7 @@ export class Kolab {
     const csrf = randomBytes(32).toString('base64url');
     const r = await this.db.query(
       `update oauth_request set actor_id = $3, csrf_key = $4
-        where id = $1 and state_key = $2 and actor_id is null and expires_at > now() returning id`,
+        where id = $1 and state_key = $2 and actor_id is null and pending_subject is null and expires_at > now() returning id`,
       [sessionKey(binding), sessionKey(state), person, sessionKey(csrf)]);
     if (!r.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
     return { csrf };
@@ -2698,7 +2821,7 @@ export class Kolab {
   async restartIdentification(binding: string, csrf: string): Promise<{ state: string }> {
     const state = randomBytes(32).toString('base64url');
     const r = await this.db.query(
-      `update oauth_request set actor_id = null, state_key = $3
+      `update oauth_request set actor_id = null, pending_subject = null, state_key = $3
         where id = $1 and csrf_key = $2 and claimed_at is null and expires_at > now() returning id`,
       [sessionKey(binding), sessionKey(csrf), sessionKey(state)]);
     if (!r.rows.length) throw new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
@@ -2712,11 +2835,12 @@ export class Kolab {
    * its consent form's token: a form from an earlier sign-in that this one replaced has another.
    */
   async pendingAuthorization(binding: string, opts: { state?: string; csrf?: string } = {}): Promise<PendingAuthorization | undefined> {
-    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null; step: number | null; steps: number | null }>(
-      `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key, step, steps from oauth_request
+    const r = (await this.db.query<{ client_id: string; redirect_uri: string; client_state: string | null; scope: string | null; actor_id: string | null; provider: string; invite_key: string | null; step: number | null; steps: number | null; choosing: boolean }>(
+      `select client_id, redirect_uri, client_state, scope, actor_id, provider, invite_key, step, steps, pending_subject is not null as choosing from oauth_request
         where id = $1 and expires_at > now() and claimed_at is null and ($2::text is null or state_key = $2) and ($3::text is null or csrf_key = $3)`,
       [sessionKey(binding), opts.state === undefined ? null : sessionKey(opts.state), opts.csrf === undefined ? null : sessionKey(opts.csrf)])).rows[0];
     return r && { clientId: r.client_id, redirectUri: r.redirect_uri, clientState: r.client_state, scope: r.scope, person: r.actor_id, provider: r.provider, inviteKey: r.invite_key,
+      choosingUsername: !!r.choosing,
       step: r.step !== null && r.steps !== null ? { n: Number(r.step), of: Number(r.steps) } : null };
   }
 
@@ -3883,7 +4007,8 @@ export class Kolab {
       else if (!IDP_SUBJECT.test(r.subject)) throw new Error(`the identity provider gave no usable id for ${name}`);
       else found.push({ login: name, subject: r.subject });
     }
-    if (missing.length) throw new TenancyError(`no GitHub account ${missing.join(', ')}: check the spelling. Nothing was invited`);
+    // Someone who signs in to Kolab with Apple has no GitHub account to find: an invite link reaches them (W3.4).
+    if (missing.length) throw new TenancyError(`no GitHub account ${missing.join(', ')}: check the spelling. Nothing was invited. Someone who signs in to Kolab with Apple has no GitHub account to invite by: make them an invite link on Kolab's web page instead`);
     if (orgs.length) throw new TenancyError(`${orgs.join(', ')} ${orgs.length === 1 ? 'isn\'t a person\'s account' : 'aren\'t people\'s accounts'} on GitHub (an organization's or a bot's): invite people by their own names. Nothing was invited`);
     const invited: string[] = [];
     const already: string[] = [];

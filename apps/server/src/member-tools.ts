@@ -42,12 +42,13 @@ export class MemberTools {
 
   @McpTool({
     name: 'konjir_invite',
-    description: 'For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account\'s permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or one that isn\'t a person\'s (an organization\'s or a bot\'s), refuses the whole call, by name, and nothing is invited. You look up at most 100 names an hour. The person accepts or declines on Kolab\'s sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect), or in konnect\'s app (konjir_accept_invitation); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already; declined_recently, accounts that declined an invitation to your kolab in the last 30 days, which aren\'t asked again until then.',
+    description: 'For the owner of your kolab, a person, only: invite people to it by their GitHub usernames. Each name is looked up on GitHub first, and the invitation keeps the account\'s permanent id, so only that account can accept it, even if the name later changes hands. A name with no GitHub account, or one that isn\'t a person\'s (an organization\'s or a bot\'s), refuses the whole call, by name, and nothing is invited. Someone who signs in to Kolab with Apple has no GitHub account and can\'t be invited by name: make them an invite link on Kolab\'s web page instead. You look up at most 100 names an hour. The person accepts or declines on Kolab\'s sign-in page, the next time they sign in without naming a kolab (npx @konjir/konnect), or in konnect\'s app (konjir_accept_invitation); accepted, it gives them Read, which is enough to send and read messages and to bring their own agents. It waits until then, or until you withdraw it (konjir_withdraw_invitation). already_members names accounts that are members already; already_invited, invitations that were open already; declined_recently, accounts that declined an invitation to your kolab in the last 30 days, which aren\'t asked again until then.',
     schema: invite,
   })
   invite({ accounts }: z.infer<typeof invite>, context?: McpToolContext) {
     return asAgent(context, async (s) => {
-      const idp = this.oauth.identity;
+      // The provider whose accounts have usernames to look up: GitHub's, never Apple's.
+      const idp = this.oauth.identities.find((i) => i.lookup);
       if (!idp?.lookup) throw new AccessError('inviting people by their GitHub accounts needs GitHub sign-in set up on this Kolab');
       // Keyed by the person, never their session: a person holds a session on each machine.
       const { actor } = await this.kolab.sessionInfo(s);

@@ -34,8 +34,11 @@ export const OAUTH_OPTIONS = Symbol('OAUTH_OPTIONS');
 
 /** Kolab's authorization server's settings (D55). */
 export interface OAuthOptions {
-  /** Who signs people in: GitHub in production. Without one, Kolab has no OAuth, and only hand-issued tokens work. */
-  identity?: import('./oauth/identity.js').IdentityProvider;
+  /**
+   * Who signs people in, in the order Kolab's sign-in page offers them: GitHub, and Apple when it is
+   * set up, in production. With none, Kolab has no OAuth, and only hand-issued tokens work.
+   */
+  identities: import('./oauth/identity.js').IdentityProvider[];
   /** The public hostname behind the TLS proxy: the issuer's and the resource's origin. */
   publicHost?: string;
 }

@@ -737,3 +737,90 @@ test('createOwnAgent at once: one label made once, whoever asks; distinct labels
   expect(capped.filter((m) => m.status === 'fulfilled').length).toBe(1);
   expect((await a.listActors({ owner: actor })).length).toBe(4);
 });
+
+/** A sign-in sent to Apple, whose answer names `subject`, an account new to Kolab: it waits for a username (awaitUsername). */
+async function awaitingUsername(kolab: Kolab, subject: string) {
+  const client = (await kolab.registerClient({ name: 'Test client', redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  const verifier = randomBytes(32).toString('base64url');
+  const { binding, state } = await kolab.beginAuthorization({ provider: 'apple', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: s256(verifier), clientState: 'xyz' });
+  expect(await kolab.signInKnown({ provider: 'apple', subject })).toBeUndefined();
+  const { csrf } = await kolab.awaitUsername(binding, state, subject);
+  return { binding, state, csrf, client, verifier };
+}
+
+const APPLE_SUB = '001234.0123456789abcdef0123456789abcdef.1234';
+
+test('Sign in with Apple: a first sign-in names no one until its person chooses a username; then that person is made, by that name, and found again by Apple\'s id alone', async () => {
+  const kolab = await openKolab();
+  const w = await awaitingUsername(kolab, APPLE_SUB);
+  expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ provider: 'apple', person: null, choosingUsername: true });
+  // Nothing to consent to meanwhile, and the provider's answer counts once.
+  expect(await rejection(kolab.consent(w.binding, w.csrf, { as: { kind: 'self' }, kolab: { name: 'x', title: 'x' }, role: 'product' }))).toBeTruthy();
+  expect(await rejection(kolab.awaitUsername(w.binding, w.state, APPLE_SUB))).toMatch(/expired, was already used/);
+  expect(await rejection(kolab.identifyAuthorization(w.binding, w.state, 'anyone'))).toMatch(/expired, was already used/);
+  // Another browser's form token is no good.
+  expect(await rejection(kolab.chooseUsername(w.binding, 'x'.repeat(43), 'ada'))).toMatch(/expired, was already used/);
+
+  const made = await kolab.chooseUsername(w.binding, w.csrf, ' @Ada-L ');
+  expect(made).toMatchObject({ actor: 'ada-l', created: true, csrf: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) });
+  expect(await kolab.actor('ada-l')).toMatchObject({ kind: 'person', name: 'ada-l', owner: null });
+  expect(await kolab.identities('ada-l')).toStrictEqual([{ provider: 'apple', subject: APPLE_SUB, login: 'ada-l' }]);
+  expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ person: 'ada-l', choosingUsername: false });
+  // The username form's token is spent; the consent form's is new, and works.
+  expect(await rejection(kolab.chooseUsername(w.binding, w.csrf, 'ada2'))).toMatch(/expired, was already used/);
+  const { code } = await kolab.consent(w.binding, made.csrf, { as: { kind: 'self' }, kolab: { name: 'adas', title: 'Ada\'s' }, role: 'product' });
+  const t = await kolab.exchangeCode({ code, clientId: w.client, redirectUri: 'http://127.0.0.1:9/cb', codeVerifier: w.verifier });
+  expect(t).toMatchObject({ actor: 'ada-l', kolab: 'adas' });
+
+  // Signing in again: Apple's id alone finds them, with no username to choose.
+  expect(await kolab.signInKnown({ provider: 'apple', subject: APPLE_SUB })).toBe('ada-l');
+  // An archived person doesn't sign in.
+  await kolab.archive({ actor: 'ada-l' });
+  expect(await rejection(kolab.signInKnown({ provider: 'apple', subject: APPLE_SUB }))).toMatch(/ada-l is archived/);
+});
+
+test('a username chosen at an Apple sign-up never claims a name that is held, in any case, by a live or archived person, account or organization, nor a reserved one, nor one that reads as someone\'s agent; the same form tries again', async () => {
+  const kolab = await openKolab();
+  await kolab.addActor('alice');
+  await kolab.addOrganization('acme');
+  await kolab.addActor('bob');
+  await kolab.archive({ actor: 'bob' });
+  expect(await kolab.signInWith(github('2001', 'Carol'))).toStrictEqual({ actor: 'carol', created: true });
+  const w = await awaitingUsername(kolab, APPLE_SUB);
+  const refused: [string, RegExp][] = [
+    ['alice', /the username alice is taken/], ['ALICE', /the username alice is taken/], ['acme', /the username acme is taken/], ['bob', /the username bob is taken/],
+    ['carol', /the username carol is taken/], ['kolab', /kolab is reserved/], ['admin', /admin is reserved/], ['konjir-ann', /reserved/],
+    ['alice-pm', /reads as an agent of alice's/], ['acme-ops', /reads as an agent of acme's/], ['carol-2', /reads as an agent of carol's/],
+    ['a', /2 to 39/], ['-ab', /2 to 39/], ['ab-', /2 to 39/], ['a--b', /2 to 39/], ['a_b', /2 to 39/], ['a.b', /2 to 39/], ['x'.repeat(40), /2 to 39/], ['', /2 to 39/],
+  ];
+  for (const [name, why] of refused) {
+    expect([name, await rejection(kolab.chooseUsername(w.binding, w.csrf, name))]).toStrictEqual([name, expect.stringMatching(why)]);
+  }
+  // Nothing was made or linked, and the sign-in still waits, with the same form.
+  expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ person: null, choosingUsername: true });
+  expect(await kolab.identities('alice')).toStrictEqual([]);
+  expect(await kolab.identities('carol')).toStrictEqual([{ provider: 'github', subject: '2001', login: 'Carol' }]);
+  expect(await kolab.chooseUsername(w.binding, w.csrf, 'dee')).toMatchObject({ actor: 'dee', created: true });
+  // GitHub's dee, signing up later, is someone else: a variant, never the Apple person.
+  expect(await kolab.signInWith(github('2002', 'dee'))).toStrictEqual({ actor: 'dee_2', created: true });
+});
+
+test('the same Apple account signing up in two tabs is one person: the second sign-in names whoever the first made, whatever name it chose', async () => {
+  const kolab = await openKolab();
+  const one = await awaitingUsername(kolab, APPLE_SUB);
+  const two = await awaitingUsername(kolab, APPLE_SUB);
+  expect(await kolab.chooseUsername(one.binding, one.csrf, 'erin')).toMatchObject({ actor: 'erin', created: true });
+  expect(await kolab.chooseUsername(two.binding, two.csrf, 'frank')).toMatchObject({ actor: 'erin', created: false });
+  expect((await kolab.db.query(`select id from actor where id = 'frank'`)).rows).toStrictEqual([]);
+  expect(await kolab.pendingAuthorization(two.binding)).toMatchObject({ person: 'erin', choosingUsername: false });
+});
+
+test('a sign-in waiting for a username, restarted for another account, forgets the first account\'s id', async () => {
+  const kolab = await openKolab();
+  const w = await awaitingUsername(kolab, APPLE_SUB);
+  const { state } = await kolab.restartIdentification(w.binding, w.csrf);
+  expect(await kolab.pendingAuthorization(w.binding)).toMatchObject({ person: null, choosingUsername: false });
+  expect((await kolab.db.query(`select pending_subject from oauth_request where id = $1`, [sessionKey(w.binding)])).rows).toStrictEqual([{ pending_subject: null }]);
+  // The new state waits for the next answer, which may name another account.
+  expect(await kolab.awaitUsername(w.binding, state, '000999.feed.0001')).toMatchObject({ csrf: expect.any(String) });
+});
