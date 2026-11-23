@@ -32,5 +32,5 @@ tags: [local-kolab]
 - tapOn:
     id: "sign-out"
 - extendedWaitUntil:
-    visible: "Sign in with GitHub"
+    visible: "Sign in"
     timeout: 20000

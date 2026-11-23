@@ -37,11 +37,11 @@ export default function You() {
   return (
     <Screen title="You" testID="you">
       {me ? (
-        <View testID="account" accessible accessibilityLabel={`${me.actor}, signed in with GitHub, ${me.team}, ${me.role}`} style={[styles.card, { backgroundColor: colors['surface-raised'], borderColor: colors.line }]}>
+        <View testID="account" accessible accessibilityLabel={`${me.actor}, signed in, ${me.team}, ${me.role}`} style={[styles.card, { backgroundColor: colors['surface-raised'], borderColor: colors.line }]}>
           {self ? <Avatar member={self} size={56} /> : <View style={{ width: 56 }} />}
           <View style={{ flex: 1, gap: 2 }}>
             <Text style={[styles.name, { color: colors.ink }]}>{me.actor}</Text>
-            <Text style={[styles.sub, { color: colors['ink-muted'] }]}>Signed in with GitHub · {me.team}, {me.role}</Text>
+            <Text style={[styles.sub, { color: colors['ink-muted'] }]}>Signed in · {me.team}, {me.role}</Text>
           </View>
         </View>
       ) : <Hint>Not signed in.</Hint>}

@@ -39,9 +39,9 @@ export default function SignIn() {
         <Text style={[styles.tagline, { color: colors['ink-muted'] }]}>konnect: your team&apos;s people and agents, in one place.</Text>
       </View>
       <View style={styles.bottom}>
-        <Button testID="sign-in-github" label={busy ? 'Signing in' : 'Sign in with GitHub'} busy={busy} onPress={() => void signIn()} />
+        <Button testID="sign-in-github" label={busy ? 'Signing in' : 'Sign in'} busy={busy} onPress={() => void signIn()} />
         {problem && <Problem>{problem}</Problem>}
-        <Text style={[styles.small, { color: colors['ink-muted'] }]}>Kolab&apos;s page opens: sign in with GitHub there, then pick a team, accept an invitation or make a team.</Text>
+        <Text style={[styles.small, { color: colors['ink-muted'] }]}>Kolab&apos;s page opens: sign in there with Apple or GitHub, then pick a team, accept an invitation or make a team.</Text>
       </View>
     </View>
   );
