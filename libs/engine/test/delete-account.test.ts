@@ -9,20 +9,22 @@
 // that someone else is in or nobody could administer, each named with what to do, to anyone but
 // the person themselves, and to an agent's or any other sign-in; and nothing changes.
 import { expect, test } from '@jest/globals';
-import { ACTOR_ID_COLUMNS, AccountDeletionBlocked, ERASED_WITH_KOLAB, KEPT_WITH_KOLAB, sessionKey } from '@konjir/engine';
-import { appSignIn, openKolab, rejection, type TestKolab } from '@konjir/engine/testing';
+import { ACTOR_ID_COLUMNS, AccountDeletionBlocked, ERASED_WITH_KOLAB, KEPT_WITH_KOLAB, retiredNameViolation, sessionKey } from '@konjir/engine';
+import { AUDIT_ACTIONS } from '@konjir/types';
+import { appSignIn, openKolab, rejection, testStore, type Store, type TestKolab } from '@konjir/engine/testing';
 
 const GITHUB = (subject: string, login: string) => ({ provider: 'github', subject, login });
 const DELETED = /^deleted-[0-9a-f]{12}$/;
 const ROOT = 'a'.repeat(40);
+const POSTGRES = !!process.env.KONJIR_TEST_DATABASE_URL;
 
 /**
  * Ann owns `anns`, where Bo writes and Bo's agent too; Bo owns `bos`, which only he and his agent
  * are in. Both signed up with GitHub and are signed in through konnect's app, Bo with a push
  * device. They have talked: a DM each way, a channel message each, and one from Bo's agent.
  */
-async function world() {
-  const k = await openKolab();
+async function world(store: Store = {}) {
+  const k = await openKolab(store);
   for (const [subject, login] of [['11', 'ann'], ['22', 'bo']]) expect(await k.signInWith(GITHUB(subject, login))).toStrictEqual({ actor: login, created: true });
   await k.addActor('bo-claude', { owner: 'bo' });
   await k.createKolab('anns', { owner: 'ann' });
@@ -157,12 +159,30 @@ test('the old id is never handed out again, in any case, nor `<old>-x`; the same
 
   // Not by an admin, in any case, nor `<old>-x` for anyone; nor a deleted account's id.
   for (const name of ['bo', 'BO', 'bo-claude', 'Bo-Claude', 'bo-x', 'bo-claude-2']) {
-    expect([name, await rejection(k.addActor(name))]).toStrictEqual([name, expect.stringMatching(/isn't available|taken|exists/)]);
+    expect([name, await rejection(k.addActor(name))]).toStrictEqual([name, expect.stringMatching(/can't be used|taken|exists/)]);
   }
-  expect(await rejection(k.addActor('bo-x', { owner: 'ann' }))).toMatch(/isn't available/);
-  expect(await rejection(k.addOrganization('bo'))).toMatch(/isn't available/);
-  expect(await rejection(k.addActor('deleted-0123456789ab'))).toMatch(/isn't available/);
-  expect(await rejection(k.addActor(`${gone}-2`, { owner: 'ann' }))).toMatch(/isn't available/);
+  expect(await rejection(k.addActor('bo-x', { owner: 'ann' }))).toBe('ActorError: the name bo-x can\'t be used: choose another');
+  expect(await rejection(k.addOrganization('bo'))).toBe('TenancyError: the name bo can\'t be used: choose another');
+  expect(await rejection(k.addActor('deleted-0123456789ab'))).toMatch(/can't be used/);
+  expect(await rejection(k.addActor(`${gone}-2`, { owner: 'ann' }))).toMatch(/can't be used/);
+  // A name retired between Kolab's check and the insert (a sign-up racing the deletion) is the
+  // database's refusal, which Kolab tells apart (retiredNameViolation) and answers the same way:
+  // the sign-up takes its next name, an admin's add says the name can't be used, never what the
+  // database said.
+  const e = await k.db.query(`insert into account(id, kind, name, created_by) values ('bo', 'user', 'Bo', 'admin')`).then(() => undefined, (x: unknown) => x);
+  expect(retiredNameViolation(e)).toBe(true);
+  expect(retiredNameViolation(await k.db.query(`insert into account(id, kind, name, created_by) values ('ann', 'user', 'A', 'admin')`).then(() => undefined, (x: unknown) => x))).toBe(false);
+  const raced = k as unknown as { requireFreeName(id: string): Promise<void> };
+  const check = raced.requireFreeName;
+  raced.requireFreeName = async () => undefined;
+  try {
+    expect(await k.signInWith(GITHUB('95', 'bo'))).toStrictEqual({ actor: 'bo_4', created: true });
+    expect(await rejection(k.addActor('Bo'))).toBe('ActorError: the name Bo can\'t be used: choose another');
+    expect(await rejection(k.addActor('bo-y', { owner: 'ann' }))).toBe('ActorError: the name bo-y can\'t be used: choose another');
+    expect(await rejection(k.addOrganization('bo'))).toBe('TenancyError: the name bo can\'t be used: choose another');
+  } finally {
+    raced.requireFreeName = check;
+  }
   // A person's agents are theirs: bo_2's are bo_2-*, and gh_bo-smith's gh_bo-smith-*; and bob, not Bo, keeps his.
   expect(await k.addOwnAgent('bo_2', 'claude')).toBe('bo_2-claude');
   expect(await k.addOwnAgent('gh_bo-smith', 'claude')).toBe('gh_bo-smith-claude');
@@ -171,8 +191,8 @@ test('the old id is never handed out again, in any case, nor `<old>-x`; the same
   await expect(k.db.query(`insert into account(id, kind, name, created_by) values ('Bo', 'user', 'Bo', 'admin')`)).rejects.toThrow(/never given to anyone again/);
   await expect(k.db.query(`insert into actor(id, name, kind, owner_id, created_by) values ('bo-y', 'bo-y', 'agent', 'ann', 'admin')`)).rejects.toThrow(/never given to anyone again/);
   await expect(k.db.query(`insert into account(id, kind, name, created_by) values ('deleted-zz', 'organization', 'Z', 'admin')`)).rejects.toThrow(/deleted account's, and no one else's/);
-  await expect(k.db.query(`update actor set id = 'deleted-zz' where id = 'ann'`)).rejects.toThrow(/deleted account's, and no one else's/);
-  // The retired names are kept as their digests, never as the names.
+  await expect(k.db.query(`update actor set id = 'deleted-zz' where id = 'ann'`)).rejects.toThrow(/id never changes/);
+  // The retired names are kept as one-way digests, not as the names (which anyone who guesses one can still find).
   expect(await count(k, `retired_name`)).toBe(2);
   expect(await count(k, `retired_name where digest in ('bo', 'bo-claude')`)).toBe(0);
   await expect(k.db.query(`delete from retired_name`)).rejects.toThrow(/never removed/);
@@ -183,7 +203,7 @@ test('the old id is never handed out again, in any case, nor `<old>-x`; the same
   expect(await rejection(k.linkIdentity(gone, { provider: 'github', subject: '77' }))).toMatch(/deleted their account/);
   await expect(k.db.query(`update account set archived_at = null where id = $1`, [gone])).rejects.toThrow(/a deleted account never changes again/);
   await expect(k.db.query(`update account set deleted_at = null where id = $1`, [gone])).rejects.toThrow(/a deleted account never changes again/);
-  await expect(k.db.query(`update account set id = 'bo' where id = $1`, [gone])).rejects.toThrow(/never given to anyone again|never changes again/);
+  await expect(k.db.query(`update account set id = 'bo' where id = $1`, [gone])).rejects.toThrow(/id never changes|never changes again/);
   await expect(k.db.query(`delete from account where id = $1`, [gone])).rejects.toThrow(/a deleted account is kept/);
   await expect(k.db.query(`update actor set name = 'Bo B.' where id = $1`, [gone])).rejects.toThrow(/kept as they are/);
   await expect(k.db.query(`update actor set owner_id = 'ann' where id = $1`, [`${gone}-1`])).rejects.toThrow(/kept as they are/);
@@ -395,32 +415,132 @@ test('every row that named them, in live and archived kolabs alike, names the ne
   }
 });
 
+test('nothing names an old id again, even where no foreign key would refuse it; a row that names no actor, about a kolab called bo say, is written as before', async () => {
+  const { k, bo } = await world();
+  // A settle job still owed names who approved it: re-keyed with the rest.
+  await k.db.query(`insert into outbox(id, kolab_id, kind, state, version_id, payload) values ('01OUTBOXJOB0000000000000000', 'anns', 'push', 'dead', null, '{"approvedBy": "bo", "rulingBy": "admin"}')`);
+  await k.deleteOwnAccount(bo.access, 'bo');
+  const [gone] = await deletedId(k);
+  expect((await k.db.query(`select payload from outbox where id = '01OUTBOXJOB0000000000000000'`)).rows).toStrictEqual([{ payload: { approvedBy: gone, rulingBy: 'admin' } }]);
+  for (const sql of [
+    `insert into audit_event(action, subject, done_by) values ('policy.set', 'anns', 'bo-claude')`,
+    `insert into audit_event(action, subject, done_by) values ('grant.set', 'bo', 'ann')`,
+    `update session set ended_by = 'bo' where actor_id = 'ann'`,
+    `insert into outbox(id, kolab_id, kind, state, version_id, payload) values ('01OUTBOXJOB0000000000000001', 'anns', 'push', 'dead', null, '{"approvedBy": "bo"}')`,
+  ]) {
+    expect([sql, await rejection(k.db.query(sql))]).toStrictEqual([sql, expect.stringMatching(/: bo(-claude)? was a deleted account's, which nothing names again/)]);
+  }
+  await k.db.query(`insert into audit_event(action, subject, done_by) values ('policy.set', 'bo', 'ann')`);
+});
+
+(POSTGRES ? test : test.skip)('on Postgres: a write naming them that is under way as their deletion begins is waited for and re-keyed with the rest; one that starts while it runs waits for it, and is refused', async () => {
+  const store = await testStore();
+  const { k, bo } = await world(store);
+  const pg = (await import('pg')).default;
+  const [writer, holder, late] = [0, 1, 2].map(() => new pg.Client({ connectionString: store.databaseUrl }));
+  for (const c of [writer, holder, late]) await c.connect();
+  const settled = <T>(p: Promise<T>) => { const s = { done: false }; p.then(() => { s.done = true; }, () => { s.done = true; }); return s; };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  try {
+    // An agent's write under way: it names bo-claude where no foreign key checks it (an audit row's doer).
+    await writer.query('begin');
+    await writer.query(`insert into audit_event(action, subject, done_by) values ('policy.set', 'anns', 'bo-claude')`);
+    // And something that holds the deletion once it has its actors' rows: a retired name being written.
+    await holder.query('begin');
+    await holder.query(`insert into retired_name(digest) values (kj_name_digest('bo'))`);
+    const deleting = k.deleteOwnAccount(bo.access, 'bo');
+    const deleted = settled(deleting);
+    await wait(500);
+    // The deletion waits for the write under way.
+    expect(deleted.done).toBe(false);
+    await writer.query('commit');
+    await wait(500);
+    // It now holds their rows, and waits on the retired name: a write that names Bo meanwhile waits for it.
+    expect(deleted.done).toBe(false);
+    const lateWrite = late.query(`insert into audit_event(action, subject, done_by) values ('policy.set', 'anns', 'bo')`);
+    const wrote = settled(lateWrite);
+    await wait(500);
+    expect(wrote.done).toBe(false);
+    await holder.query('rollback');
+    await deleting;
+    const [gone] = await deletedId(k);
+    // The write that was under way is re-keyed; the one that waited is refused.
+    expect((await k.db.query(`select done_by from audit_event where action = 'policy.set' and subject = 'anns'`)).rows).toStrictEqual([{ done_by: `${gone}-1` }]);
+    expect(await rejection(lateWrite)).toMatch(/audit_event.done_by: bo was a deleted account's/);
+  } finally {
+    for (const c of [writer, holder, late]) await c.end();
+  }
+}, 60_000);
+
 test('every column that names an actor is carried by a foreign key or re-keyed by Kolab, and every reference to a kolab is erased with it or keeps it from being erased', async () => {
   const k = await openKolab();
   const fk = new Set((await k.db.query<{ col: string }>(
     `select replace(f.conrelid::regclass::text, '"', '') || '.' || a.attname as col from pg_constraint f
        join pg_attribute a on a.attrelid = f.conrelid and a.attnum = any(f.conkey)
       where f.contype = 'f' and f.confrelid in ('actor'::regclass, 'account'::regclass) and a.attgenerated = ''`)).rows.map((r) => r.col));
+  // ACTOR_ID_COLUMNS, each column whole, or a JSON column's key (only that key of it names an actor).
   const rekeyed = new Set(ACTOR_ID_COLUMNS.map((c) => `${c.table}.${c.column}`));
-  // Columns whose names read as an actor's but hold something else.
-  const NOT_ACTORS = new Set([
-    'identity.subject', 'kolab_invitation.subject',   // an identity provider's id for a person, never an actor's
-    'invalidation.triggered_by',                      // a version
-    'case_file.superseded_by',                        // a case file
-    'outbox.claimed_by',                              // a Kolab process
-    'audit_event.subject',                            // re-keyed for the actions whose subject is an actor (ACTOR_ID_COLUMNS)
-    'archive_event.target_id',                        // re-keyed where it is an actor (ACTOR_ID_COLUMNS)
-    'rate_event.owner_id',                            // a deleted account's rate events go
+  // Columns that might name an actor but don't, each reviewed, with what it holds instead.
+  const NOT_ACTORS = new Map([
+    ['identity.subject', 'an identity provider\'s id for a person, never an actor\'s'],
+    ['kolab_invitation.subject', 'an identity provider\'s id for a person; the deletion removes those of the person'],
+    ['invalidation.triggered_by', 'a version'],
+    ['case_file.superseded_by', 'a case file'],
+    ['outbox.claimed_by', 'a Kolab process'],
+    ['rate_event.owner_id', 'a deleted account\'s rate events are deleted with it'],
+    ['work_event.concerned', 'addresses (kj:...), never an actor'],
+    ['kolab_host.agents', 'a host\'s agents\' labels, not their ids'],
+    ['kolab_host.running', 'labels of the agents a host runs, not their ids'],
+    ['notification_pref.agents', 'keyed by the person\'s own agents\' names, in their own prefs, deleted with the person'],
+    ['notification_pref.agents_stuck_pushed', 'keyed by the person\'s own agents\' names, in their own prefs, deleted with the person'],
+    ['notification_pref.muted', 'channel ids'],
+    ['oauth_setup.agents', 'a setup\'s agents, deleted with the person (oauth_setup.person_id)'],
+    ['oauth_setup.grants', 'a setup\'s grants, deleted with the person (oauth_setup.person_id)'],
+    ['oauth_client.redirect_uris', 'URIs'],
+    ['delta.work', 'a work package\'s fields (WorkFields): text, sizes, dates, addresses'],
+    ['element.work', 'a work package\'s fields (WorkFields): text, sizes, dates, addresses'],
+    ['edge.target_selector', 'an address\'s selector'],
+    ['link_removal.target_selector', 'an address\'s selector'],
+    ['query.selector', 'an address\'s selector'],
+    ['query.about_links', 'links, by their ids and addresses'],
+    ['query.answer_cites', 'what an answer cites: addresses'],
+    ['position.evidence', 'what a position cites: addresses and text'],
+    ['evidence.checks', 'acceptance checks\' names and outcomes'],
+    ['evidence.files', 'paths in a repository'],
+    ['review_request.findings', 'a review\'s findings: element ids and text'],
+    ['version.resolves', 'the marks and case files a version resolves, by id'],
   ]);
-  const actorish = (await k.db.query<{ col: string }>(
-    `select table_name || '.' || column_name as col from information_schema.columns
-      where table_schema = 'public' and data_type = 'text'
-        and (column_name like '%\\_by' or column_name in ('actor_id', 'owner_id', 'owner', 'holder', 'subject', 'sent_to', 'person_id', 'agent_id',
-             'reviewer_id', 'user_id', 'assignee_id', 'assignee_from', 'assignee_to', 'target_id'))
-      order by 1`)).rows.map((r) => r.col);
-  expect(actorish.filter((c) => !fk.has(c) && !rekeyed.has(c) && !NOT_ACTORS.has(c))).toStrictEqual([]);
-  // ACTOR_ID_COLUMNS names real columns with no foreign key of their own.
-  for (const c of rekeyed) expect([c, actorish.includes(c), fk.has(c)]).toStrictEqual([c, true, false]);
+  // Every column whose name reads as an actor's, and every array and JSON column, whatever its
+  // name: each is a foreign key's, re-keyed by Kolab (ACTOR_ID_COLUMNS), or reviewed above.
+  const actorish = (await k.db.query<{ col: string; type: string }>(
+    `select table_name || '.' || column_name as col, data_type as type from information_schema.columns
+      where table_schema = 'public' and is_generated <> 'ALWAYS'
+        and (data_type in ('ARRAY', 'json', 'jsonb')
+             or (data_type = 'text' and (column_name ~ '(_by$|^by$|sender|members?|holder|owner|agents?|actor|person|user|assignee|reviewer)'
+                                         or column_name in ('subject', 'sent_to', 'target_id', 'running'))))
+      order by 1`)).rows;
+  expect(actorish.filter((c) => !fk.has(c.col) && !rekeyed.has(c.col) && !NOT_ACTORS.has(c.col)).map((c) => c.col)).toStrictEqual([]);
+  // ACTOR_ID_COLUMNS names real columns with no foreign key of their own, a key only in a JSON one;
+  // nothing reviewed as not an actor's is in it.
+  for (const c of ACTOR_ID_COLUMNS) {
+    const col = `${c.table}.${c.column}`;
+    const type = actorish.find((x) => x.col === col)?.type;
+    expect([col, c.key, type, fk.has(col), NOT_ACTORS.has(col)]).toStrictEqual([col, c.key, c.key ? 'jsonb' : 'text', false, false]);
+  }
+  // Migration 0060's own list is the same (kj_actor_columns), and so is which rows of a column name an actor (kj_names_actor).
+  const listed = (rows: { tbl: string; col: string; key: string | null }[]) => rows.map((r) => `${r.tbl}.${r.col}${r.key ? `.${r.key}` : ''}`).sort();
+  expect(listed((await k.db.query<{ tbl: string; col: string; key: string | null }>(`select tbl, col, key from kj_actor_columns()`)).rows))
+    .toStrictEqual(listed(ACTOR_ID_COLUMNS.map((c) => ({ tbl: c.table, col: c.column, key: c.key ?? null }))));
+  for (const c of ACTOR_ID_COLUMNS.filter((x) => x.where)) {
+    for (const action of AUDIT_ACTIONS) {
+      for (const kind of ['actor', 'kolab', 'organization', 'repository']) {
+        const r = (await k.db.query<{ engine: boolean; db: boolean }>(
+          `select (select ${c.where} from (select $1::text as action, $2::text as target_kind) x) as engine,
+                  kj_names_actor($3, $4, jsonb_build_object('action', $1::text, 'target_kind', $2::text)) as db`, [action, kind, c.table, c.column])).rows[0];
+        expect([c.table, c.column, action, kind, r.engine]).toStrictEqual([c.table, c.column, action, kind, r.db]);
+      }
+    }
+  }
 
   const toKolab = (await k.db.query<{ col: string }>(
     `select replace(f.conrelid::regclass::text, '"', '') || '.' || a.attname as col from pg_constraint f

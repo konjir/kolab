@@ -538,6 +538,24 @@ export class NameTakenError extends TenancyError {
   }
 }
 
+/**
+ * A name no one may have (migration 0060): a deleted account's old name, one that starts with it
+ * and a `-`, or any `deleted-*`. Kolab refuses it before an insert (requireFreeName), and the
+ * database at one (kj_name_free, constraint retired_name, retiredNameViolation), with this.
+ */
+export class RetiredNameError extends NameTakenError {
+  constructor(name: string, errorName: 'TenancyError' | 'ActorError' = 'TenancyError') {
+    super(`the name ${name} can't be used: choose another`, undefined, errorName);
+  }
+}
+/**
+ * Whether `e` is the database refusing a name of a deleted account's at an insert or an update of
+ * an account or an actor (kj_name_free, migration 0060), as when a sign-up races the deletion that
+ * retires the name: map it to RetiredNameError, never pass it on as it is.
+ */
+export const retiredNameViolation = (e: unknown) =>
+  (e as { code?: unknown })?.code === '23514' && (e as { constraint?: unknown }).constraint === 'retired_name';
+
 /** A team's name within its organization (team_name_check). */
 const TEAM_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -595,22 +613,27 @@ const erasedKeeps = (k: string, reason: 'documents' | 'repository' = 'documents'
 
 /**
  * Where an actor's id is written with no foreign key to carry its re-key when its account is
- * deleted (deleteOwnAccount, migration 0060): each column, and, where only some rows of it name an
- * actor, which (`where`). A foreign key to actor or account carries the rest (on update cascade).
+ * deleted (deleteOwnAccount, migration 0060): each column, for a JSON column the key in it that
+ * holds the id (`key`), and, where only some rows of it name an actor, which (`where`). A foreign
+ * key to actor or account carries the rest (on update cascade). Migration 0060's
+ * kj_actor_columns() lists the same: it lets a re-key change them, and holds every write to them
+ * off a deleted account's old id (kj_actor_named). The tests hold the two lists, and the schema,
+ * to each other.
  */
-export const ACTOR_ID_COLUMNS: readonly { table: string; column: string; where?: string }[] = [
+export const ACTOR_ID_COLUMNS: readonly { table: string; column: string; key?: string; where?: string }[] = [
   { table: 'account', column: 'created_by' }, { table: 'actor', column: 'created_by' },
   { table: 'archive_event', column: 'target_id', where: `target_kind = 'actor'` }, { table: 'archive_event', column: 'done_by' },
-  // An audit row's subject is an actor for these actions; otherwise a kolab, a repository, a verb...
-  { table: 'audit_event', column: 'subject', where: `action in ('grant.set', 'grant.removed', 'member.set', 'member.removed', 'team_member.added', 'team_member.removed',
-      'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'push_device.unregistered', 'host.ended', 'account.deleted')` },
-  { table: 'audit_event', column: 'done_by' },
+  // An audit row's subject is an actor for some actions (kj_audit_subject_is_actor); otherwise a kolab, a repository, a verb...
+  { table: 'audit_event', column: 'subject', where: 'kj_audit_subject_is_actor(action)' },
+  { table: 'audit_event', column: 'done_by' }, { table: 'audit_event', column: 'detail', key: 'owner' },
   { table: 'case_file', column: 'opened_by' }, { table: 'position', column: 'actor_id' }, { table: 'ruling', column: 'actor_id' },
   { table: 'precedent', column: 'ruled_by' },
   { table: 'evidence', column: 'recorded_by' }, { table: 'evidence', column: 'redacted_by' },
   { table: 'identity', column: 'linked_by' }, { table: 'invalidation', column: 'cleared_by' }, { table: 'job', column: 'ended_by' },
   { table: 'kolab', column: 'created_by' }, { table: 'kolab_invite', column: 'revoked_by' }, { table: 'kolab_policy', column: 'updated_by' },
   { table: 'konjir_admin', column: 'granted_by' }, { table: 'node', column: 'created_by' }, { table: 'oauth_grant', column: 'revoked_by' },
+  // A settle job still owed names who approved, or gave a ruling, by id.
+  { table: 'outbox', column: 'payload', key: 'approvedBy' }, { table: 'outbox', column: 'payload', key: 'rulingBy' },
   { table: 'query', column: 'raised_by' }, { table: 'query', column: 'answered_by' },
   { table: 'repository', column: 'registered_by' }, { table: 'repository', column: 'confirmed_by' }, { table: 'repository', column: 'archived_by' },
   { table: 'session', column: 'opened_by' }, { table: 'session', column: 'ended_by' }, { table: 'team', column: 'created_by' },
@@ -1935,6 +1958,7 @@ export class Kolab {
       // Another admin call added it between the check and the insert.
       if (/actor_pkey|actor_id_lower/.test(String(e))) throw new NameTakenError(`actor ${id} already exists`, undefined, 'ActorError');
       if (/account_pkey|account_id_lower/.test(String(e))) throw new NameTakenError(`account ${id} already exists`, undefined, 'ActorError');
+      if (retiredNameViolation(e)) throw new RetiredNameError(id, 'ActorError');
       throw e;
     }
   }
@@ -2535,7 +2559,9 @@ export class Kolab {
           const again = await linked();
           if (again) return { actor: again, created: false };
         }
-        if (e instanceof NameTakenError || /actor_pkey|actor_id_lower|account_pkey|account_id_lower/.test(String(e))) continue;
+        // A name taken meanwhile, or retired by a deletion that committed meanwhile (the database's
+        // refusal, retiredNameViolation): the next one.
+        if (e instanceof NameTakenError || retiredNameViolation(e) || /actor_pkey|actor_id_lower|account_pkey|account_id_lower/.test(String(e))) continue;
         throw e;
       }
     }
@@ -3401,6 +3427,7 @@ export class Kolab {
       });
     } catch (e) {
       if (/actor_pkey|actor_id_lower/.test(String(e))) throw new NameTakenError(`actor ${id} already exists`, undefined, 'ActorError');
+      if (retiredNameViolation(e)) throw new RetiredNameError(id, 'ActorError');
       throw e;
     }
     return id;
@@ -4295,7 +4322,12 @@ export class Kolab {
       if ((await tx.query(`select 1 from konjir_admin where actor_id = $1`, [me])).rows.length) {
         throw new TenancyError('you are a Konjir admin: another admin must revoke that first, so Konjir is never left without the admins it needs');
       }
-      const agents = (await tx.query<{ id: string }>(`select id from actor where owner_id = $1 and kind = 'agent' order by id`, [me])).rows.map((x) => x.id);
+      // Their actors' rows, and their agents', locked first (for update, as the re-key's change of
+      // their ids would): a write under way that names one, by a foreign key or where none checks
+      // it (kj_actor_named, migration 0060), holds its row, so the deletion waits for it to commit
+      // and re-keys it with the rest; one after waits for the deletion, and is then refused.
+      const agents = (await tx.query<{ id: string }>(
+        `select id from actor where id = $1 or (owner_id = $1 and kind = 'agent') order by id for update`, [me])).rows.map((x) => x.id).filter((a) => a !== me);
       const mine = [me, ...agents];
 
       // What must be dealt with first (blockerWhy), and the kolabs only they are in, to erase.
@@ -4421,11 +4453,12 @@ export class Kolab {
       await tx.query(`set constraints actor_person_is_user immediate`);
       for (const a of agents) await tx.query(`update actor set id = $2 where id = $1`, [a, rekey[a]]);
       for (const c of ACTOR_ID_COLUMNS) {
-        await tx.query(`update ${c.table} set ${c.column} = $2::jsonb ->> ${c.column} where ${c.column} = any($1::text[])${c.where ? ` and ${c.where}` : ''}`,
-          [mine, JSON.stringify(rekey)]);
+        const where = c.where ? ` and ${c.where}` : '';
+        await tx.query(c.key
+          ? `update ${c.table} set ${c.column} = jsonb_set(${c.column}, array[$3], $2::jsonb -> (${c.column} ->> $3)) where ${c.column} ->> $3 = any($1::text[])${where}`
+          : `update ${c.table} set ${c.column} = $2::jsonb ->> ${c.column} where ${c.column} = any($1::text[])${where}`,
+        c.key ? [mine, JSON.stringify(rekey), c.key] : [mine, JSON.stringify(rekey)]);
       }
-      await tx.query(`update audit_event set detail = jsonb_set(detail, '{owner}', $2::jsonb -> (detail ->> 'owner')) where detail ->> 'owner' = any($1::text[])`,
-        [mine, JSON.stringify(rekey)]);
 
       // The tombstone: their names become their new ids, and the account is archived and deleted for good.
       const now = Object.values(rekey);
@@ -4442,10 +4475,15 @@ export class Kolab {
       await tx.query(`select set_config('kj.rekey', '', true)`);
       return { out, catchUps };
     }).catch((e: unknown) => {
-      // A failure in the database (a foreign key, a check) is never passed on as it is.
+      // A failure in the database (a foreign key, a check) is never passed on as it is, nor logged
+      // as it is: its message and detail can hold the values of the row (`Key (sent_by)=(bo)`), so
+      // the log has its code and the name of the constraint alone.
       const code = (e as { code?: unknown })?.code;
       if (typeof code !== 'string' || !/^[0-9A-Z]{5}$/.test(code)) throw e;
-      log.error('an account deletion failed in the database, and nothing changed', { event: 'delete_failed', target: 'account', code, error: String(e) });
+      const constraint = (e as { constraint?: unknown }).constraint;
+      log.error('an account deletion failed in the database, and nothing changed', {
+        event: 'delete_failed', target: 'account', sqlstate: code, ...(typeof constraint === 'string' ? { constraint } : {}),
+      });
       throw new TenancyError('your account couldn\'t be deleted: something of yours is still in use. Nothing was changed; try again, or ask a Konjir admin');
     });
     if (r.catchUps.length) this.wake();
@@ -5025,7 +5063,7 @@ export class Kolab {
     // A deleted account's name, old (retired_name: it, or it followed by `-`) or new (`deleted-*`),
     // is never given to anyone (migration 0060).
     if (isDeletedName(id) || (await this.db.query<{ r: boolean }>(`select kj_name_retired($1) as r`, [id])).rows[0].r) {
-      throw new NameTakenError(`the name ${id} isn't available: choose another`, undefined, errorName);
+      throw new RetiredNameError(id, errorName);
     }
     const h =(await this.db.query<{ id: string; what: 'actor' | 'account'; kind: string; archived: boolean }>(
       `select a.id, 'actor' as what, a.kind, kj_actor_archived(a.id) as archived from actor a where lower(a.id) = lower($1)
@@ -5052,6 +5090,7 @@ export class Kolab {
       await this.db.query(`insert into account(id, kind, name, created_by) values ($1, 'organization', $2, $3)`, [id, opts.name ?? id, by]);
     } catch (e) {
       if (/account_pkey|account_id_lower/.test(String(e))) throw new NameTakenError(`account ${id} already exists`);
+      if (retiredNameViolation(e)) throw new RetiredNameError(id);
       throw e;
     }
   }

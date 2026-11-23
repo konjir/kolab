@@ -11,7 +11,7 @@ import {
 } from '@konjir/db';
 import { IMPORT_FORMAT, Kolab, elementFingerprint, sessionKey } from '@konjir/engine';
 import { fingerprint } from '@konjir/address';
-import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testPolicy, testStore, thrown, type Store, TestKolab } from '@konjir/engine/testing';
+import { commitReviewed, drainAfterWrites, els, marksOn, people, persistentStore, registeredRepository, rejection, setup, testPolicy, testStore, thrown, type Store, TestKolab, UNDO_0060 } from '@konjir/engine/testing';
 import { ARCHIVABLE, AUDIT_ACTIONS, KINDS,
   ACCESS_LEVELS, ACCOUNT_KINDS, ACTOR_KINDS, CASE_FILE_STATES, INVITE_LEVELS, MARK_REASONS, ORG_ROLES, OUTBOX_KINDS, OUTBOX_STATES, POSITION_VERDICTS, QUERY_KINDS, QUERY_STATES,
   EVIDENCE_KINDS, HOST_REQUEST_KINDS, NOTIFICATION_LEVELS, PUSH_PLATFORMS, JOB_ENDS, JOB_KINDS, JOB_OUTCOMES, REVIEW_REQUEST_STATES, RULING_EFFECTS, VERSION_STATES, VISIBILITIES, WORK_EVENT_KINDS, WORK_STATES, type WorkFields,
@@ -3147,67 +3147,6 @@ test('a database at 0056 with messages reaches 0057: two indexes for conversatio
   });
 });
 
-/**
- * A trigger function as the newest migration before `before` made it, from that migration's own
- * text, as create or replace: so an undo puts back exactly what was there.
- */
-function definitionBefore(name: string, before: number): string {
-  const pattern = new RegExp(`create (?:or replace )?function ${name}\\(\\)[\\s\\S]*?\\n\\$\\$;`, 'g');
-  const m = MIGRATIONS.filter((x) => x.version < before).reverse().map((x) => [...x.sql.matchAll(pattern)].at(-1)?.[0]).find(Boolean);
-  if (!m) throw new Error(`no migration before ${before} makes ${name}`);
-  return m.replace(/^create (?:or replace )?function/, 'create or replace function');
-}
-
-/** The functions 0060 makes again, to let a re-key through: each put back as it was. */
-const REKEYED_FUNCTIONS = ['kj_message_fixed', 'kj_channel_fixed', 'kj_audit_event_fixed', 'kj_archive_event_fixed', 'kj_work_event_fixed',
-  'kj_evidence_fixed', 'kj_repository_fixed', 'kj_job_fixed', 'kj_case_fixed', 'kj_actor_frozen', 'kj_kolab_writable', 'kj_admin_audited'];
-
-const UNDO_0060 = String.raw`drop trigger account_deleted_kept on account;
-  drop function kj_account_deleted_kept();
-  drop trigger actor_deleted_kept on actor;
-  drop function kj_actor_deleted_kept();
-  drop trigger account_name_free on account;
-  drop trigger actor_name_free on actor;
-  drop function kj_name_free();
-  drop function kj_name_retired(text);
-  drop function kj_name_digest(text);
-  drop table retired_name;
-  drop function kj_retired_name_fixed();
-create or replace function kj_identity_of_person() returns trigger
-language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
-begin
-  if not exists (select 1 from public.actor a where a.id = new.actor_id and a.kind = 'person') then
-    raise exception 'only a person has an identity; % is not one', new.actor_id using errcode = 'check_violation';
-  end if;
-  return new;
-end
-$$;
-` + REKEYED_FUNCTIONS.map((f) => definitionBefore(f, 60)).join('\n') + String.raw`
-  drop function kj_rekey_only(jsonb, jsonb);
-  drop function kj_unkeyed(jsonb, text[]);
-  drop function kj_rekeying();
-  drop function kj_actor_deleted(text);
-  do $$
-  declare c record;
-  begin
-    for c in select f.conrelid::regclass::text as tbl, f.conname, pg_get_constraintdef(f.oid) as def from pg_constraint f
-              where f.contype = 'f' and f.confupdtype = 'c' and f.confrelid in ('public.actor'::regclass, 'public.account'::regclass) loop
-      execute format('alter table %s drop constraint %I, add constraint %I %s', c.tbl, c.conname, c.conname, replace(c.def, ' ON UPDATE CASCADE', ''));
-    end loop;
-  end
-  $$;
-  alter table actor alter constraint actor_person_is_user not deferrable;
-  alter table account drop constraint account_deleted_check;
-  alter table account drop column deleted_at;
-  alter table audit_event drop constraint audit_event_action_check;
-  alter table audit_event add constraint audit_event_action_check check (action in
-    ('grant.set', 'grant.removed', 'member.set', 'member.removed',
-     'team_member.added', 'team_member.removed', 'outbox.retried',
-     'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
-     'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
-     'host.ended', 'kolab.erased', 'push_device.unregistered'));
-  delete from kj_migration where version = 60;`;
-
 test('a database at 0059 reaches 0060: a person\'s account may be deleted, for good, re-keyed to an opaque id that every row carries, its old names retired, and a deleted account\'s rows kept as a tombstone', async () => {
   const at = MIGRATIONS.findIndex((x) => x.name === 'delete_account');
   expect(MIGRATIONS[at].version).toBe(60);
@@ -3222,7 +3161,11 @@ test('a database at 0059 reaches 0060: a person\'s account may be deleted, for g
     await db.exec(`insert into kolab(id, owner_id, title, created_by) values ('bos', 'bo', 'Bo''s', 'bo')`);
     await db.exec(`insert into message(id, kolab_id, sent_by, sent_to, body) values ('01M1', 'bos', 'bo', 'ann', 'Hi Ann'), ('01M2', 'bos', 'bo-claude', 'ann', 'Hi from the agent')`);
     await db.exec(`insert into audit_event(action, kolab_id, subject, detail, done_by) values ('grant.removed', 'bos', 'bo-claude', '{"owner": "bo"}', 'bo')`);
+    await db.exec(`insert into notification_pref(kolab_id, actor_id, level) values ('bos', 'bo', 'all'), ('bos', 'ann', 'all')`);
     await db.exec(`update kolab set archived_at = now() where id = 'bos'`);
+    // And a live kolab of Ann's, where Bo wrote "bo", and Ann wrote to him.
+    await db.exec(`insert into kolab(id, owner_id, title, created_by) values ('anns', 'ann', 'Ann''s', 'ann')`);
+    await db.exec(`insert into message(id, kolab_id, sent_by, sent_to, body) values ('01M3', 'anns', 'bo', 'ann', 'bo'), ('01M4', 'anns', 'ann', 'bo', 'Hi Bo')`);
     expect(await schemaOf(db)).toStrictEqual(await withDb(async (fresh) => { await migrate(fresh, { migrations: MIGRATIONS.slice(0, at) }); return schemaOf(fresh); }));
     expect(await migrate(db)).toStrictEqual({ baselined: false, applied: [60] });
     expect(await schemaOf(db)).toStrictEqual(await currentSchema());
@@ -3247,9 +3190,52 @@ test('a database at 0059 reaches 0060: a person\'s account may be deleted, for g
     expect(await rejection(db.exec(`update account set archived_at = now(), deleted_at = now() where id = 'acme'`))).toMatch(/account_deleted_check/);
     // Rows that are never edited, and an archived kolab's, change only by a re-key, by Kolab's own login.
     expect(await rejection(db.exec(`update message set sent_by = 'ann', sent_to = 'bo' where id = '01M1'`))).toMatch(/never edited or removed/);
-    expect(await rejection(db.exec(`begin; select set_config('kj.rekey', '{"bo": "deleted-0123456789ab"}', true); update message set body = 'Edited' where id = '01M1'; commit`))).toMatch(/never edited or removed/);
+    expect(await rejection(db.exec(`begin; select set_config('kj.rekey', '{"bo": "deleted-0123456789ab"}', true); update message set body = 'Edited' where id = '01M1'; commit`))).toMatch(/never edited or removed|nothing in it changes but by the re-key/);
     await db.exec(`rollback`).catch(() => undefined);
     expect(await rejection(db.exec(`begin; select set_config('kj.rekey', '{"bo": "deleted-0123456789ab"}', true); set local role kj_system; update message set sent_by = 'ann' where id = '01M1'; commit`))).toMatch(/never edited|permission denied/);
+    await db.exec(`rollback`).catch(() => undefined);
+    // Under a re-key, a row changes only in a column that names an actor, and only from an old id
+    // to exactly the new one it maps to: no content changes with it, no id goes to another's new
+    // one, no other actor's row is touched; an archived kolab takes no insert, and loses only what
+    // the deletion scrubs of the person; an id changes by the re-key alone; and a re-key must map
+    // to deleted ids.
+    const rekey = JSON.stringify({ bo: 'deleted-0123456789ab', 'bo-claude': 'deleted-0123456789ab-1' });
+    const underRekey = async (sql: string) => {
+      const r = await rejection(db.exec(`begin; select set_config('kj.rekey', '${rekey}', true); ${sql}; commit`));
+      await db.exec(`rollback`).catch(() => undefined);
+      return r;
+    };
+    for (const [sql, refused] of [
+      // A content column: the body that read "bo" never becomes the new id, with the sender or without.
+      [`update message set sent_by = 'bo-claude', body = 'deleted-0123456789ab' where id = '01M3'`, /never edited or removed/],
+      [`update audit_event set done_by = 'deleted-0123456789ab', detail = '{"owner": "deleted-0123456789ab", "x": 1}'`, /only ever added to/],
+      // The wrong pair: Bo's id to his agent's new one.
+      [`update audit_event set done_by = 'deleted-0123456789ab-1'`, /only ever added to/],
+      [`update audit_event set detail = '{"owner": "deleted-0123456789ab-1"}'`, /only ever added to/],
+      // Another actor's row: Ann's message, Ann's id.
+      [`update message set sent_by = 'deleted-0123456789ab' where id = '01M4'`, /never edited or removed/],
+      [`update message set sent_to = 'deleted-0123456789ab' where id = '01M3'`, /never edited or removed/],
+      // An archived kolab: no insert, no update but a re-key's, no delete of another's row.
+      [`insert into message(id, kolab_id, sent_by, sent_to, body) values ('01M9', 'bos', 'ann', 'bo', 'x')`, /kolab bos is archived/],
+      [`update notification_pref set level = 'none' where kolab_id = 'bos' and actor_id = 'ann'`, /kolab bos is archived/],
+      [`delete from notification_pref where kolab_id = 'bos' and actor_id = 'ann'`, /kolab bos is archived/],
+      [`delete from message where kolab_id = 'bos'`, /never edited or removed|kolab bos is archived/],
+      // An id changes only to exactly the new id it maps to.
+      [`update actor set id = 'deleted-0123456789ab-1' where id = 'bo'`, /id never changes/],
+      [`update actor set id = 'deleted-0123456789ab' where id = 'ann'`, /id never changes/],
+      [`update account set id = 'bob' where id = 'bo'`, /id never changes/],
+      // A re-key that maps to anything but a deleted id is none.
+      [`select set_config('kj.rekey', '{"ann": "bob"}', true); update message set sent_by = 'bob' where id = '01M4'`, /kj.rekey must map/],
+    ] as const) {
+      expect([sql, await underRekey(sql)]).toStrictEqual([sql, expect.stringMatching(refused)]);
+    }
+    // What the deletion scrubs of Bo in the archived kolab goes, under the re-key only.
+    await db.exec(`begin; select set_config('kj.rekey', '${rekey}', true); delete from notification_pref where kolab_id = 'bos' and actor_id = 'bo'; rollback`);
+    expect(await rejection(db.exec(`delete from notification_pref where kolab_id = 'bos' and actor_id = 'bo'`))).toMatch(/kolab bos is archived/);
+    // No role changes an actor's or an account's id otherwise, Kolab's own login included.
+    expect(await rejection(db.exec(`update actor set id = 'ann2' where id = 'ann'`))).toMatch(/id never changes/);
+    expect(await rejection(db.exec(`update account set id = 'acme2' where id = 'acme'`))).toMatch(/id never changes/);
+    expect(await rejection(db.exec(`begin; set local role kj_system; update actor set id = 'bo-x' where id = 'bo-claude'; commit`))).toMatch(/id never changes|permission denied/);
     await db.exec(`rollback`).catch(() => undefined);
     // No one takes a deleted account's kind of name.
     expect(await rejection(db.exec(`insert into actor(id, name, kind, owner_id, created_by) values ('deleted-x', 'x', 'agent', 'ann', 'admin')`))).toMatch(/a deleted account's, and no one else's/);
@@ -3273,7 +3259,10 @@ test('a database at 0059 reaches 0060: a person\'s account may be deleted, for g
     const gone = 'deleted-0123456789ab';
     // Every row carries the new id: the kolab's owner, the messages, the agent's owner, the audit row.
     expect((await db.query(`select owner_id as owner from kolab where id = 'bos'`)).rows).toStrictEqual([{ owner: gone }]);
-    expect((await db.query(`select sent_by from message order by id`)).rows).toStrictEqual([{ sent_by: gone }, { sent_by: `${gone}-1` }]);
+    expect((await db.query(`select sent_by, sent_to, body from message order by id`)).rows).toStrictEqual([
+      { sent_by: gone, sent_to: 'ann', body: 'Hi Ann' }, { sent_by: `${gone}-1`, sent_to: 'ann', body: 'Hi from the agent' },
+      { sent_by: gone, sent_to: 'ann', body: 'bo' }, { sent_by: 'ann', sent_to: gone, body: 'Hi Bo' },
+    ]);
     expect((await db.query(`select id, name, owner_id as owner from actor where id like 'deleted-%' order by id`)).rows)
       .toStrictEqual([{ id: gone, name: gone, owner: null }, { id: `${gone}-1`, name: `${gone}-1`, owner: gone }]);
     expect((await db.query(`select subject, done_by, detail from audit_event`)).rows).toStrictEqual([{ subject: `${gone}-1`, done_by: gone, detail: { owner: gone } }]);
@@ -3284,6 +3273,12 @@ test('a database at 0059 reaches 0060: a person\'s account may be deleted, for g
     expect(await rejection(db.exec(`insert into account(id, kind, name, created_by) values ('Bo', 'user', 'Bo', 'admin')`))).toMatch(/never given to anyone again/);
     expect(await rejection(db.exec(`insert into actor(id, name, kind, owner_id, created_by) values ('bo-y', 'bo-y', 'agent', 'ann', 'admin')`))).toMatch(/never given to anyone again/);
     expect(await rejection(db.exec(`delete from retired_name`))).toMatch(/never removed/);
+    // Nothing names an old id again where no foreign key would refuse it, but where a row names no
+    // actor: an audit row about a kolab that happens to be called bo.
+    expect(await rejection(db.exec(`insert into audit_event(action, subject, done_by) values ('policy.set', 'anns', 'bo')`))).toMatch(/audit_event.done_by: bo was a deleted account's/);
+    expect(await rejection(db.exec(`insert into audit_event(action, subject, done_by) values ('grant.set', 'bo-claude', 'ann')`))).toMatch(/audit_event.subject: bo-claude was a deleted account's/);
+    expect(await rejection(db.exec(`insert into audit_event(action, subject, detail, done_by) values ('grant.set', 'ann', '{"owner": "bo"}', 'ann')`))).toMatch(/audit_event.detail: bo was a deleted account's/);
+    await db.exec(`insert into audit_event(action, subject, done_by) values ('policy.set', 'bo', 'ann')`);
     // Never back, never renamed, re-keyed, re-owned or removed, never linked again.
     for (const sql of [`update account set archived_at = null where id = '${gone}'`, `update account set deleted_at = null where id = '${gone}'`, `update account set name = 'Bo B.' where id = '${gone}'`]) {
       expect([sql, await rejection(db.exec(sql))]).toStrictEqual([sql, expect.stringMatching(/a deleted account never changes again/)]);
@@ -3300,6 +3295,29 @@ test('a database at 0059 reaches 0060: a person\'s account may be deleted, for g
     expect(await rejection(db.exec(`update actor set owner_id = 'acme' where id = 'ann'`))).toMatch(/kind and owner never change|actor_owner_check/);
     // The audit log takes account.deleted.
     await db.exec(`insert into audit_event(action, kolab_id, subject, detail, done_by) values ('account.deleted', null, '${gone}', '{"left": 1}', '${gone}')`);
+  });
+});
+
+const PREFLIGHT_0060 = readFileSync(new URL('../../../deploy/preflight/0060.sql', import.meta.url), 'utf8');
+
+test('0060 refuses a database where an actor\'s or account\'s id starts with deleted-, naming each, as its preflight does, text for text; it changes nothing', async () => {
+  const migration = MIGRATIONS.find((x) => x.name === 'delete_account')!.sql;
+  const block = (sql: string) => [...sql.matchAll(/-- check:begin\n([\s\S]*?)-- check:end/g)].map((m) => m[1]);
+  expect(block(migration)).toHaveLength(1);
+  expect(block(PREFLIGHT_0060)).toStrictEqual(block(migration));
+  await withDb(async (db) => {
+    await migrate(db);
+    await db.exec(UNDO_0060);
+    expect((await db.query(PREFLIGHT_0060)).rows).toStrictEqual([]);
+    await db.exec(`insert into account(id, kind, name, created_by) values ('Deleted-ann', 'user', 'Ann', 'admin'), ('acme', 'organization', 'Acme', 'admin')`);
+    await db.exec(`insert into actor(id, name, kind, created_by) values ('Deleted-ann', 'Ann', 'person', 'admin')`);
+    await db.exec(`insert into actor(id, name, kind, owner_id, created_by) values ('deleted-bot', 'bot', 'agent', 'acme', 'admin')`);
+    expect((await db.query(PREFLIGHT_0060)).rows).toStrictEqual([{
+      ord: 1, why: 'an actor\'s or account\'s id starts with deleted-, which after 0060 names a deleted account only',
+      nodes: 'account Deleted-ann, actor Deleted-ann, actor deleted-bot',
+    }]);
+    expect(await rejection(migrate(db))).toMatch(/migration 0060: an actor's or account's id starts with deleted-, which after 0060 names a deleted account only: account Deleted-ann, actor Deleted-ann, actor deleted-bot\. Rename each first/);
+    expect((await db.query(`select max(version) as v from kj_migration`)).rows).toStrictEqual([{ v: 59 }]);
   });
 });
 
