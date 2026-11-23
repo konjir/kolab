@@ -21,13 +21,13 @@ tags: [local-kolab]
     visible: ".*Yes, from the phone.*"
     timeout: 20000
 - assertNotVisible: "Not sent.*"
-- tapOn: "Home"
+- tapOn: "Back"
 - tapOn: "#general.*"
 - extendedWaitUntil:
     visible: ".*Review done.*"
     timeout: 20000
 - assertVisible: ".*@ann can you look at the composer next.*"
-- tapOn: "Home"
+- tapOn: "Back"
 - tapOn: "You"
 - tapOn:
     id: "sign-out"

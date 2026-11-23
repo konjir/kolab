@@ -6,14 +6,19 @@ import * as SystemUI from 'expo-system-ui';
 import { useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import { AuthProvider, useAuth } from '@/auth/AuthProvider';
+import { restoreTheme } from '@/device-prefs';
 import { remember } from '@/auth/pending-link';
 import { KolabCache } from '@/kolab/live';
 import { teamShown } from '@/notification-open';
+import { BackButton, CancelButton } from '@/HeaderButtons';
+import { Horizon } from '@/Horizon';
 import { PushManager } from '@/PushManager';
-import { useAppTheme } from '@/theme';
+import { FAMILIES, useAppTheme } from '@/theme';
 
-// The splash stays up until the stored sign-ins are read, so the tabs never flash before the gate.
+// The splash stays up until the stored sign-ins are read, so the tabs never flash before the gate;
+// meanwhile the theme chosen on this phone, if it isn't the phone's own, is put back.
 void SplashScreen.preventAutoHideAsync().catch(() => undefined);
+void restoreTheme().catch(() => undefined);
 
 export default function RootLayout() {
   return (
@@ -65,7 +70,11 @@ function Gate() {
   return (
     <>
       <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface } }}>
+      {/* Pushed screens that show a header have a back chevron of the app's own, which VoiceOver
+          calls "Back": iOS's names itself after the screen it goes back to, which here is a route,
+          "(tabs)". Swiping back from the edge works as ever. */}
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.surface }, headerBackVisible: false, headerLeft: ({ canGoBack }) => (canGoBack ? <BackButton /> : undefined), headerShadowVisible: false,
+        headerStyle: { backgroundColor: colors.surface }, headerTintColor: colors.ink, headerTitleStyle: { fontFamily: FAMILIES.sans, fontWeight: '600' } }}>
         {/* First, so it is where the gate lands while signed out. */}
         <Stack.Protected guard={!signedIn}>
           <Stack.Screen name="sign-in" />
@@ -74,15 +83,19 @@ function Gate() {
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="c/[kind]/[name]" />
           <Stack.Screen name="browse" />
-          <Stack.Screen name="new" options={{ presentation: 'modal' }} />
+          <Stack.Screen name="new" options={{ presentation: 'modal', headerLeft: () => <CancelButton /> }} />
           <Stack.Screen name="profile/[actor]" />
           <Stack.Screen name="agent/[actor]" />
           <Stack.Screen name="team" />
           <Stack.Screen name="notifications" />
+          <Stack.Screen name="about" />
+          <Stack.Screen name="forward" options={{ presentation: 'modal', headerLeft: () => <CancelButton /> }} />
+          <Stack.Screen name="details/[name]" />
           <Stack.Screen name="dev" />
         </Stack.Protected>
       </Stack>
       {signedIn && <PushManager />}
+      <Horizon />
     </>
   );
 }

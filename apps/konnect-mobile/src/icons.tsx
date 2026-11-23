@@ -58,6 +58,12 @@ export const ICONS = {
   notifications: { ios: 'bell.badge', android: 'notifications_active' },
   signIn: { ios: 'person.badge.key', android: 'login' },
   update: { ios: 'arrow.down.circle', android: 'system_update' },
+  // Lists and settings
+  chevron: { ios: 'chevron.right', android: 'chevron_right' },
+  back: { ios: 'chevron.left', android: 'arrow_back' },
+  check: { ios: 'checkmark', android: 'check' },
+  info: { ios: 'info.circle', android: 'info' },
+  unreads: { ios: 'tray', android: 'inbox' },
   offline: { ios: 'wifi.slash', android: 'wifi_off' },
 } as const satisfies Record<string, Pair>;
 

@@ -12,8 +12,8 @@ tags: [local-kolab]
 - tapOn: "DMs"
 - tapOn: "Activity"
 - tapOn: "You"
-- assertVisible: "ann.*GitHub"
-- assertVisible: "hub.*"
+- assertVisible: "ann.*GitHub.*"
+- assertVisible: ".*hub, product"
 - tapOn:
     id: "sign-out"
 - extendedWaitUntil:

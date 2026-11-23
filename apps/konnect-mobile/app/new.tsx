@@ -5,7 +5,8 @@ import { useAuth } from '@/auth/AuthProvider';
 import { useChannels, useMembers } from '@/kolab/hooks';
 import { displayOf, handleOf } from '@/kolab/names';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
-import { Row, Screen, Section } from '@/ui';
+import { Avatar, presenceOf } from '@/Avatar';
+import { ListRow, Row, Screen, Section } from '@/ui';
 
 /** New message: pick a person, an agent or a channel, and the conversation opens. */
 export default function NewMessage() {
@@ -20,12 +21,13 @@ export default function NewMessage() {
   const open = (kind: 'dm' | 'channel', name: string) => router.replace({ pathname: '/c/[kind]/[name]', params: { kind, name } });
   return (
     <Screen title="New message" testID="new">
-      <Stack.Screen options={{ headerShown: true, title: 'New message', presentation: 'modal', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink }} />
+      <Stack.Screen options={{ headerShown: true, title: '', presentation: 'modal' }} />
       <TextInput testID="to" autoFocus value={q} onChangeText={setQ} placeholder="To: a person, an agent or #channel" placeholderTextColor={colors['ink-muted']} autoCapitalize="none" autoCorrect={false}
         style={[styles.input, { color: colors.ink, borderColor: colors.line, backgroundColor: colors['surface-raised'] }]} />
       <Section title="People and agents">
         {members.filter((m) => m.actor !== auth.current?.actor && (match(m.actor) || match(handleOf(m)))).map((m) => (
-          <Row key={m.actor} icon={m.kind === 'agent' ? 'agent' : 'person'} label={displayOf(m)} onPress={() => open('dm', m.actor)} />
+          <ListRow key={m.actor} testID={`to-${m.actor}`} leading={<Avatar member={m} owner={m.owner ? members.find((x) => x.actor === m.owner) : undefined} size={32} presence={m.kind === 'agent' ? presenceOf(m.state) : m.here ? 'here' : undefined} />}
+            title={displayOf(m)} unread subtitle={m.kind === 'agent' ? `Agent of ${m.owner ?? 'an organization'}` : undefined} onPress={() => open('dm', m.actor)} />
         ))}
       </Section>
       <Section title="Channels">

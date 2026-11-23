@@ -1,16 +1,19 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { Alert, StyleSheet, TextInput, View } from 'react-native';
+import { ActionSheetIOS, Alert, Platform, StyleSheet, TextInput, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { useApi, useChannels, useMembers } from '@/kolab/hooks';
+import { Avatar, presenceOf } from '@/Avatar';
 import { displayOf } from '@/kolab/names';
+import { conversationHref, memberHref } from '@/routes';
 import { FAMILIES, RADII, useAppTheme } from '@/theme';
-import { Body, Button, Hint, Problem, Row, Screen, Section } from '@/ui';
+import { Body, Button, Hint, ListRow, Problem, Row, Screen, Section } from '@/ui';
 
 /**
- * Team settings (phase 5): invite people by their GitHub usernames, see and withdraw the
- * invitations, remove a member or an agent, and leave. The owner's alone: the agent reply cap,
+ * Team settings (phase 5), from the team menu: invite people by their GitHub usernames, see and
+ * withdraw the invitations, the members (tap one to message them, see them, or remove them), and
+ * leave. The owner's alone: the agent reply cap,
  * archiving and deleting, each of the last two only once the team's name is typed. Kolab decides
  * who may do what, and its refusal is shown as it says it.
  */
@@ -20,6 +23,7 @@ export default function TeamSettings() {
   const me = auth.current?.actor ?? '';
   const { colors } = useAppTheme();
   const qc = useQueryClient();
+  const router = useRouter();
   const api = useApi();
   const members = useMembers(team).data?.members ?? [];
   const cap = useChannels(team).data?.agent_reply_cap;
@@ -37,6 +41,13 @@ export default function TeamSettings() {
     try { const s = await f(); if (s) setSaid(s); await qc.invalidateQueries({ queryKey: [team] }); } catch (e) { setProblem((e as Error).message); } finally { setBusy(undefined); }
   };
   const ask = (title: string, message: string, yes: string, f: () => void) => Alert.alert(title, message, [{ text: 'Cancel', style: 'cancel' }, { text: yes, style: 'destructive', onPress: f }]);
+  // A member's actions, as the platform offers a choice: an action sheet on iOS, a dialog on Android.
+  const choose = (title: string, options: { label: string; destructive?: boolean; run: () => void }[]) => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions({ title, options: [...options.map((o) => o.label), 'Cancel'], cancelButtonIndex: options.length, destructiveButtonIndex: options.findIndex((o) => o.destructive) },
+        (i) => options[i]?.run());
+    } else Alert.alert(title, undefined, [...options.map((o) => ({ text: o.label, style: o.destructive ? 'destructive' as const : 'default' as const, onPress: o.run })), { text: 'Cancel', style: 'cancel' }]);
+  };
   // Out of this team: on to another of the person's teams, or signed out when there is none.
   const leaveAfter = async (f: () => Promise<unknown>) => {
     await f();
@@ -46,8 +57,8 @@ export default function TeamSettings() {
   };
 
   return (
-    <Screen title={team} testID="team">
-      <Stack.Screen options={{ headerShown: true, title: 'Team settings', headerBackTitle: 'You', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink }} />
+    <Screen title={`${team} settings`} testID="team">
+      <Stack.Screen options={{ headerShown: true, title: '' }} />
       {problem && <Problem>{problem}</Problem>}
       {said && <Body>{said}</Body>}
 
@@ -66,14 +77,24 @@ export default function TeamSettings() {
         {(invitations.data?.invitations ?? []).map((i) => {
           const id = String(i.id ?? i.invitation ?? '');
           const who = String(i.login ?? i.account ?? i.invitee ?? id);
-          return <Row key={id} icon="invite" label={who} detail="withdraw" onPress={() => ask(`Withdraw ${who}'s invitation?`, 'They won\'t be able to accept it.', 'Withdraw', () => void run(id, async () => { await (await api(team)).withdrawInvitation(id); return `Withdrew ${who}'s invitation.`; }))} />;
+          return <Row key={id} testID={`invitation-${who}`} icon="invite" label={who} detail="Withdraw…" onPress={() => ask(`Withdraw ${who}'s invitation?`, 'They won\'t be able to accept it.', 'Withdraw', () => void run(id, async () => { await (await api(team)).withdrawInvitation(id); return `Withdrew ${who}'s invitation.`; }))} />;
         })}
       </Section>
       <Section title="Members">
-        {members.filter((m) => m.actor !== me).map((m) => (
-          <Row key={m.actor} icon="remove" label={displayOf(m)} detail="remove" onPress={() => ask(`Remove ${displayOf(m)} from ${team}?`, m.kind === 'agent' ? 'The agent is removed, and its sign-ins end.' : 'They lose the team and its messages.', 'Remove',
-            () => void run(m.actor, async () => { const k = await api(team); await (m.kind === 'agent' ? k.removeAgent(m.actor) : k.removeMember(m.actor)); return `Removed ${displayOf(m)}.`; }))} />
-        ))}
+        {members.filter((m) => m.actor !== me).map((m) => {
+          const remove = () => ask(`Remove ${displayOf(m)} from ${team}?`, m.kind === 'agent' ? 'The agent is removed, and its sign-ins end.' : 'They lose the team and its messages.', 'Remove',
+            () => void run(m.actor, async () => { const k = await api(team); await (m.kind === 'agent' ? k.removeAgent(m.actor) : k.removeMember(m.actor)); return `Removed ${displayOf(m)}.`; }));
+          const owner = m.owner ? members.find((x) => x.actor === m.owner) : undefined;
+          return (
+            <ListRow key={m.actor} testID={`member-${m.actor}`} leading={<Avatar member={m} owner={owner} size={32} presence={m.kind === 'agent' ? presenceOf(m.state) : m.here ? 'here' : undefined} />}
+              title={displayOf(m)} unread subtitle={m.kind === 'agent' ? `Agent of ${m.owner ?? 'an organization'}` : m.here ? 'Signed in here' : 'Person'}
+              onPress={() => choose(displayOf(m), [
+                { label: 'Message', run: () => router.push(conversationHref('dm', m.actor)) },
+                { label: m.kind === 'agent' ? 'View agent' : 'View profile', run: () => router.push(memberHref(m.actor, m.kind)) },
+                { label: `Remove from ${team}`, destructive: true, run: remove },
+              ])} />
+          );
+        })}
       </Section>
 
       <Section title="Owner only">
@@ -90,7 +111,9 @@ export default function TeamSettings() {
         </View>
       </Section>
 
-      <Button quiet label={`Leave ${team}`} busy={busy === 'leave'} onPress={() => ask(`Leave ${team}?`, 'You lose the team and its messages until someone invites you back.', 'Leave', () => void run('leave', () => leaveAfter(async () => (await api(team)).leave())))} />
+      <Section title="You">
+        <Row testID="leave" icon="leave" label={busy === 'leave' ? `Leaving ${team}…` : `Leave ${team}`} destructive onPress={() => ask(`Leave ${team}?`, 'You lose the team and its messages until someone invites you back.', 'Leave', () => void run('leave', () => leaveAfter(async () => (await api(team)).leave())))} />
+      </Section>
     </Screen>
   );
 }

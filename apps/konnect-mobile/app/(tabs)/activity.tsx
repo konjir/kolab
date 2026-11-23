@@ -7,10 +7,27 @@ import { displayName } from '@/kolab/names';
 import { quoteOf } from '@/kolab/thread';
 import { activityOf } from '@/kolab/unread';
 import { at, contextOf, ownAgents, whereOf, yourAgentsActivity } from '@/kolab/your-agents';
+import type { Member } from '@konjir/types';
+import { Avatar, presenceOf } from '@/Avatar';
+import { Icon, type IconName } from '@/icons';
+import { conversationHref, memberHref, shortWhen } from '@/routes';
 import { FAMILIES, useAppTheme } from '@/theme';
-import { Hint, Notice, Problem, Row, Screen, Section } from '@/ui';
+import { Hint, ListRow, Notice, Problem, Screen, Section } from '@/ui';
 
-const KIND = { mention: { icon: 'mention', says: 'mentioned you' }, reply: { icon: 'reply', says: 'replied' }, capped: { icon: 'capped', says: 'past the reply cap, woke no agent' } } as const;
+/** Who a row is from, as their picture with what happened as a small mark; their name's initials before members are read. */
+function Who({ actor, members, mark }: { actor: string; members: Member[] | undefined; mark: IconName }) {
+  const { colors } = useAppTheme();
+  const m = members?.find((x) => x.actor === actor);
+  const owner = m?.owner ? members?.find((x) => x.actor === m.owner) : undefined;
+  return (
+    <View style={{ width: 40, height: 40 }}>
+      {m ? <Avatar member={m} owner={owner} size={40} /> : <Icon name="person" size={24} tintColor={colors['ink-muted']} />}
+      <View style={[styles.mark, { backgroundColor: colors.accent, borderColor: colors.surface }]}><Icon name={mark} size={10} tintColor={colors['on-accent']} /></View>
+    </View>
+  );
+}
+
+const KIND = { mention: { icon: 'mention', says: 'mentioned you' }, reply: { icon: 'reply', says: 'replied' }, capped: { icon: 'capped', says: 'went past the reply cap' } } as const;
 
 /**
  * Activity: unread mentions of you, replies to you, and channel messages past an agent's reply
@@ -52,9 +69,11 @@ export default function Activity() {
             {!answers.isLoading && items.length === 0 && <Hint>Nothing waits for you: no unread mentions, replies or capped messages.</Hint>}
             {items.map(({ kind, item }) => {
               const where = 'channel' in item ? `#${item.channel}` : 'a direct message';
+              const name = displayName(item.from, members);
               return (
-                <Row key={`${kind}-${item.id}`} icon={KIND[kind].icon} label={`${displayName(item.from, members)} ${KIND[kind].says} in ${where}: ${quoteOf(item.message, 60)}`}
-                  onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: 'channel' in item ? { kind: 'channel', name: item.channel } : { kind: 'dm', name: item.from } })} />
+                <ListRow key={`${kind}-${item.id}`} testID={`activity-${item.id}`} leading={<Who actor={item.from} members={members} mark={KIND[kind].icon} />}
+                  title={`${name} ${KIND[kind].says} in ${where}`} unread subtitle={quoteOf(item.message, 100)} time={shortWhen(item.sent_at)}
+                  onPress={() => router.push('channel' in item ? conversationHref('channel', item.channel) : conversationHref('dm', item.from))} />
               );
             })}
           </Section>
@@ -66,6 +85,7 @@ export default function Activity() {
 
 function YourAgents({ team }: { team: string | undefined }) {
   const router = useRouter();
+  const { colors } = useAppTheme();
   const members = useMembers(team).data?.members;
   const status = useAgentStatus(team);
   const activity = useAgentActivity(team);
@@ -80,15 +100,19 @@ function YourAgents({ team }: { team: string | undefined }) {
       {rows.map((r) => {
         const agent = at(r.agent, members);
         if (r.kind === 'stuck') {
-          const label = r.reason === 'capped' ? `${agent} is at the reply cap: ${r.count} past it woke no agent` : `${agent} isn't running: ${r.count} waiting`;
-          return <Row key={`stuck-${r.reason}-${r.agent}`} icon={r.reason === 'capped' ? 'capped' : 'stateStopped'} label={label} onPress={() => router.push({ pathname: '/agent/[actor]', params: { actor: r.agent } })} />;
+          const m = members?.find((x) => x.actor === r.agent);
+          const title = r.reason === 'capped' ? `${agent} is at the reply cap` : `${agent} isn't running`;
+          const sub = r.reason === 'capped' ? `${r.count} past the cap woke no agent` : `${r.count} waiting for it`;
+          return <ListRow key={`stuck-${r.reason}-${r.agent}`} leading={m ? <Avatar member={m} size={40} presence={presenceOf(m.state)} /> : <Icon name="agent" size={24} tintColor={colors.accent} />}
+            title={title} unread subtitle={sub} subTone="alert" onPress={() => router.push(memberHref(r.agent, 'agent'))} />;
         }
         const i = r.item;
-        const says = r.kind === 'dm' ? `to ${agent}` : r.kind === 'mention' ? `mentioned ${agent} in ${whereOf(i, members)}` : `capped in ${whereOf(i, members)}, woke no agent`;
+        const says = r.kind === 'dm' ? `to ${agent}` : r.kind === 'mention' ? `mentioned ${agent} in ${whereOf(i, members)}` : `capped in ${whereOf(i, members)}`;
         const to = contextOf(i);
         return (
-          <Row key={`${r.kind}-${i.id}`} icon={r.kind === 'dm' ? 'message' : r.kind === 'mention' ? 'mention' : 'capped'} label={`${at(i.from, members)} ${says}: ${quoteOf(i.message, 60)}`}
-            onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: to.kind === 'channel' ? { ...to, only: r.agent } : to })} />
+          <ListRow key={`${r.kind}-${i.id}`} leading={<Who actor={i.from} members={members} mark={r.kind === 'dm' ? 'message' : r.kind === 'mention' ? 'mention' : 'capped'} />}
+            title={`${at(i.from, members)} ${says}`} unread subtitle={quoteOf(i.message, 100)} time={shortWhen(i.sent_at)}
+            onPress={() => router.push(to.kind === 'channel' ? conversationHref('channel', to.name, { only: r.agent }) : conversationHref('dm', to.name, to.as ? { as: to.as } : undefined))} />
         );
       })}
     </Section>
@@ -99,4 +123,5 @@ const styles = StyleSheet.create({
   filters: { flexDirection: 'row', gap: 8 },
   chip: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 5 },
   chipText: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 14 },
+  mark: { position: 'absolute', right: -3, bottom: -3, width: 18, height: 18, borderRadius: 9, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
 });

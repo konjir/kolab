@@ -1,34 +1,45 @@
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Redirect, Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { StyleSheet, Text, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { Avatar } from '@/Avatar';
 import { useMembers } from '@/kolab/hooks';
-import { displayOf } from '@/kolab/names';
-import { useAppTheme } from '@/theme';
+import { displayOf, handleOf } from '@/kolab/names';
+import { conversationHref, memberHref } from '@/routes';
+import { FAMILIES, useAppTheme } from '@/theme';
 import { Button, Hint, Row, Screen, Section } from '@/ui';
 
-/** A person or an agent of the team: an agent's owner and state, and a Message button. */
+/** A person of the team: their picture, whether they're here, their agents, and a Message button. An agent's page is the agent screen. */
 export default function Profile() {
   const { actor } = useLocalSearchParams<{ actor: string }>();
   const auth = useAuth();
-  const team = auth.current?.team ?? "";
+  const team = auth.current?.team ?? '';
   const { colors } = useAppTheme();
   const router = useRouter();
-  const m = useMembers(team).data?.members.find((x) => x.actor === actor);
+  const members = useMembers(team).data?.members;
+  const m = members?.find((x) => x.actor === actor);
+  if (m?.kind === 'agent') return <Redirect href={memberHref(m.actor, 'agent')} />;
+  const agents = (members ?? []).filter((x) => x.kind === 'agent' && x.owner === actor);
   return (
     <Screen title={m ? displayOf(m) : actor} testID="profile">
-      <Stack.Screen options={{ headerShown: true, title: '', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink }} />
-      {m && <Avatar member={m} size={72} />}
+      <Stack.Screen options={{ headerShown: true, title: '' }} />
       {!m && <Hint>Not a member of {team} now.</Hint>}
       {m && (
-        <Section title={m.kind === 'agent' ? 'Agent' : 'Person'}>
-          <Row icon={m.kind === 'agent' ? 'agent' : 'person'} label="Name" detail={m.actor} />
-          {m.kind === 'agent' && <Row icon="person" label="Owner" detail={m.owner ?? 'an organization'} />}
-          {m.kind === 'agent' && <Row icon="stateRunning" label="State" detail={m.state ?? 'not running'} />}
-          <Row icon="signIn" label="Signed in here" detail={m.here ? 'yes' : 'no'} />
+        <View style={styles.header}>
+          <Avatar member={m} size={72} presence={m.here ? 'here' : undefined} />
+          <Text style={[styles.sub, { color: colors['ink-muted'] }]}>{m.you ? 'You' : m.here ? 'Signed in here' : 'Not signed in'}{m.login ? ` · @${m.login} on GitHub` : ''}</Text>
+        </View>
+      )}
+      {m && !m.you && <Button testID="message" label={`Message ${displayOf(m)}`} onPress={() => router.replace(conversationHref('dm', m.actor))} />}
+      {agents.length > 0 && (
+        <Section title={m?.you ? 'Your agents' : 'Their agents'}>
+          {agents.map((a) => <Row key={a.actor} testID={`profile-agent-${a.actor}`} icon="agent" label={`@${handleOf(a)}`} detail={a.state ?? 'not running'} chevron onPress={() => router.push(memberHref(a.actor, 'agent'))} />)}
         </Section>
       )}
-      {m && m.kind === 'agent' && m.owner === auth.current?.actor && <Button quiet testID="open-agent" label="What it is doing" onPress={() => router.replace({ pathname: '/agent/[actor]', params: { actor: m.actor } })} />}
-      {m && !m.you && <Button testID="message" label={`Message ${displayOf(m)}`} onPress={() => router.replace({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: m.actor } })} />}
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  header: { gap: 10 },
+  sub: { fontFamily: FAMILIES.sans, fontSize: 15 },
+});

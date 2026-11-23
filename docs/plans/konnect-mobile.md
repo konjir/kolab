@@ -198,44 +198,49 @@ Every step is an Nx target of `@konjir/konnect-mobile`, and the workflows only r
 
 | Tab | What it shows |
 | --- | --- |
-| **Home** | Four sections: Unreads (optional), Channels you follow, Direct messages, Agents. Unread conversations are bold with a badge for mentions. At the end: "Browse channels" and "New message". |
-| **DMs** | Every conversation, most recent first, each with its last message |
-| **Activity** | As above |
-| **You** | Your teams and sign-ins, notification settings, and the app's version and update channel |
+| **Home** | The team at the top (tap it for the team menu) and a pencil for a new message, "Jump to…", then Channels you follow, Direct messages (people and others' agents) and Your agents, each thing once. Unreads, a section of its own that takes what is unread out of the others, is a setting under You, off by default. Unread rows are bold; mentions and DMs have a badge. |
+| **DMs** | Every conversation, most recent first, Slack's way: a picture with a presence dot, the name, one line of the last message, the time and a badge |
+| **Activity** | As above, each row with the sender's picture, what happened, a line of the message and the time |
+| **You** | Your GitHub account, Home's Unreads setting, the theme (match the phone, Predawn or Daybreak), About (version, variant, update channel, server, limits) and Sign out |
+
+**The team menu** (Lee, 2026-11-23), from the team at the top of Home: the team shown, with Invite people, Team settings and Notifications; switching teams; invitations; making a team. Everything about a team is there, not under You.
+
+**The horizon** (Lee, 2026-11-23): the brand's five bands lie along the bottom edge of every screen, over it, moving nothing; the phone's corners may clip them.
 
 **Screens:**
 - **Conversation:**
   - The message list: an inverted FlashList, grouped by sender and minute, with day separators and a "New" line at your read position.
   - Agents' messages are rendered as markdown. A capped message is marked as not having woken anyone.
-  - Long-press a message to Reply or Copy.
+  - Each sender's picture beside their messages. The title opens the channel's details, or the person or agent of a DM.
+  - Long-press a message to Reply, Forward or Copy. Forward (Lee, 2026-11-23) sends it to anyone but its sender, or a channel, as a new message of yours quoting it, with an optional note; only the note's mentions notify.
   - Unread messages are marked read as they are scrolled past (S2).
 - **Composer:**
   - `@` autocompletes people and agents, and `#` completes channels.
   - A character count appears near 32,000.
   - A message that couldn't be sent stays, with Retry.
   - Sent messages show at once and are reconciled when the server returns its id.
-- **Channel details:** who made it and when, Follow, and the team's agent reply cap (only the owner can change it).
-- **Profile:** person or agent. For an agent: its owner, its state and whether it is signed in. Every profile has a Message button.
-- **Browse channels:** every channel, with Follow or Unfollow, and Create.
+- **Channel details:** Following (a switch), Notifications, and which of your agents' messages to show alone.
+- **Profile:** a person: whether they're here, their agents, and a Message button. Every agent, anyone's, has the agent screen.
+- **Browse channels:** every channel with a switch to follow it, and Create.
 - **Team settings:**
-  - Invite by GitHub username, pending invitations, remove a member or agent.
+  - Invite by GitHub username, pending invitations, and the members: tap one to message, view or remove them.
   - Owner only: the reply cap, Archive and Delete. Both need the team's name typed to confirm.
 - **Sign in, or add a team:** the server's consent page in the auth session, for an existing team, an invitation or a new team.
 
 **Live updates:** while the app is in the foreground, it holds one listen stream per signed-in team. Each update invalidates that team's queries for the answers resource and the open conversation. The streams close in the background and reopen, with a refetch, when the app comes back. In the background, push takes over.
 
 **Your agents** (Lee, 2026-11-22, in #211). A person sees what their own agents say and hear. Kolab's owner tools serve it: `konjir_list_my_agents_status`, `konjir_agent_activity`, `konjir_list_agent_conversations` and `konjir_list_agent_messages`. An agent `Member` has `owner_reads`, and DM results say who else can read them. Reading never marks anything read for the agent, and the owner's listen stream is signalled on the agent's traffic. The app's adapter is `src/kolab/agents.ts`.
-1. **Home's Agents section.** Your own agents come first. Each shows its state dot and one line of what it did last ("replied to @bo in #general · 2m"), with a "needs you" badge when an unread mention, a capped message, or unread messages while it isn't running wait. Other people's agents show their state only, and open their profile.
+1. **Home's Your agents section.** Your own agents alone, each with its state as a dot on its picture and one line of what it did last ("replied to @bo in #general · 2m"), or, in the alert colour, what needs you: an unread mention, a capped message, or unread messages while it isn't running. Your DM's unread with it is its badge. Other people's agents are under Direct messages once you talk with them.
 2. **The agent screen.** A header with its name, state and whether it is here, and a **Message @you/bot** button (your own DM with it). Three tabs:
    - **Activity**: the live timeline, each row labelled with where it was ("#general", "DM with @bo"). A tap opens that conversation.
    - **Conversations**: its DMs.
    - **Channels**: where it is active, with its unread backlog.
 
-   Someone else's agent shows only its profile and a Message button.
-3. **Reading one of its DMs.** The conversation screen, with the banner "@you/bot's conversation with @bo · read-only". In place of the composer there are two buttons: **Message @bo yourself**, and **Tell @you/bot**, which opens your DM with the agent. Nothing is marked read.
+   Someone else's agent has the same screen: whose it is, its state and a Message button, without the tabs. Kolab's owner tools are never asked about it.
+3. **Reading one of its DMs.** The conversation screen, with the banner "@you/bot's conversation with @bo · read-only". In place of the composer, **Message @bo yourself**. A long-press forwards a message to anyone, your agent included (Lee, 2026-11-23, in place of a "Tell @you/bot" button). Nothing is marked read.
 4. **Activity tab.** A "Your agents" filter: DMs to your agents, mentions of them, capped messages, and agents not running with messages waiting.
 5. **Notifications.** Per agent: never, when it's stuck or capped (the default), or every message to it, in Kolab's notification prefs (`agents`). A push about an agent opens its DM read-only, the channel on its messages, or its screen.
-6. **Channels.** An "Only @you/bot" filter in a channel where one of your agents has spoken.
+6. **Channels.** An "Only @you/bot's messages" choice on the channel's details, shown as a banner with "Show all" while on.
 7. **Disclosure.** In any DM with an agent, a small, permanent line under the header: "@owner, its owner, can read this conversation", driven by Kolab's fields. That includes DMing someone else's agent, and isn't shown to the owner.
 
 ## Server work

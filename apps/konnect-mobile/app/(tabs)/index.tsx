@@ -1,33 +1,34 @@
-import { useRouter, type Href } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/auth/AuthProvider';
-import { Icon, type IconName } from '@/icons';
+import { Avatar, presenceOf } from '@/Avatar';
+import { useShowUnreads } from '@/device-prefs';
+import { Icon } from '@/icons';
+import { homeOf, type HomeChannel, type HomeDm } from '@/kolab/home';
 import { useAgentStatus, useAnswers, useChannels, useConversations, useMembers } from '@/kolab/hooks';
-import { lastLine, needsYouCount } from '@/kolab/your-agents';
-import { displayName, displayOf, handleOf } from '@/kolab/names';
-import { unreadOf, type Unread } from '@/kolab/unread';
-import { setBadge } from '@/push';
-import { FAMILIES, RADII, useAppTheme } from '@/theme';
+import { displayName, displayOf } from '@/kolab/names';
 import { badgeOf } from '@/kolab/teams';
-import { TeamSwitcher, useMyTeams } from '@/TeamSwitcher';
-import { Hint, Problem, Screen, Section } from '@/ui';
-
-const STATE_ICON: Record<string, IconName> = { working: 'stateWorking', running: 'stateRunning', idle: 'stateIdle' };
+import { unreadOf } from '@/kolab/unread';
+import { lastLine, needsYouCount, needsYouWords } from '@/kolab/your-agents';
+import { setBadge } from '@/push';
+import { conversationHref, memberHref } from '@/routes';
+import { TeamMenu, useMyTeams } from '@/TeamSwitcher';
+import { FAMILIES, RADII, useAppTheme } from '@/theme';
+import { Badge, Hint, ListRow, Problem, Screen, Section } from '@/ui';
 
 /**
- * Home, in Slack's order: the team switcher at top left, "Jump to…" (which filters what's below,
- * on the phone), then Unreads, Channels you follow, Direct messages and Agents. Unread rows are
- * bold, with a badge for mentions. The pencil at bottom right starts a new message.
+ * Home, in Slack's order: the team (tap it for the team menu: switch, invite, settings) and a new
+ * message at the top, "Jump to…" (which filters what's below, on the phone), then Channels you
+ * follow, Direct messages and Your agents, each thing once. Unread rows are bold; mentions and
+ * direct messages have a badge. Unreads, a section of their own, is a setting under You.
  */
 export default function Home() {
   const auth = useAuth();
   const router = useRouter();
   const qc = useQueryClient();
   const { colors } = useAppTheme();
-  const insets = useSafeAreaInsets();
   const team = auth.current?.team;
   const channels = useChannels(team);
   const members = useMembers(team);
@@ -36,112 +37,123 @@ export default function Home() {
   const me = auth.current?.actor ?? '';
   const statuses = useAgentStatus(team).data;
   const myTeams = useMyTeams().data?.teams;
+  const [showUnreads] = useShowUnreads();
   // The app's badge: what is unread across the person's teams, as a push sets it.
   const unreadTotal = myTeams ? badgeOf(myTeams) : unreadOf(answers.data).total;
   useEffect(() => { void setBadge(unreadTotal); }, [unreadTotal]);
   const [jump, setJump] = useState('');
-  const [switching, setSwitching] = useState(false);
-  // Something unread in a team other than the one shown: a dot on the switcher.
+  const [menu, setMenu] = useState(false);
+  // Something unread in a team other than the one shown: a dot on the team's tile.
   const elsewhere = (myTeams ?? []).some((t) => !t.current && t.unread > 0);
   if (!team) return null; // The root layout's gate shows the sign-in screen while no team is signed in.
 
   const all = members.data?.members ?? [];
-  const unread = unreadOf(answers.data);
-  const q = jump.trim().toLowerCase();
-  const match = (s: string) => !q || s.toLowerCase().includes(q);
-  const followed = (channels.data?.channels ?? []).filter((c) => c.following && match(c.channel));
-  // Direct messages: the person's conversations with people, newest first (S3); agents have their own section.
-  const dms = (conversations.data?.conversations ?? []).filter((c) => all.find((m) => m.actor === c.with)?.kind !== 'agent' && match(c.with));
-  // Your own agents first, then everyone else's.
-  const agents = all.filter((m) => m.kind === 'agent' && match(handleOf(m))).sort((x, y) => Number(y.owner === me) - Number(x.owner === me));
-  const unreadRows = [
-    ...[...unread.channels].filter(([c]) => match(c)).map(([c, u]) => ({ key: `c-${c}`, label: `#${c}`, href: `/c/channel/${c}`, u, icon: 'channel' as IconName })),
-    ...[...unread.dms].filter(([p]) => match(p) || match(displayName(p, all))).map(([p, u]) => ({ key: `d-${p}`, label: displayName(p, all), href: `/c/dm/${p}`, u, icon: (all.find((m) => m.actor === p)?.kind === 'agent' ? 'agent' : 'person') as IconName })),
-  ];
+  const home = homeOf({
+    me, channels: channels.data?.channels ?? [], members: all, conversations: conversations.data?.conversations ?? [],
+    unread: unreadOf(answers.data), statuses, query: jump, showUnreads,
+  });
+  const searching = jump.trim().length > 0;
   const problem = [channels, members, answers].find((x) => x.error)?.error as Error | undefined;
+  const open = (r: HomeChannel | HomeDm) => router.push(r.kind === 'channel' ? conversationHref('channel', r.name) : conversationHref('dm', r.with));
+
+  const header = (
+    <View style={styles.header}>
+      <Pressable testID="team-switcher" accessibilityRole="button" accessibilityLabel={`Teams: ${team}${elsewhere ? ', unread in another team' : ''}`} onPress={() => setMenu(true)} style={styles.team}>
+        <View style={[styles.tile, { backgroundColor: colors.accent }]}>
+          <Text style={[styles.tileText, { color: colors['on-accent'] }]}>{team.slice(0, 2).toUpperCase()}</Text>
+          {elsewhere && <View style={[styles.elsewhere, { backgroundColor: colors.boundary, borderColor: colors.surface }]} />}
+        </View>
+        <Text numberOfLines={1} accessibilityRole="header" style={[styles.teamName, { color: colors.ink }]}>{team}</Text>
+        <Icon name="teamSwitcher" size={16} tintColor={colors['ink-muted']} />
+      </Pressable>
+      <Pressable testID="new-message" accessibilityRole="button" accessibilityLabel="New message" hitSlop={8} onPress={() => router.push('/new')} style={[styles.compose, { backgroundColor: colors['surface-raised'], borderColor: colors.line }]}>
+        <Icon name="newMessage" size={20} tintColor={colors.accent} />
+      </Pressable>
+    </View>
+  );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }}>
-      <Screen title={team} testID="home" refreshControl={<RefreshControl refreshing={channels.isRefetching} onRefresh={() => void qc.invalidateQueries({ queryKey: [team] })} />}>
-        <View style={styles.top}>
-          <Pressable testID="team-switcher" accessibilityRole="button" accessibilityLabel={`Teams: ${team}${elsewhere ? ', unread in another team' : ''}`} onPress={() => setSwitching(true)} style={[styles.switcher, { backgroundColor: colors.accent }]}>
-            <Text style={[styles.switcherText, { color: colors['on-accent'] }]}>{team.slice(0, 2).toUpperCase()}</Text>
-            {elsewhere && <View style={[styles.elsewhere, { backgroundColor: colors.boundary, borderColor: colors.surface }]} />}
-          </Pressable>
-          <TextInput testID="jump" value={jump} onChangeText={setJump} placeholder="Jump to…" placeholderTextColor={colors['ink-muted']} autoCapitalize="none" autoCorrect={false}
-            style={[styles.jump, { color: colors.ink, backgroundColor: colors['surface-raised'], borderColor: colors.line }]} />
-        </View>
+      <Screen header={header} testID="home" refreshControl={<RefreshControl refreshing={channels.isRefetching} onRefresh={() => void qc.invalidateQueries({ queryKey: [team] })} />}>
+        <TextInput testID="jump" value={jump} onChangeText={setJump} placeholder="Jump to…" placeholderTextColor={colors['ink-muted']} autoCapitalize="none" autoCorrect={false} clearButtonMode="while-editing"
+          style={[styles.jump, { color: colors.ink, backgroundColor: colors['surface-raised'], borderColor: colors.line }]} />
         {problem && <Problem>{problem.message}</Problem>}
-        {unreadRows.length > 0 && (
+        {home.unreads.length > 0 && (
           <Section title="Unreads">
-            {unreadRows.map((r) => <Item key={r.key} icon={r.icon} label={r.label} unread={r.u} onPress={() => router.push(r.href as Href)} />)}
+            {home.unreads.map((r) => r.kind === 'channel'
+              ? <ChannelRow key={`c-${r.name}`} row={r} onPress={() => open(r)} />
+              : <DmRow key={`d-${r.with}`} row={r} name={displayName(r.with, all)} onPress={() => open(r)} />)}
           </Section>
         )}
         <Section title="Channels">
-          {followed.map((c) => <Item key={c.channel} icon="channel" label={c.channel} unread={unread.channels.get(c.channel)} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'channel', name: c.channel } })} />)}
-          {!channels.isLoading && followed.length === 0 && <Hint>{q ? 'No channel matches.' : 'You follow no channel.'}</Hint>}
-          <Item icon="browseChannels" label="Browse channels" onPress={() => router.push('/browse')} />
+          {home.channels.map((r) => <ChannelRow key={r.name} row={r} onPress={() => open(r)} />)}
+          {!channels.isLoading && home.channels.length === 0 && <Hint>{searching ? 'No channel matches.' : showUnreads && home.unreads.some((u) => u.kind === 'channel') ? 'Every channel you follow is under Unreads.' : 'You follow no channel.'}</Hint>}
+          {!searching && <ChannelRow row={{ kind: 'channel', name: 'Browse channels' }} browse onPress={() => router.push('/browse')} />}
         </Section>
         <Section title="Direct messages">
-          {dms.map((c) => <Item key={c.with} icon="person" label={displayName(c.with, all)} detail={all.find((m) => m.actor === c.with)?.here ? 'here' : undefined}
-            unread={c.unread ? { count: c.unread, mentions: c.unread } : undefined} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: c.with } })} />)}
-          {!conversations.isLoading && dms.length === 0 && <Hint>{q ? 'Nobody matches.' : 'No direct messages yet: the pencil starts one.'}</Hint>}
+          {home.dms.map((r) => <DmRow key={r.with} row={r} name={displayName(r.with, all)} onPress={() => open(r)} />)}
+          {!conversations.isLoading && home.dms.length === 0 && <Hint>{searching ? 'Nobody matches.' : 'No direct messages yet: the pencil at the top starts one.'}</Hint>}
         </Section>
-        <Section title="Agents">
-          {agents.map((a) => {
-            // Yours: what it did last, and a badge when something needs you. Others': their state alone.
-            const s = a.owner === me ? statuses?.find((x) => x.agent === a.actor) : undefined;
-            const needs = needsYouCount(s?.needs_you);
-            return (
-              <Item key={a.actor} testID={`agent-${a.actor}`} icon={STATE_ICON[s?.state ?? a.state ?? ''] ?? 'stateStopped'} label={displayOf(a)} detail={s?.state ?? a.state ?? 'not running'}
-                sub={a.owner === me ? lastLine(s) : undefined} flag={needs ? 'needs you' : undefined} unread={unread.dms.get(a.actor)}
-                onPress={() => router.push(a.owner === me ? { pathname: '/agent/[actor]', params: { actor: a.actor } } : { pathname: '/profile/[actor]', params: { actor: a.actor } })} />
-            );
-          })}
-          {!members.isLoading && agents.length === 0 && <Hint>{q ? 'No agent matches.' : 'No agents in this team yet.'}</Hint>}
-        </Section>
-        <View style={{ height: 72 }} />
+        {(home.agents.length > 0 || all.some((m) => m.kind === 'agent' && m.owner === me)) && (
+          <Section title="Your agents">
+            {home.agents.map((a) => {
+              const needs = needsYouCount(a.status?.needs_you);
+              const state = a.status?.state ?? a.member.state ?? null;
+              return (
+                <ListRow key={a.member.actor} testID={`agent-${a.member.actor}`} leading={<Avatar member={a.member} size={32} presence={presenceOf(state)} />}
+                  title={displayOf(a.member)} unread={!!a.unread?.count || needs > 0} badge={a.unread?.mentions}
+                  subtitle={needs ? `Needs you: ${needsYouWords(a.status?.needs_you).join(', ')}` : lastLine(a.status) ?? state ?? 'not running'} subTone={needs ? 'alert' : undefined}
+                  accessibilityLabel={`${displayOf(a.member)}, ${state ?? 'not running'}${a.unread?.count ? `, ${a.unread.count} unread` : ''}${needs ? ', needs you' : ''}`}
+                  onPress={() => router.push(memberHref(a.member.actor, 'agent'))} />
+              );
+            })}
+            {home.agents.length === 0 && <Hint>No agent of yours matches.</Hint>}
+          </Section>
+        )}
       </Screen>
-      <TeamSwitcher open={switching} onClose={() => setSwitching(false)} />
-      <Pressable testID="new-message" accessibilityRole="button" accessibilityLabel="New message" onPress={() => router.push('/new')} style={[styles.fab, { backgroundColor: colors.accent, bottom: insets.bottom + 72 }]}>
-        <Icon name="newMessage" size={24} tintColor={colors['on-accent']} />
-      </Pressable>
+      <TeamMenu open={menu} onClose={() => setMenu(false)} />
     </View>
   );
 }
 
-/** A row of Home: bold when unread, with a badge counting mentions. */
-function Item({ icon, label, detail, sub, flag, unread, onPress, testID }: { icon: IconName; label: string; detail?: string; sub?: string; flag?: string; unread?: Unread; onPress: () => void; testID?: string }) {
+/** A channel's row: bold when unread, with a badge for mentions of you. */
+function ChannelRow({ row, browse, onPress }: { row: HomeChannel; browse?: boolean; onPress: () => void }) {
   const { colors } = useAppTheme();
-  const bold = !!unread?.count;
+  const bold = !!row.unread?.count;
   return (
-    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={`${label}${bold ? `, ${unread!.count} unread` : ''}${flag ? `, ${flag}` : ''}`} onPress={onPress}
+    <Pressable testID={browse ? 'browse-channels' : undefined} accessibilityRole="button" accessibilityLabel={browse ? row.name : `#${row.name}${bold ? `, ${row.unread!.count} unread` : ''}`} onPress={onPress}
       style={({ pressed }) => [styles.item, pressed && { backgroundColor: colors['accent-soft'] }]}>
-      <Icon name={icon} size={18} tintColor={bold ? colors.ink : colors['ink-muted']} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
-      <View style={{ flex: 1 }}>
-        <Text numberOfLines={1} style={[styles.label, { color: bold ? colors.ink : colors['ink-muted'], fontWeight: bold ? '700' : '400' }]}>{label}</Text>
-        {sub && <Text numberOfLines={1} style={[styles.sub, { color: colors['ink-muted'] }]}>{sub}</Text>}
-      </View>
-      {detail && <Text style={[styles.detail, { color: colors['ink-muted'] }]}>{detail}</Text>}
-      {flag && <View style={[styles.flag, { borderColor: colors.boundary }]}><Text style={[styles.flagText, { color: colors.boundary }]}>{flag}</Text></View>}
-      {!!unread?.mentions && <View style={[styles.badge, { backgroundColor: colors.boundary }]}><Text style={[styles.badgeText, { color: colors['on-accent'] }]}>{unread.mentions}</Text></View>}
+      <Icon name={browse ? 'browseChannels' : 'channel'} size={18} tintColor={bold ? colors.ink : colors['ink-muted']} />
+      <Text numberOfLines={1} style={[styles.label, { color: bold ? colors.ink : colors['ink-muted'], fontWeight: bold ? '700' : '400' }]}>{row.name}</Text>
+      <Badge count={row.unread?.mentions ?? 0} />
+    </Pressable>
+  );
+}
+
+/** A direct message's row: their picture, with a dot when they're here, and a badge for what's unread. */
+function DmRow({ row, name, onPress }: { row: HomeDm; name: string; onPress: () => void }) {
+  const { colors } = useAppTheme();
+  const bold = !!row.unread?.count;
+  const m = row.member;
+  return (
+    <Pressable testID={`dm-row-${row.with}`} accessibilityRole="button" accessibilityLabel={`${name}${bold ? `, ${row.unread!.count} unread` : ''}`} onPress={onPress}
+      style={({ pressed }) => [styles.item, pressed && { backgroundColor: colors['accent-soft'] }]}>
+      {m ? <Avatar member={m} size={22} presence={m.kind === 'agent' ? presenceOf(m.state) : m.here ? 'here' : undefined} /> : <Icon name="person" size={18} tintColor={colors['ink-muted']} />}
+      <Text numberOfLines={1} style={[styles.label, { color: bold ? colors.ink : colors['ink-muted'], fontWeight: bold ? '700' : '400' }]}>{name}</Text>
+      <Badge count={row.unread?.mentions ?? 0} />
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  top: { flexDirection: 'row', gap: 10, alignItems: 'center' },
-  switcher: { width: 40, height: 40, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  team: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  tile: { width: 36, height: 36, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
+  tileText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 14 },
+  teamName: { flexShrink: 1, fontFamily: FAMILIES.display, fontWeight: '600', fontSize: 30 },
   elsewhere: { position: 'absolute', right: -3, top: -3, width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
-  switcherText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 15 },
-  jump: { flex: 1, height: 40, borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, fontFamily: FAMILIES.sans, fontSize: 15 },
+  compose: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth },
+  jump: { height: 40, borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, fontFamily: FAMILIES.sans, fontSize: 15 },
   item: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 11 },
-  label: { fontFamily: FAMILIES.sans, fontSize: 16 },
-  sub: { fontFamily: FAMILIES.sans, fontSize: 13, marginTop: 1 },
-  flag: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 1 },
-  flagText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 11 },
-  detail: { fontFamily: FAMILIES.mono, fontSize: 12 },
-  badge: { minWidth: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
-  badgeText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 12 },
-  fab: { position: 'absolute', right: 20, bottom: 24, width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  label: { flex: 1, fontFamily: FAMILIES.sans, fontSize: 16 },
 });

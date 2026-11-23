@@ -95,7 +95,7 @@ describe('Notifications', () => {
     await settle();
     expect(mockCalls.some((c) => c.name === 'konjir_get_notification_prefs')).toBe(true);
     // The next save starts from Kolab's prefs, not the phone's.
-    await fireEvent.press(screen.getByTestId('hide-preview'));
+    await fireEvent(screen.getByTestId('hide-preview'), 'valueChange', true);
     await settle();
     expect(mockCalls.filter((c) => c.name === 'konjir_set_notification_prefs').at(-1)?.args).toMatchObject({ level: 'all', hide_preview: true });
   });
@@ -110,7 +110,7 @@ describe('Notifications', () => {
     expect(set).toHaveLength(1);
     expect(set[0]!.args.agents).toEqual({ 'ann-helper': 'all' });
     // A change that isn't an agent's sends no agents at all.
-    await fireEvent.press(screen.getByTestId('hide-preview'));
+    await fireEvent(screen.getByTestId('hide-preview'), 'valueChange', true);
     await settle();
     expect(mockCalls.filter((c) => c.name === 'konjir_set_notification_prefs').at(-1)?.args).not.toHaveProperty('agents');
   });
@@ -128,11 +128,14 @@ describe('Notifications', () => {
 });
 
 describe('the agent screen', () => {
-  test('someone else\'s agent goes to its profile, and Kolab\'s owner tools are never asked about it', async () => {
+  test('someone else\'s agent has the same screen, with its owner and a Message button, and Kolab\'s owner tools are never asked about it', async () => {
     mockParams = { actor: 'bo-builder' };
     await render(app(<YourAgent />));
     await settle();
-    expect(mockRedirects).toContainEqual({ pathname: '/profile/[actor]', params: { actor: 'bo-builder' } });
+    expect(mockRedirects).toEqual([]);
+    expect(screen.getByTestId('agent-owner').props.children).toBe("bo's agent");
+    expect(screen.getByTestId('message-agent')).toBeTruthy();
+    expect(screen.queryByTestId('agent-tab-activity')).toBeNull();
     expect(mockCalls.filter((c) => ['konjir_agent_activity', 'konjir_list_agent_conversations'].includes(c.name))).toEqual([]);
   });
 
@@ -142,5 +145,7 @@ describe('the agent screen', () => {
     await settle();
     expect(mockRedirects).toEqual([]);
     expect(mockCalls.find((c) => c.name === 'konjir_agent_activity')?.args).toMatchObject({ agent: 'ann-helper' });
+    expect(screen.getByTestId('agent-owner').props.children).toBe('Your agent');
+    expect(screen.getByTestId('agent-tab-activity')).toBeTruthy();
   });
 });

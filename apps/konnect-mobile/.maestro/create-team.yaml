@@ -20,7 +20,7 @@ env:
     visible: "Teams: ${TEAM}.*"
     timeout: 30000
 - tapOn: "You"
-- assertVisible: "${TEAM}.*"
+- assertVisible: ".*${TEAM}, .*"
 - tapOn:
     id: "sign-out"
 - extendedWaitUntil:

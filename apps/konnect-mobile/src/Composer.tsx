@@ -1,11 +1,12 @@
 /**
  * The composer: `@` completes people and agents, `#` channels; a count shows near the 32,000
  * character limit; Send is off when there is nothing to send or too much. A reply shows what it
- * answers, with a way to drop it.
+ * answers, with a way to drop it. It sits above the home indicator, and on the keyboard while it is up.
  */
 import { MAX_MESSAGE_TEXT, textLength } from '@konjir/types';
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Keyboard, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from './icons';
 import { complete, completing, suggestions } from './kolab/names';
 import { quoteOf } from './kolab/thread';
@@ -14,12 +15,29 @@ import { FAMILIES, RADII, useAppTheme } from './theme';
 /** The count shows once the message is within this many characters of the limit. */
 const NEAR = 2_000;
 
+/**
+ * The space a bar at the bottom of the screen leaves under itself: the home indicator's, unless the
+ * keyboard is up, which covers it.
+ */
+export function useBottomInset(): number {
+  const insets = useSafeAreaInsets();
+  const [keyboard, setKeyboard] = useState(false);
+  useEffect(() => {
+    const ios = Platform.OS === 'ios';
+    const shown = Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', () => setKeyboard(true));
+    const hidden = Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboard(false));
+    return () => { shown.remove(); hidden.remove(); };
+  }, []);
+  return keyboard ? 0 : insets.bottom;
+}
+
 export function Composer({ people, channels, replyTo, onCancelReply, onSend, placeholder }: {
   people: string[]; channels: string[];
   replyTo?: { id: string; from: string; message: string }; onCancelReply: () => void;
   onSend: (text: string) => void; placeholder: string;
 }) {
   const { colors } = useAppTheme();
+  const bottom = useBottomInset();
   const [text, setText] = useState('');
   const [sel, setSel] = useState({ start: 0, end: 0 });
   const at = completing(text, sel.start);
@@ -29,7 +47,7 @@ export function Composer({ people, channels, replyTo, onCancelReply, onSend, pla
   const canSend = text.trim().length > 0 && !over;
 
   return (
-    <View style={[styles.wrap, { borderTopColor: colors.line, backgroundColor: colors['surface-raised'] }]}>
+    <View style={[styles.wrap, { borderTopColor: colors.line, backgroundColor: colors['surface-raised'], paddingBottom: 8 + bottom }]}>
       {options.length > 0 && at && (
         <View testID="suggestions" style={[styles.suggestions, { borderColor: colors.line, backgroundColor: colors.surface }]}>
           {options.map((name) => (

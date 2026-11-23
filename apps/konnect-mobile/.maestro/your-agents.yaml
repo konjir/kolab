@@ -38,39 +38,56 @@ tags: [local-kolab]
 - assertNotVisible:
     id: "composer"
 - assertVisible: "Message @bo yourself"
-- assertVisible: "Tell @ann/helper"
+- assertVisible: "Long-press a message to forward it."
 # Back to the agent, then Home.
-- tapOn: "Agent"
-- tapOn: "Home"
-# #general, only what ann/helper sent or was mentioned in.
-# Under Channels ("general"), or among the Unreads ("#general, 2 unread") when it has some.
+- tapOn: "Back"
+- tapOn: "Back"
+# #general, only what ann/helper sent or was mentioned in: chosen on the channel's details, from its title.
 - scrollUntilVisible:
     element: "#?general(,.*)?"
     direction: UP
 - tapOn: "#?general(,.*)?"
+- tapOn:
+    id: "conversation-title"
 - extendedWaitUntil:
     visible:
       id: "only-ann-helper"
     timeout: 20000
 - tapOn:
     id: "only-ann-helper"
+- extendedWaitUntil:
+    visible:
+      id: "filter-banner"
+    timeout: 20000
 - assertVisible: ".*Helper here.*"
 - assertNotVisible: ".*@ann can you look at the composer next.*"
-- tapOn: "Home"
-# Bo's agent: its profile, then Ann's DM with it, which says Bo can read it.
+- tapOn:
+    id: "show-all"
+- extendedWaitUntil:
+    visible: ".*@ann can you look at the composer next.*"
+    timeout: 20000
+- tapOn: "Back"
+# Ann's DM with Bo's agent, from Home's Direct messages: it says Bo can read it.
 - scrollUntilVisible:
     element:
-      id: "agent-bo-builder"
+      id: "dm-row-bo-builder"
 - tapOn:
-    id: "agent-bo-builder"
-- tapOn:
-    id: "message"
+    id: "dm-row-bo-builder"
 - extendedWaitUntil:
     visible:
       id: "disclosure"
     timeout: 20000
 - assertVisible: "@bo, its owner, can read this conversation"
-- tapOn: "Home"
+# Its title opens Bo's agent: its owner, and no owner's tabs.
+- tapOn:
+    id: "conversation-title"
+- extendedWaitUntil:
+    visible: "bo's agent"
+    timeout: 20000
+- assertNotVisible:
+    id: "agent-tab-activity"
+- tapOn: "Back"
+- tapOn: "Back"
 - tapOn: "You"
 - tapOn:
     id: "sign-out"
