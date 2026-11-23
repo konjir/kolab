@@ -94,6 +94,8 @@ export default function Conversation() {
     await markReadUpTo(await auth.client(team), kind, name, unread[through - 1]!);
     await qc.invalidateQueries({ queryKey: [team, 'answers'] });
     await qc.invalidateQueries({ queryKey: [team, 'channels'] });
+    // Home and DMs count a DM's unread from the conversations list.
+    if (kind === 'dm') await qc.invalidateQueries({ queryKey: [team, 'conversations'] });
   };
   const latestMark = useRef(markOnce);
   useEffect(() => { latestMark.current = markOnce; });
@@ -115,7 +117,7 @@ export default function Conversation() {
     const reply = () => setReplyTo(m);
     const copy = () => void Clipboard.setStringAsync(m.message);
     const where = kind === 'channel' ? `in #${name}` : readOnly ? `in ${at(as!, members)}'s conversation with ${at(name, members)}` : 'in a direct message';
-    const forward = () => router.push({ pathname: '/forward', params: { from: m.from, text: m.message, where } });
+    const forward = () => router.push({ pathname: '/forward', params: { from: m.from, text: m.message, where, back: readOnly ? '' : `${kind}/${name}` } });
     const options = [...(readOnly || m.pending ? [] : [{ text: 'Reply', run: reply }]), ...(m.pending ? [] : [{ text: 'Forward…', run: forward }]), { text: 'Copy', run: copy }];
     if (Platform.OS === 'ios') ActionSheetIOS.showActionSheetWithOptions({ options: [...options.map((o) => o.text), 'Cancel'], cancelButtonIndex: options.length }, (i) => options[i]?.run());
     // Android's dialog shows three buttons at most: the actions, and a tap outside cancels.

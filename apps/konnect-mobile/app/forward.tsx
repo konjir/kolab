@@ -19,7 +19,8 @@ import { ListRow, Problem, Row, Screen, Section } from '@/ui';
  * that conversation; a direct message going into a channel is asked about first.
  */
 export default function Forward() {
-  const { from, text, where } = useLocalSearchParams<{ from: string; text: string; where: string }>();
+  // `back`: the conversation it was opened from, `kind/name`, so a forward into that one goes back to it.
+  const { from = '', text = '', where = '', back = '' } = useLocalSearchParams<{ from?: string; text?: string; where?: string; back?: string }>();
   const auth = useAuth();
   const team = auth.current?.team ?? '';
   const me = auth.current?.actor ?? '';
@@ -53,8 +54,10 @@ export default function Forward() {
       if (kind === 'channel') await k.sendChannelMessage(to, message, mentionsIn(note, members), undefined, nonce());
       else await k.sendMessage(to, message, undefined, nonce());
       await qc.invalidateQueries({ queryKey: [team] });
-      // To that conversation: back to it if it is open under this sheet, else opened.
-      router.dismissTo(conversationHref(kind, to));
+      // To that conversation: back to it when it is the one under this sheet, else opened on top of
+      // it, which stays as it was (its draft and its pending messages are its own).
+      router.dismiss();
+      if (back !== `${kind}/${to}`) router.push(conversationHref(kind, to));
     } catch (e) { setProblem((e as Error).message); setBusy(undefined); }
   };
 
