@@ -97,7 +97,7 @@ function writesPlace(bodies: string[], place: string): boolean {
 /** The methods allowed to record no one, and why: a new one is a change here too (W2.20). */
 const NO_ACTOR = {
   system: ['drainOutbox', 'listen', 'open', 'resyncReviewRequests', 'startWorker'],
-  unsigned: ['abandonAuthorization', 'beginAuthorization', 'declineAuthorization', 'oauthClient', 'pruneClients', 'registerClient', 'restartIdentification'],
+  unsigned: ['abandonAuthorization', 'awaitUsername', 'beginAuthorization', 'declineAuthorization', 'oauthClient', 'pruneClients', 'registerClient', 'restartIdentification', 'signInKnown'],
 };
 
 test('every public method of Kolab that writes says where it records who made the write, and none is listed that no longer writes', () => {

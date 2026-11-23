@@ -89,6 +89,11 @@ export const WRITE_ACTORS: Record<string, { recorded: ActorRecord[] } | { system
   makeTeam: { recorded: ['kolab.created_by'] },
   signInWith: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by'] },
   linkIdentity: { recorded: ['identity.linked_by'] },
+  // Sign in with Apple (Lee, 2026-11-23): who an identity is, as the provider answers (it notes only
+  // when it was seen); the sign-in waiting for its person's username; and the person it makes.
+  signInKnown: { unsigned: 'authorization_pending' },
+  awaitUsername: { unsigned: 'authorization_pending' },
+  chooseUsername: { recorded: ['actor.created_by', 'account.created_by', 'identity.linked_by', 'oauth_request.actor_id'] },
   registerClient: { unsigned: 'client_registration' },
   pruneClients: { unsigned: 'client_pruning' },
   oauthClient: { unsigned: 'authorization_pending' },
