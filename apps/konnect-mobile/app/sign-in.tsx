@@ -50,7 +50,7 @@ export default function SignIn() {
 const styles = StyleSheet.create({
   screen: { flex: 1, padding: 24, justifyContent: 'space-between' },
   middle: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 20 },
-  tagline: { fontFamily: FAMILIES.display, fontSize: 18, textAlign: 'center' },
+  tagline: { fontFamily: FAMILIES.display, fontWeight: '500', fontSize: 19, lineHeight: 25, textAlign: 'center' },
   bottom: { gap: 14, paddingBottom: 24 },
   small: { fontFamily: FAMILIES.sans, fontSize: 13, lineHeight: 19, textAlign: 'center' },
 });

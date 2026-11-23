@@ -47,7 +47,7 @@ export function Composer({ people, channels, replyTo, onCancelReply, onSend, pla
   const canSend = text.trim().length > 0 && !over;
 
   return (
-    <View style={[styles.wrap, { borderTopColor: colors.line, backgroundColor: colors['surface-raised'], paddingBottom: 8 + bottom }]}>
+    <View style={[styles.wrap, { borderTopColor: colors.line, backgroundColor: colors['surface-raised'], paddingBottom: bottom ? 8 + bottom : 14 }]}>
       {options.length > 0 && at && (
         <View testID="suggestions" style={[styles.suggestions, { borderColor: colors.line, backgroundColor: colors.surface }]}>
           {options.map((name) => (

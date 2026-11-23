@@ -18,7 +18,8 @@ export interface HomeInput {
   /** Every channel of the team, with whether you follow it. */
   channels: readonly { channel: string; following: boolean }[];
   members: readonly Member[];
-  conversations: readonly Pick<Conversation, 'with' | 'last_at'>[];
+  /** Each DM, with its own unread count: Kolab's answers list only the first unread messages, across everyone. */
+  conversations: readonly (Pick<Conversation, 'with' | 'last_at'> & Partial<Pick<Conversation, 'unread'>>)[];
   unread: { dms: ReadonlyMap<string, Unread>; channels: ReadonlyMap<string, Unread> };
   statuses?: readonly AgentStatus[] | null;
   /** What "Jump to…" holds: only what matches it is listed. */
@@ -34,6 +35,9 @@ export function homeOf(i: HomeInput): HomeModel {
   const byActor = new Map(i.members.map((m) => [m.actor, m]));
   const mine = (actor: string) => { const m = byActor.get(actor); return m?.kind === 'agent' && m.owner === i.me; };
   const has = (u: Unread | undefined) => !!u?.count;
+  // A DM's unread: its conversation's count, which is whole, else what the answers list (a DM is for you alone, so all of it counts as a mention).
+  const counted = new Map(i.conversations.filter((c) => c.unread).map((c) => [c.with, { count: c.unread!, mentions: c.unread! }]));
+  const dmUnread = (p: string): Unread | undefined => counted.get(p) ?? i.unread.dms.get(p);
 
   const followed: HomeChannel[] = i.channels.filter((c) => c.following && match(c.channel)).map((c) => ({ kind: 'channel', name: c.channel, unread: i.unread.channels.get(c.channel) }));
   // A channel unread though not followed (a mention there) still shows, so nothing unread hides.
@@ -42,12 +46,12 @@ export function homeOf(i: HomeInput): HomeModel {
   // Every DM, newest first; one Kolab hasn't listed yet but which has unread comes first.
   const listed = new Set(i.conversations.map((c) => c.with));
   const dmsAll: HomeDm[] = [
-    ...[...i.unread.dms.keys()].filter((p) => !listed.has(p)).map((p) => ({ kind: 'dm' as const, with: p, member: byActor.get(p), unread: i.unread.dms.get(p) })),
-    ...i.conversations.map((c) => ({ kind: 'dm' as const, with: c.with, member: byActor.get(c.with), unread: i.unread.dms.get(c.with), last_at: c.last_at })),
+    ...[...i.unread.dms.keys()].filter((p) => !listed.has(p)).map((p) => ({ kind: 'dm' as const, with: p, member: byActor.get(p), unread: dmUnread(p) })),
+    ...i.conversations.map((c) => ({ kind: 'dm' as const, with: c.with, member: byActor.get(c.with), unread: dmUnread(c.with), last_at: c.last_at })),
   ].filter((d) => d.with !== i.me && match(d.with, displayName(d.with, i.members), d.member ? handleOf(d.member) : ''));
 
   const agents: HomeAgent[] = i.members.filter((m) => m.kind === 'agent' && m.owner === i.me && match(m.actor, handleOf(m)))
-    .map((m) => ({ kind: 'agent', member: m, status: i.statuses?.find((s) => s.agent === m.actor), unread: i.unread.dms.get(m.actor) }));
+    .map((m) => ({ kind: 'agent', member: m, status: i.statuses?.find((s) => s.agent === m.actor), unread: dmUnread(m.actor) }));
 
   if (!i.showUnreads) {
     return {

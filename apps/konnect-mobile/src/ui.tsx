@@ -5,7 +5,7 @@
 import type { ComponentProps, ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { Icon, type IconName } from './icons';
-import { FAMILIES, RADII, useAppTheme } from './theme';
+import { buttonCorners, FAMILIES, RADII, useAppTheme } from './theme';
 
 /** A screen: its title in the display face (or `header`, in its place), then what it holds. */
 export function Screen({ title, header, children, testID, refreshControl }: { title?: string; header?: ReactNode; children: ReactNode; testID?: string; refreshControl?: ComponentProps<typeof ScrollView>['refreshControl'] }) {
@@ -87,7 +87,7 @@ export function ListRow({ leading, title, subtitle, subTone, time, unread, badge
 }) {
   const { colors } = useAppTheme();
   return (
-    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title} onPress={onPress}
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? [title, subtitle, time, badge ? `${badge}${badgeMore ? '+' : ''} unread` : undefined].filter(Boolean).join(', ')} onPress={onPress}
       style={({ pressed }) => [styles.list, pressed && { backgroundColor: colors['accent-soft'] }]}>
       {leading}
       <View style={styles.listText}>
@@ -140,7 +140,7 @@ export function Button({ label, onPress, busy, quiet, testID }: { label: string;
   const { colors } = useAppTheme();
   return (
     <Pressable testID={testID} accessibilityRole="button" onPress={onPress} disabled={busy}
-      style={({ pressed }) => [styles.button, quiet ? { borderColor: colors['line-strong'], borderWidth: StyleSheet.hairlineWidth } : { backgroundColor: colors.accent }, (pressed || busy) && { opacity: 0.6 }]}>
+      style={({ pressed }) => [styles.button, quiet ? { borderColor: colors['line-strong'], borderWidth: 1 } : { backgroundColor: colors.accent, borderColor: colors.accent, borderWidth: 1 }, (pressed || busy) && { opacity: 0.6 }]}>
       <Text style={[styles.buttonLabel, { color: quiet ? colors.ink : colors['on-accent'] }]}>{busy ? `${label}…` : label}</Text>
     </Pressable>
   );
@@ -152,14 +152,17 @@ export function Problem({ children }: { children: ReactNode }) {
   return <Text accessibilityRole="alert" style={[styles.body, { color: colors.boundary }]}>{children}</Text>;
 }
 
+const BUTTON_HEIGHT = 44;
+
 const styles = StyleSheet.create({
   screen: { padding: 16, gap: 20 },
   hint: { paddingHorizontal: 14, paddingVertical: 12 },
-  button: { borderRadius: RADII.md, paddingHorizontal: 16, paddingVertical: 12, alignItems: 'center' },
+  // The brand's button: the web's corners, at a height a thumb finds.
+  button: { height: BUTTON_HEIGHT, ...buttonCorners(BUTTON_HEIGHT), paddingHorizontal: 18, alignItems: 'center', justifyContent: 'center' },
   buttonLabel: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 16 },
   notYet: { flexDirection: 'row', gap: 12, padding: 14, borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, alignItems: 'flex-start' },
   notYetText: { flex: 1, fontFamily: FAMILIES.sans, fontWeight: '500', fontSize: 15, lineHeight: 21 },
-  title: { fontFamily: FAMILIES.display, fontWeight: '600', fontSize: 32 },
+  title: { fontFamily: FAMILIES.display, fontWeight: '700', fontSize: 34, letterSpacing: 0.37 },
   section: { gap: 8 },
   sectionTitle: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.6 },
   card: { borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },

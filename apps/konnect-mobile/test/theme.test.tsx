@@ -36,7 +36,7 @@ describe('the brand theme', () => {
     await signedOut(<SignIn />);
     expect(StyleSheet.flatten(screen.getByTestId('sign-in-screen').props.style)).toMatchObject({ backgroundColor: PALETTES[mode].surface });
     expect(screen.getByLabelText('Konjir')).toBeTruthy();
-    expect(StyleSheet.flatten(screen.getByText(/Sign in with GitHub/).props.style)).toMatchObject({ color: PALETTES[mode]['on-accent'], fontFamily: 'Instrument Sans' });
+    expect(StyleSheet.flatten(screen.getByText(/Sign in with GitHub/).props.style)).toMatchObject({ color: PALETTES[mode]['on-accent'], fontFamily: 'System' });
     expect(themeFor(mode).name).toBe(name);
   });
 });

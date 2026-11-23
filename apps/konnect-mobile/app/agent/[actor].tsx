@@ -8,7 +8,7 @@ import { displayName, handleOf } from '@/kolab/names';
 import { conversationHref, memberHref } from '@/routes';
 import { quoteOf } from '@/kolab/thread';
 import { agentChannels, ago, at, contextOf, needsYouWords, whereOf } from '@/kolab/your-agents';
-import { FAMILIES, RADII, useAppTheme } from '@/theme';
+import { buttonCorners, FAMILIES, useAppTheme } from '@/theme';
 import { Icon } from '@/icons';
 import { Button, Hint, ListRow, Notice, Problem, Row, Screen, Section } from '@/ui';
 
@@ -134,7 +134,7 @@ const styles = StyleSheet.create({
   state: { fontFamily: FAMILIES.sans, fontWeight: '500', fontSize: 15 },
   owner: { fontFamily: FAMILIES.sans, fontSize: 14 },
   needs: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 14 },
-  tabs: { flexDirection: 'row', borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
-  tab: { flex: 1, paddingVertical: 10, alignItems: 'center' },
+  tabs: { flexDirection: 'row', height: 40, ...buttonCorners(40), borderWidth: 1, overflow: 'hidden' },
+  tab: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   tabText: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 14 },
 });
