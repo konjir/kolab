@@ -83,11 +83,12 @@ export function Badge({ count, more }: { count: number; more?: boolean }) {
  */
 export function ListRow({ leading, title, subtitle, subTone, time, unread, badge, badgeMore, onPress, testID, accessibilityLabel }: {
   leading: ReactNode; title: string; subtitle?: string; subTone?: 'alert'; time?: string; unread?: boolean; badge?: number; badgeMore?: boolean;
-  onPress: () => void; testID?: string; accessibilityLabel?: string;
+  /** None: the row opens nothing (as a direct message from a deleted account). */
+  onPress: (() => void) | undefined; testID?: string; accessibilityLabel?: string;
 }) {
   const { colors } = useAppTheme();
   return (
-    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? [title, subtitle, time, badge ? `${badge}${badgeMore ? '+' : ''} unread` : undefined].filter(Boolean).join(', ')} onPress={onPress}
+    <Pressable testID={testID} accessibilityRole={onPress ? 'button' : undefined} accessibilityLabel={accessibilityLabel ?? [title, subtitle, time, badge ? `${badge}${badgeMore ? '+' : ''} unread` : undefined].filter(Boolean).join(', ')} onPress={onPress} disabled={!onPress}
       style={({ pressed }) => [styles.list, pressed && { backgroundColor: colors['accent-soft'] }]}>
       {leading}
       <View style={styles.listText}>

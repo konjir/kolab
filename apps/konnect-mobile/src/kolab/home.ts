@@ -46,7 +46,7 @@ export function homeOf(i: HomeInput): HomeModel {
   // Every DM, newest first; one Kolab hasn't listed yet but which has unread comes first.
   const listed = new Set(i.conversations.map((c) => c.with));
   const dmsAll: HomeDm[] = [
-    ...[...i.unread.dms.keys()].filter((p) => !listed.has(p)).map((p) => ({ kind: 'dm' as const, with: p, member: byActor.get(p), unread: dmUnread(p) })),
+    ...[...i.unread.dms.keys()].filter((p) => !listed.has(p)).map((p) => ({ kind: 'dm' as const, with: p, member: byActor.get(p), unread: dmUnread(p), ...(partnerDeleted({ with: p }) ? { deleted: true } : {}) })),
     ...i.conversations.map((c) => ({ kind: 'dm' as const, with: c.with, member: byActor.get(c.with), unread: dmUnread(c.with), last_at: c.last_at, ...(partnerDeleted(c) ? { deleted: true } : {}) })),
   ].filter((d) => d.with !== i.me && match(d.with, displayName(d.with, i.members), d.member ? handleOf(d.member) : ''));
 

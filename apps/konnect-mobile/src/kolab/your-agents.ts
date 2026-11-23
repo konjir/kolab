@@ -3,14 +3,16 @@
  * an agent's messages was, the Activity tab's "Your agents" filter, a channel's "Only @you/bot"
  * filter, and the line in a DM with an agent that says its owner can read it. Pure, so tested.
  */
-import { AGENT_NOTIFY_LEVELS, DEFAULT_AGENT_NOTIFY, type AgentNotifyLevel, type Member } from '@konjir/types';
+import { AGENT_NOTIFY_LEVELS, DEFAULT_AGENT_NOTIFY, DELETED_ACCOUNT, isDeletedActor, type AgentNotifyLevel, type Member } from '@konjir/types';
 import type { AgentActivityItem, AgentStatus, NeedsYou } from './agents';
 import { handleOf } from './names';
 
 type Named = Pick<Member, 'actor' | 'owner' | 'label'>;
 
-/** `@handle` for an actor: an agent as `@owner/label` when the members list knows it. */
+/** `@handle` for an actor: an agent as `@owner/label` when the members list knows it; a deleted account as DELETED_ACCOUNT. */
 export function at(actor: string, members: readonly Named[] | undefined): string {
+  // A deleted account (migration 0060) has no handle to write: it is named as the app names it.
+  if (isDeletedActor(actor)) return DELETED_ACCOUNT;
   const m = members?.find((x) => x.actor === actor);
   return `@${m ? handleOf(m) : actor}`;
 }

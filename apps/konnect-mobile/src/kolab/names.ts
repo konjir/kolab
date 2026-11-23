@@ -3,7 +3,7 @@
  * agent, and `#channel`. The composer completes the one being typed, and a channel message names
  * the members it mentions (konjir_send_channel_message's `mentions`, at most MAX_MENTIONS).
  */
-import { DELETED_ACCOUNT, type Member } from '@konjir/types';
+import { DELETED_ACCOUNT, isDeletedActor, type Member } from '@konjir/types';
 
 export const MAX_MENTIONS = 20;
 const NAME = '[a-z0-9][a-z0-9-]*';
@@ -18,22 +18,30 @@ export const handleOf = (m: Pick<Member, 'actor' | 'owner' | 'label'>) => (m.own
  */
 export const displayOf = (m: Pick<Member, 'actor' | 'owner' | 'label' | 'kind'>) => (m.kind === 'agent' ? `@${handleOf(m)}` : m.actor);
 
-/** displayOf for an actor id, through the team's members; an actor they don't list, as it is. */
+/**
+ * displayOf for an actor id, through the team's members; DELETED_ACCOUNT for a deleted account's
+ * id (`deleted-<random>`, isDeletedActor: the person, or one of their agents); any other actor they
+ * don't list, as it is.
+ */
 export function displayName(actor: string, members: readonly Pick<Member, 'actor' | 'owner' | 'label' | 'kind'>[] | undefined): string {
+  if (isDeletedActor(actor)) return DELETED_ACCOUNT;
   const m = members?.find((x) => x.actor === actor);
   return m ? displayOf(m) : actor;
 }
+
+/** Whether `actor` deleted their account: a deleted account's id, or, as Kolab says of a message's sender or recipient, `flag`. */
+export const isGone = (actor: string, flag?: boolean) => !!flag || isDeletedActor(actor);
 
 /**
  * Who sent a message, as the app shows them: DELETED_ACCOUNT for someone whose account is deleted
  * (Kolab's from_deleted: the person, or one of their agents), else displayName.
  */
 export const senderName = (m: { from: string; from_deleted?: boolean }, members: Parameters<typeof displayName>[1]) =>
-  (m.from_deleted ? DELETED_ACCOUNT : displayName(m.from, members));
+  (isGone(m.from, m.from_deleted) ? DELETED_ACCOUNT : displayName(m.from, members));
 
-/** Whether the other end of a direct conversation deleted their account, as its newest message says. */
+/** Whether the other end of a direct conversation deleted their account: its id says so, or its newest message does. */
 export const partnerDeleted = (c: { with: string; last?: { from: string; from_deleted?: boolean; to_deleted?: boolean } }) =>
-  !!(c.last && (c.last.from === c.with ? c.last.from_deleted : c.last.to_deleted));
+  isDeletedActor(c.with) || !!(c.last && (c.last.from === c.with ? c.last.from_deleted : c.last.to_deleted));
 
 /**
  * The members `text` mentions, each once, in the order first written, as Kolab names them: only

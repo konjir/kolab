@@ -27,8 +27,8 @@ export interface Answers {
   messages?: { unread?: number; items?: AnswerMessage[] };
   channels?: { channel: string; unread?: number; items?: AnswerChannelItem[] }[];
 }
-export interface AnswerMessage { id: string; from: string; message: string; reply_to?: string | null; capped?: boolean; sent_at?: string }
-export interface AnswerChannelItem { id: string; channel: string; from: string; message: string; reply_to?: string | null; mentions_you?: boolean; capped?: boolean; sent_at?: string }
+export interface AnswerMessage { id: string; from: string; message: string; reply_to?: string | null; capped?: boolean; sent_at?: string; from_deleted?: boolean }
+export interface AnswerChannelItem { id: string; channel: string; from: string; message: string; reply_to?: string | null; mentions_you?: boolean; capped?: boolean; sent_at?: string; from_deleted?: boolean }
 
 /** One message on a conversation's screen: a DM or a channel message, as the list tools give them. */
 export type ConversationMessage = (Message | ChannelMessage) & { capped?: boolean };

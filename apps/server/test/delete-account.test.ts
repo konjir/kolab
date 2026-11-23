@@ -2,8 +2,9 @@
 // decision of 2026-11-23, "remove me, keep my words"; migration 0060): only a person's own sign-in
 // through konnect's app deletes its account, naming it; an agent's token, the admin token and any
 // other app's sign-in are refused. Refused while the person owns a kolab someone else is in, with
-// each such kolab in the refusal's structuredContent for the app to list. Once deleted, the
-// sign-in's tokens reach nothing, and the same identity signing in again is a new person.
+// each such kolab in the refusal's structuredContent for the app to list, and what works to do
+// about it. Once deleted, the sign-in's tokens reach nothing, what they said is from an opaque id
+// that says nothing of who they were, and the same identity signing in again is a new person.
 import { createHash } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
@@ -114,7 +115,7 @@ test('only a person\'s own sign-in through konnect\'s app deletes its account, n
   expect((await tool(mcp, bob.access_token, 'konjir_delete_my_account', {})).error).toMatch(/account/);
   // Ann owns a kolab Bob is in: refused, and the app is told which, to list.
   const refused = await tool(mcp, ann.access_token, 'konjir_delete_my_account', { account: 'ann' });
-  expect(refused.error).toMatch(/^TenancyError: your account can't be deleted yet: kolab anns is yours and has 2 other members: hand it over, or erase it/);
+  expect(refused.error).toMatch(/^TenancyError: your account can't be deleted yet: kolab anns is yours and has 2 other members: archive it \(konjir_archive_kolab\), which you can do with them in it, or remove them \(konjir_remove_member\)\. Deal with it first/);
   expect(refused.structured).toStrictEqual({ blocked: [{ name: 'anns', kind: 'kolab', reason: 'members', why: expect.stringContaining('kolab anns is yours') }] });
   // Nothing changed: both still signed in, Bob still a member.
   expect((await tool(mcp, ann.access_token, 'konjir_whoami')).ok).toMatchObject({ actor: 'ann' });
@@ -143,7 +144,9 @@ test('the person deletes their account in the app: its tokens reach nothing, its
   const members = (await tool(mcp, ann.access_token, 'konjir_list_members')).ok as { members: { actor: string }[] };
   expect(members.members.map((m) => m.actor)).toStrictEqual(['ann']);
   const general = (await tool(mcp, ann.access_token, 'konjir_list_channel_messages', { channel: 'general' })).ok as { messages: { from: string; message: string; from_deleted?: boolean }[] };
-  expect(general.messages).toStrictEqual([expect.objectContaining({ from: 'bob', message: 'Bye all', from_deleted: true })]);
+  expect(general.messages).toStrictEqual([expect.objectContaining({ from: expect.stringMatching(/^deleted-[0-9a-f]{12}$/), message: 'Bye all', from_deleted: true })]);
+  // What every client reads (the CLI, the agents' bridge, the web) names Bob nowhere.
+  expect(JSON.stringify(general)).not.toMatch(/bob/);
   // The same GitHub account signs in again: a new person, who holds nothing of the old one's.
   const again = await kolab.signInWith({ provider: 'stub', ...BOB });
   expect(again).toStrictEqual({ actor: 'bob_2', created: true });

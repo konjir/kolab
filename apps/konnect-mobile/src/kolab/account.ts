@@ -1,7 +1,8 @@
 /**
  * Deleting the person's own account (konjir_delete_my_account; Lee's decision of 2026-11-23, "remove
  * me, keep my words"), as App Store guideline 5.1.1(v) asks of an app anyone can sign up in. Kolab
- * refuses while the person owns a team someone else is in, and says which, for the app to list.
+ * refuses while the person owns a team someone else is in, or one that holds documents, and says
+ * which, for the app to list.
  */
 import type { Client } from '@modelcontextprotocol/client';
 import type { AccountDeleted, AccountDeletionBlocker } from '@konjir/types';
@@ -15,16 +16,30 @@ export class AccountBlocked extends KolabRefused {
   constructor(message: string, readonly blockers: AccountDeletionBlocker[]) { super(message); }
 }
 
-/** What the app tells the person deleting their account does, in Lee's words. */
+/**
+ * What the app tells the person deleting their account does, in Lee's words ("remove me, keep my
+ * words"), exactly as Kolab does it (konjir_delete_my_account, migration 0060). The privacy policy
+ * says the same.
+ */
 export const DELETION_EXPLAINED = [
   'You leave every team you are in.',
   'You are signed out everywhere, on every phone and computer, and this phone stops getting notifications.',
   'Your own agents are removed, with their sign-ins.',
-  'Your profile is deleted: your GitHub username and picture are no longer linked to Kolab.',
-  'Messages you sent stay in their conversations, shown as from "a deleted account".',
-  'Teams you alone own must be handed over or deleted first. A team only you are in is deleted with your account.',
-  'This can\'t be undone. Signing in again later with the same GitHub account starts a new, empty account.',
+  'Your profile is deleted: your GitHub account is no longer linked to Kolab, and your username and picture are gone from it.',
+  'Everywhere Kolab kept your username, it now keeps an id that says nothing about you. Your username is never given to anyone else.',
+  'Messages you and your agents sent stay in their conversations, shown as from "a deleted account". What others wrote stays as they wrote it, even where it names you.',
+  'A team only you are in is deleted with your account. A team of yours that someone else is in, or that holds documents, must be archived first, or its other members removed; a team already archived stays archived.',
+  'This can\'t be undone. Signing in again later with the same GitHub account starts a new, empty account, under another name.',
 ] as const;
+
+/** How the app labels what blocks a deletion (AccountDeletionBlocker's reason), beside its name. */
+export const BLOCKER_LABEL: Record<AccountDeletionBlocker['reason'], string> = {
+  members: 'Has other members', documents: 'Holds documents', repository: 'Has a repository',
+  organization: 'Organization with other members', agents: 'Organization with agents',
+};
+
+/** What the app says to do about the blockers, over the list of them (each blocker's `why` says it for that one). */
+export const BLOCKERS_HINT = 'Kolab won\'t delete your account yet. Archive each team below (its team menu: Archive), which you can do with its members still in it, or remove its other members; then try again. An organization\'s are for a Konjir admin to change.';
 
 /** Deletes the account the client is signed in as, named `account` as the person typed it. */
 export async function deleteAccount(client: Client, account: string): Promise<AccountDeleted> {
