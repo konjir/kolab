@@ -8,7 +8,7 @@
 // in later is a new person, with nothing of the old one's. Refused while anything would be left
 // that someone else is in or nobody could administer, each named with what to do, to anyone but
 // the person themselves, and to an agent's or any other sign-in; and nothing changes.
-import { expect, test } from '@jest/globals';
+import { expect, jest, test } from '@jest/globals';
 import { ACTOR_ID_COLUMNS, AccountDeletionBlocked, ERASED_WITH_KOLAB, KEPT_WITH_KOLAB, retiredNameViolation, sessionKey } from '@konjir/engine';
 import { AUDIT_ACTIONS } from '@konjir/types';
 import { appSignIn, openKolab, rejection, testStore, type Store, type TestKolab } from '@konjir/engine/testing';
@@ -311,8 +311,17 @@ test('whatever else the erase can\'t remove, the person is told nothing changed,
   const { k, bo } = await world();
   // Something Kolab doesn't know of that refers to the kolab Bo alone is in.
   await k.db.exec(`create table elsewhere (kolab_id text references kolab(id)); insert into elsewhere values ('bos')`);
-  const e = await rejection(k.deleteOwnAccount(bo.access, 'bo'));
+  // The log says which check failed, never the row it failed on (`Key (kolab_id)=(bos)`).
+  const logged: string[] = [];
+  const spy = jest.spyOn(console, 'error').mockImplementation((line: unknown) => { logged.push(String(line)); });
+  let e: string;
+  try { e = await rejection(k.deleteOwnAccount(bo.access, 'bo')); } finally { spy.mockRestore(); }
   expect(e).toBe('TenancyError: your account couldn\'t be deleted: something of yours is still in use. Nothing was changed; try again, or ask a Konjir admin');
+  const failed = logged.map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l.event === 'delete_failed');
+  expect(failed).toStrictEqual([{
+    time: expect.any(String), level: 'error', message: 'an account deletion failed in the database, and nothing changed', event: 'delete_failed', target: 'account',
+    sqlstate: '23503', constraint: 'elsewhere_kolab_id_fkey',
+  }]);
   expect(await count(k, `account where id = 'bo' and deleted_at is null`)).toBe(1);
   expect(await count(k, `retired_name`)).toBe(0);
   expect(await k.sessionOpen(bo.access)).toBe(true);
