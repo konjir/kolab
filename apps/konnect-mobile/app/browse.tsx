@@ -20,6 +20,8 @@ export default function Browse() {
   const [name, setName] = useState('');
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState<string>();
+  // Each switch shows what was chosen until Kolab's list says so too.
+  const [want, setWant] = useState<Record<string, boolean>>({});
 
   const run = async (what: string, f: () => Promise<unknown>) => {
     setBusy(what); setProblem(undefined);
@@ -41,8 +43,8 @@ export default function Browse() {
       <Section title={`Following · ${channels.data?.channels.length ?? 0} channels`}>
         {channels.isLoading && <Hint>Reading…</Hint>}
         {channels.data?.channels.map((c) => (
-          <SwitchRow key={c.channel} testID={`channel-${c.channel}`} icon="channel" label={c.channel} value={c.following} busy={busy === c.channel}
-            onChange={(on) => void run(c.channel, async () => { const k = await api(team); await (on ? k.follow(c.channel) : k.unfollow(c.channel)); })} />
+          <SwitchRow key={c.channel} testID={`channel-${c.channel}`} icon="channel" label={c.channel} value={want[c.channel] ?? c.following} busy={busy === c.channel}
+            onChange={(on) => { setWant((w) => ({ ...w, [c.channel]: on })); void run(c.channel, async () => { const k = await api(team); await (on ? k.follow(c.channel) : k.unfollow(c.channel)); }).finally(() => setWant(({ [c.channel]: _, ...rest }) => rest)); }} />
         ))}
       </Section>
     </Screen>

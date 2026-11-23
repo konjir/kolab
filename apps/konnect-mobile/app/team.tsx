@@ -46,7 +46,8 @@ export default function TeamSettings() {
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions({ title, options: [...options.map((o) => o.label), 'Cancel'], cancelButtonIndex: options.length, destructiveButtonIndex: options.findIndex((o) => o.destructive) },
         (i) => options[i]?.run());
-    } else Alert.alert(title, undefined, [...options.map((o) => ({ text: o.label, style: o.destructive ? 'destructive' as const : 'default' as const, onPress: o.run })), { text: 'Cancel', style: 'cancel' }]);
+    // Android's dialog shows three buttons at most: the actions, and a tap outside cancels.
+    } else Alert.alert(title, undefined, options.slice(0, 3).map((o) => ({ text: o.label, style: o.destructive ? 'destructive' as const : 'default' as const, onPress: o.run })), { cancelable: true });
   };
   // Out of this team: on to another of the person's teams, or signed out when there is none.
   const leaveAfter = async (f: () => Promise<unknown>) => {

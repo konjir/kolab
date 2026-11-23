@@ -72,6 +72,16 @@ describe('Home', () => {
     expect(homeOf(base({ query: 'helper' })).agents.map((a) => a.member.actor)).toEqual(['ann-helper']);
   });
 
+  test('a DM\'s unread is its conversation\'s whole count, beyond the first unread messages the answers list', () => {
+    const h = homeOf(base({
+      conversations: [{ with: 'cy', last_at: '2026-11-22T11:00:00Z', unread: 1 }, { with: 'bo', last_at: '2026-11-22T10:00:00Z', unread: 25 }, { with: 'ann-helper', last_at: '2026-11-22T08:00:00Z', unread: 2 }],
+      unread: { dms: new Map([['bo', { count: 20, mentions: 20 }]]), channels: new Map() },
+    }));
+    expect(h.dms.map((d) => [d.with, d.unread?.count])).toEqual([['cy', 1], ['bo', 25]]);
+    expect(h.agents[0]!.unread).toEqual({ count: 2, mentions: 2 });
+    expect(homeOf(base({ showUnreads: true, conversations: [{ with: 'cy', last_at: '2026-11-22T11:00:00Z', unread: 1 }], unread: { dms: new Map(), channels: new Map() } })).unreads.map((u) => (u.kind === 'dm' ? u.with : u.name))).toEqual(['cy']);
+  });
+
   test('someone else\'s agent is never under Your agents', () => {
     expect(homeOf(base({ me: 'bo' })).agents.map((a) => a.member.actor)).toEqual(['bo-builder']);
   });

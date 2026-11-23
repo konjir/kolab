@@ -118,7 +118,8 @@ export default function Conversation() {
     const forward = () => router.push({ pathname: '/forward', params: { from: m.from, text: m.message, where } });
     const options = [...(readOnly || m.pending ? [] : [{ text: 'Reply', run: reply }]), ...(m.pending ? [] : [{ text: 'Forward…', run: forward }]), { text: 'Copy', run: copy }];
     if (Platform.OS === 'ios') ActionSheetIOS.showActionSheetWithOptions({ options: [...options.map((o) => o.text), 'Cancel'], cancelButtonIndex: options.length }, (i) => options[i]?.run());
-    else Alert.alert('Message', undefined, [...options.map((o) => ({ text: o.text, onPress: o.run })), { text: 'Cancel', style: 'cancel' }]);
+    // Android's dialog shows three buttons at most: the actions, and a tap outside cancels.
+    else Alert.alert('Message', undefined, options.map((o) => ({ text: o.text, onPress: o.run })), { cancelable: true });
   };
 
   const renderRow = ({ item }: { item: Row }) => {

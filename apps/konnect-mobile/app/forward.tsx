@@ -1,7 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { MAX_MESSAGE_TEXT, textLength } from '@konjir/types';
+import { Alert, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '@/auth/AuthProvider';
 import { Avatar, presenceOf } from '@/Avatar';
 import { forwardPeople, forwardText } from '@/kolab/forward';
@@ -15,7 +16,7 @@ import { ListRow, Problem, Row, Screen, Section } from '@/ui';
 /**
  * Forward a message, from its long-press: the message, a note of your own to go with it, and who
  * it goes to: anyone of the team but its sender, or a channel. Choosing one sends it and opens
- * that conversation.
+ * that conversation; a direct message going into a channel is asked about first.
  */
 export default function Forward() {
   const { from, text, where } = useLocalSearchParams<{ from: string; text: string; where: string }>();
@@ -35,16 +36,25 @@ export default function Forward() {
   const match = (s: string) => s.toLowerCase().includes(q.trim().toLowerCase().replace(/^[@#]/, ''));
   const people = forwardPeople(members, me, from).filter((m) => match(m.actor) || match(handleOf(m)));
 
+  const message = forwardText(note, { from: displayName(from, members), where, message: text });
+  const tooLong = textLength(message) > MAX_MESSAGE_TEXT;
+  // A direct message forwarded into a channel is read by the whole team: asked first.
+  const choose = (kind: 'dm' | 'channel', to: string) => {
+    if (busy) return;
+    if (tooLong) { setProblem(`Forwarded, it would be over ${MAX_MESSAGE_TEXT.toLocaleString()} characters: shorten the note, or copy the part that matters.`); return; }
+    if (kind === 'channel' && !where.startsWith('in #')) {
+      Alert.alert(`Forward a direct message to #${to}?`, `Everyone in ${team} can read #${to}.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Forward', onPress: () => void send(kind, to) }]);
+    } else void send(kind, to);
+  };
   const send = async (kind: 'dm' | 'channel', to: string) => {
     setBusy(`${kind}:${to}`); setProblem(undefined);
     try {
-      const message = forwardText(note, { from: displayName(from, members), where, message: text });
       const k = await api(team);
       if (kind === 'channel') await k.sendChannelMessage(to, message, mentionsIn(note, members), undefined, nonce());
       else await k.sendMessage(to, message, undefined, nonce());
       await qc.invalidateQueries({ queryKey: [team] });
-      router.dismiss();
-      router.push(conversationHref(kind, to));
+      // To that conversation: back to it if it is open under this sheet, else opened.
+      router.dismissTo(conversationHref(kind, to));
     } catch (e) { setProblem((e as Error).message); setBusy(undefined); }
   };
 
@@ -64,12 +74,12 @@ export default function Forward() {
         {people.map((m) => (
           <ListRow key={m.actor} testID={`forward-to-${m.actor}`} title={busy === `dm:${m.actor}` ? `Sending to ${displayOf(m)}…` : displayOf(m)} unread
             leading={<Avatar member={m} owner={m.owner ? members.find((x) => x.actor === m.owner) : undefined} size={32} presence={m.kind === 'agent' ? presenceOf(m.state) : m.here ? 'here' : undefined} />}
-            onPress={() => { if (!busy) void send('dm', m.actor); }} />
+            onPress={() => choose('dm', m.actor)} />
         ))}
       </Section>
       <Section title="Channels">
         {channels.filter((c) => match(c.channel)).map((c) => (
-          <Row key={c.channel} testID={`forward-to-channel-${c.channel}`} icon="channel" label={busy === `channel:${c.channel}` ? `Sending to #${c.channel}…` : c.channel} onPress={() => { if (!busy) void send('channel', c.channel); }} />
+          <Row key={c.channel} testID={`forward-to-channel-${c.channel}`} icon="channel" label={busy === `channel:${c.channel}` ? `Sending to #${c.channel}…` : c.channel} onPress={() => choose('channel', c.channel)} />
         ))}
       </Section>
     </Screen>

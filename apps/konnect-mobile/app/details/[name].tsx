@@ -19,25 +19,28 @@ export default function ChannelDetails() {
   const router = useRouter();
   const qc = useQueryClient();
   const api = useApi();
-  const channel = useChannels(team).data?.channels.find((c) => c.channel === name);
+  const channels = useChannels(team);
+  const channel = channels.data?.channels.find((c) => c.channel === name);
+  // The switch shows what was chosen until Kolab's list says so too.
+  const [want, setWant] = useState<boolean>();
   const agents = ownAgents(useMembers(team).data?.members, auth.current?.actor ?? '');
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
   const back = (agent?: string) => router.dismissTo({ pathname: '/c/[kind]/[name]', params: { kind: 'channel', name, only: agent ?? '', chosen: String(Date.now()) } });
 
   const follow = async (on: boolean) => {
-    setBusy(true); setProblem(undefined);
+    setBusy(true); setProblem(undefined); setWant(on);
     try { const k = await api(team); await (on ? k.follow(name) : k.unfollow(name)); await qc.invalidateQueries({ queryKey: [team, 'channels'] }); }
-    catch (e) { setProblem((e as Error).message); } finally { setBusy(false); }
+    catch (e) { setProblem((e as Error).message); } finally { setBusy(false); setWant(undefined); }
   };
 
   return (
     <Screen title={`#${name}`} testID="channel-details">
       <Stack.Screen options={{ headerShown: true, title: '' }} />
-      {channel === undefined && <Hint>Reading…</Hint>}
+      {channel === undefined && <Hint>{channels.isLoading ? 'Reading…' : `${team} has no channel #${name}.`}</Hint>}
       {channel && (
         <Section title="You">
-          <SwitchRow testID="follow" icon="channel" label="Following" value={channel.following} busy={busy} onChange={(on) => void follow(on)} />
+          <SwitchRow testID="follow" icon="channel" label="Following" value={want ?? channel.following} busy={busy} onChange={(on) => void follow(on)} />
           <Row testID="channel-notifications" icon="notifications" label="Notifications" chevron onPress={() => router.push('/notifications')} />
         </Section>
       )}

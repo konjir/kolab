@@ -6,7 +6,6 @@
  * ID, package and URL scheme: `development` (the default, a dev client), `preview` (internal
  * testers) and `production` (the stores). eas.json sets it for each build profile.
  */
-import path from 'node:path';
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
 /**
@@ -50,20 +49,6 @@ const PREDAWN_SURFACE = '#16140f';
 /** Daybreak's surface (libs/brand), in light mode. */
 const DAYBREAK_SURFACE = '#f8f2d6';
 
-/**
- * A font file of an @expo-google-fonts package, wherever npm put it, relative to this folder: a
- * path that is the same on every machine, so the fingerprint is too.
- */
-const font = (pkg: string, file: string) => {
-  const dir = path.dirname(require.resolve(`@expo-google-fonts/${pkg}/package.json`));
-  return path.relative(__dirname, path.join(dir, file.slice(file.indexOf('_') + 1, -'.ttf'.length), file));
-};
-/** The brand's three faces (libs/brand FONTS), in the weights the app uses, embedded at build time. */
-const FACES = [
-  { family: 'Fraunces', pkg: 'fraunces', weights: { 400: 'Fraunces_400Regular.ttf', 600: 'Fraunces_600SemiBold.ttf' } },
-  { family: 'Instrument Sans', pkg: 'instrument-sans', weights: { 400: 'InstrumentSans_400Regular.ttf', 500: 'InstrumentSans_500Medium.ttf', 600: 'InstrumentSans_600SemiBold.ttf', 700: 'InstrumentSans_700Bold.ttf' } },
-  { family: 'JetBrains Mono', pkg: 'jetbrains-mono', weights: { 400: 'JetBrainsMono_400Regular.ttf', 500: 'JetBrainsMono_500Medium.ttf' } },
-] as const;
 
 export default ({ config }: ConfigContext): ExpoConfig => {
   const variant = variantOf(process.env);
@@ -145,15 +130,6 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         imageWidth: 120,
         backgroundColor: DAYBREAK_SURFACE,
         dark: { image: '../../brand/konjir-avatar.png', backgroundColor: PREDAWN_SURFACE },
-      }],
-      ['expo-font', {
-        ios: { fonts: FACES.flatMap((f) => Object.values(f.weights).map((file) => font(f.pkg, file))) },
-        android: {
-          fonts: FACES.map((f) => ({
-            fontFamily: f.family,
-            fontDefinitions: Object.entries(f.weights).map(([weight, file]) => ({ path: font(f.pkg, file), weight: Number(weight) })),
-          })),
-        },
       }],
     ],
     experiments: { typedRoutes: true },

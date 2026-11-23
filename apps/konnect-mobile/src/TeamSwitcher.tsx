@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
   bigTile: { width: 52, height: 52, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
   bigTileText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 20 },
   role: { fontFamily: FAMILIES.sans, fontSize: 14 },
-  title: { fontFamily: FAMILIES.display, fontWeight: '600', fontSize: 28 },
+  title: { fontFamily: FAMILIES.display, fontWeight: '700', fontSize: 28 },
   team: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 10 },
   tile: { width: 36, height: 36, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
   tileText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 13 },

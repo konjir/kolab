@@ -150,7 +150,7 @@ const styles = StyleSheet.create({
   team: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   tile: { width: 36, height: 36, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
   tileText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 14 },
-  teamName: { flexShrink: 1, fontFamily: FAMILIES.display, fontWeight: '600', fontSize: 30 },
+  teamName: { flexShrink: 1, fontFamily: FAMILIES.display, fontWeight: '700', fontSize: 30 },
   elsewhere: { position: 'absolute', right: -3, top: -3, width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
   compose: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth },
   jump: { height: 40, borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, fontFamily: FAMILIES.sans, fontSize: 15 },

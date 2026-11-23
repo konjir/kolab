@@ -11,7 +11,7 @@ import type { Member } from '@konjir/types';
 import { Avatar, presenceOf } from '@/Avatar';
 import { Icon, type IconName } from '@/icons';
 import { conversationHref, memberHref, shortWhen } from '@/routes';
-import { FAMILIES, useAppTheme } from '@/theme';
+import { buttonCorners, FAMILIES, useAppTheme } from '@/theme';
 import { Hint, ListRow, Notice, Problem, Screen, Section } from '@/ui';
 
 /** Who a row is from, as their picture with what happened as a small mark; their name's initials before members are read. */
@@ -121,7 +121,7 @@ function YourAgents({ team }: { team: string | undefined }) {
 
 const styles = StyleSheet.create({
   filters: { flexDirection: 'row', gap: 8 },
-  chip: { borderWidth: 1, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 5 },
+  chip: { borderWidth: 1, height: 32, ...buttonCorners(32), paddingHorizontal: 14, justifyContent: 'center' },
   chipText: { fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 14 },
   mark: { position: 'absolute', right: -3, bottom: -3, width: 18, height: 18, borderRadius: 9, borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
 });
