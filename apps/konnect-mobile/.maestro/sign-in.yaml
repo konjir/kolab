@@ -5,17 +5,17 @@
 appId: ${APP_ID}
 tags: [local-kolab]
 ---
-- assertVisible: "Sign in with GitHub"
+- assertVisible: "Sign in"
 - assertNotVisible: "Home"
 - runFlow: subflows/sign-in-ann.yaml
 - assertVisible: "bo.*"
 - tapOn: "DMs"
 - tapOn: "Activity"
 - tapOn: "You"
-- assertVisible: "ann.*GitHub.*"
+- assertVisible: "ann, signed in.*"
 - assertVisible: ".*hub, product"
 - tapOn:
     id: "sign-out"
 - extendedWaitUntil:
-    visible: "Sign in with GitHub"
+    visible: "Sign in"
     timeout: 20000

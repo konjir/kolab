@@ -3,7 +3,7 @@
 # and the switcher takes her to hub when that is another.
 appId: ${APP_ID}
 ---
-- tapOn: "Sign in with GitHub"
+- tapOn: "Sign in"
 - extendedWaitUntil:
     visible: "Continue as @ann"
     timeout: 30000
