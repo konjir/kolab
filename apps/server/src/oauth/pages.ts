@@ -520,7 +520,7 @@ ${v.error ? `<p class="err" role="alert">${esc(v.error)}</p>` : ''}
 <input type="hidden" name="sign_in" value="${esc(v.signIn)}">
 <input type="hidden" name="csrf" value="${esc(v.csrf)}">
 <label for="username"><strong>Username</strong><small class="muted"> 2 to 39 lowercase letters, digits and single hyphens</small></label>
-<input type="text" id="username" name="username" value="${esc(v.username ?? '')}" required minlength="2" maxlength="39" pattern="[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="for example ada-l">
+<input type="text" id="username" name="username" value="${esc(v.username ?? '')}" required minlength="2" maxlength="39" pattern="[A-Za-z0-9]([A-Za-z0-9\\-]*[A-Za-z0-9])?" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="username" placeholder="for example ada-l">
 <div class="row"><button class="primary" type="submit" name="decision" value="choose">Continue</button><button type="submit" name="decision" value="cancel" formnovalidate>Cancel</button></div>
 </form>`;
 }

@@ -107,6 +107,11 @@ export class RoleError extends Error { name = 'RoleError'; }
  * an agent whose owner isn't a person, or an actor whose session is already open.
  */
 export class ActorError extends Error { name = 'ActorError'; }
+/**
+ * A person who is archived signing in (signInWith, signInKnown): an ActorError, named as one, that
+ * the sign-in pages answer with 403 and stop, rather than offer the person anything to try again.
+ */
+export class ArchivedSignInError extends ActorError {}
 
 /**
  * Access refused: a session whose actor can't do this in its kolab, an agent granted more than
@@ -2539,7 +2544,7 @@ export class Kolab {
       const id = (await this.db.query<{ actor_id: string }>(
         `update identity set login = $3, last_seen_at = now() where provider = $1 and subject = $2 returning actor_id`,
         [who.provider, who.subject, login])).rows[0]?.actor_id;
-      if (id && await this.archivedActor(id)) throw new ActorError(`${id} is archived, so it can't sign in; an admin can unarchive it`);
+      if (id && await this.archivedActor(id)) throw new ArchivedSignInError(`${id} is archived, so it can't sign in; an admin can unarchive it`);
       return id;
     };
     const known = await linked();
@@ -2590,7 +2595,7 @@ export class Kolab {
     if (!IDP_NAME.test(who.provider) || !IDP_SUBJECT.test(who.subject)) throw new ActorError('that identity provider gave no usable identity');
     const id = (await this.db.query<{ actor_id: string }>(
       `update identity set last_seen_at = now() where provider = $1 and subject = $2 returning actor_id`, [who.provider, who.subject])).rows[0]?.actor_id;
-    if (id && await this.archivedActor(id)) throw new ActorError(`${id} is archived, so it can't sign in; an admin can unarchive it`);
+    if (id && await this.archivedActor(id)) throw new ArchivedSignInError(`${id} is archived, so it can't sign in; an admin can unarchive it`);
     return id;
   }
 
@@ -2621,8 +2626,16 @@ export class Kolab {
    * (isReservedPersonName, isDoerName), not reading as an existing person's or organization's agent
    * (`<person>-<label>`, D30), and free: no live or archived account or actor holds it, in any
    * case (D52). ActorError says which.
+   *
+   * With `github`, the account lookup of GitHub's sign-in on this Kolab, nor is it a GitHub
+   * account's username, a person's or an organization's (GitHub's own lookup ignores case), so that
+   * `@name` keeps meaning that GitHub account: its owner, signing up with GitHub later, is `name`,
+   * never `name_2` beside someone else who took it first. A lookup that can't be made (GitHub down,
+   * or its rate limit spent) refuses the name too, saying to try again: never a name that may be
+   * theirs. The lookup is network I/O, so it comes last, after every check Kolab makes itself, and
+   * outside any transaction.
    */
-  private async checkUsername(input: unknown): Promise<string> {
+  private async checkUsername(input: unknown, github?: AccountLookup): Promise<string> {
     const name = (typeof input === 'string' ? input : '').trim().replace(/^@/, '').toLowerCase();
     if (!CHOSEN_USERNAME.test(name)) throw new ActorError('a username is 2 to 39 lowercase letters, digits and single hyphens, starting and ending with a letter or digit');
     if (isReservedPersonName(name) || isDoerName(name)) throw new ActorError(`${name} is reserved: choose another username`);
@@ -2637,56 +2650,93 @@ export class Kolab {
       if (e instanceof NameTakenError) throw new ActorError(`the username ${name} is taken: choose another`);
       throw e;
     }
+    if (github) {
+      let account: Awaited<ReturnType<AccountLookup>>;
+      try {
+        account = await github(name);
+      } catch {
+        // Fail closed: a name Kolab couldn't check may be someone's on GitHub.
+        throw new ActorError(`Kolab couldn't check with GitHub whether ${name} is a GitHub username just now: try again in a minute`);
+      }
+      if (account?.person) throw new ActorError('That is a GitHub username: to use it, sign in with GitHub.');
+      if (account) throw new ActorError(`${name} is a GitHub organization's name: choose another username`);
+    }
     return name;
   }
 
   /**
    * The person signing in for the first time with an identity provider that gives no username
    * chooses one (awaitUsername), from the page's form, with its token (`csrf`) and the browser's
-   * binding: a new person, and their user account, named exactly that (checkUsername), with their
-   * identity linked and its login the name, all in one transaction, as signInWith signs up; the
-   * sign-in then names them, as identifyAuthorization does, and the consent form gets a new token.
+   * binding: a new person, and their user account, named exactly that (checkUsername, with
+   * `opts.github` when GitHub's sign-in is on this Kolab), with their identity linked and its login
+   * the name, all in one transaction, as signInWith signs up; the sign-in then names them, as
+   * identifyAuthorization does. The form's token stays the sign-in's, for its consent form too, so
+   * the same form posted again (Continue pressed twice, or Back and Continue) names the person the
+   * first post made, whatever name it carries, with `created` false.
+   *
    * An existing person is never joined: a name that is taken, even between the check and the
-   * insert (the tables' own unique keys, in any case), is refused. If the same account was made a
-   * person meanwhile (another tab's sign-in), the sign-in names that person instead, whatever name
-   * was chosen, and `created` is false. A name that can't be had is ActorError, and the same form
-   * may try again; a sign-in not waiting for a username in this browser is OAuthGrantError.
+   * insert (the tables' own unique keys, in any case), is refused, unless the account signing in is
+   * the one that took it. If the same account was made a person meanwhile (another tab's sign-in,
+   * or this form posted twice at once), the sign-in names that person instead, whatever name was
+   * chosen, and `created` is false. A name that can't be had is ActorError, and the same form may
+   * try again; a person found archived is ArchivedSignInError; a sign-in not waiting for a username
+   * in this browser is OAuthGrantError.
    */
-  async chooseUsername(binding: string, csrf: string, username: unknown): Promise<{ actor: string; created: boolean; csrf: string }> {
+  async chooseUsername(binding: string, csrf: string, username: unknown, opts: { github?: AccountLookup } = {}): Promise<{ actor: string; created: boolean; csrf: string }> {
     const gone = () => new OAuthGrantError('access_denied', 'this sign-in expired, was already used, or was started in another browser; start again');
-    const r = (await this.db.query<{ provider: string; subject: string }>(
-      `select provider, pending_subject as subject from oauth_request
-        where id = $1 and csrf_key = $2 and actor_id is null and pending_subject is not null and claimed_at is null and expires_at > now()`,
+    const r = (await this.db.query<{ provider: string; subject: string | null; actor: string | null }>(
+      `select provider, pending_subject as subject, actor_id as actor from oauth_request
+        where id = $1 and csrf_key = $2 and (pending_subject is not null or actor_id is not null) and claimed_at is null and expires_at > now()`,
       [sessionKey(binding), sessionKey(csrf)])).rows[0];
     if (!r) throw gone();
-    const next = randomBytes(32).toString('base64url');
-    // The sign-in names the person, only while it still waits for this account's username in this browser.
+    // This form was posted before, and the sign-in names whoever that made or found.
+    if (r.actor) {
+      if (await this.archivedActor(r.actor)) throw new ArchivedSignInError(`${r.actor} is archived, so it can't sign in; an admin can unarchive it`);
+      return { actor: r.actor, created: false, csrf };
+    }
+    const who = { provider: r.provider, subject: r.subject! };
+    // The sign-in names the person: while it still waits for this account's username in this
+    // browser, or once this same form, posted at the same moment, has named them already.
     const settle = async (q: Q, actor: string) => {
       const u = await q.query(
-        `update oauth_request set actor_id = $3, pending_subject = null, csrf_key = $4
-          where id = $1 and csrf_key = $2 and actor_id is null and pending_subject = $5 and claimed_at is null and expires_at > now() returning id`,
-        [sessionKey(binding), sessionKey(csrf), actor, sessionKey(next), r.subject]);
+        `update oauth_request set actor_id = $3, pending_subject = null
+          where id = $1 and csrf_key = $2 and claimed_at is null and expires_at > now()
+            and ((actor_id is null and pending_subject = $4) or actor_id = $3) returning id`,
+        [sessionKey(binding), sessionKey(csrf), actor, who.subject]);
       if (!u.rows.length) throw gone();
     };
-    const known = await this.signInKnown(r);
-    if (known) { await settle(this.db, known); return { actor: known, created: false, csrf: next }; }
-    const name = await this.checkUsername(username);
+    // The account is a person already (another tab's sign-up, or this form's at the same moment): it is them.
+    const found = async () => {
+      const known = await this.signInKnown(who);
+      if (!known) return undefined;
+      await settle(this.db, known);
+      return { actor: known, created: false, csrf };
+    };
+    const known = await found();
+    if (known) return known;
+    let name: string;
+    try {
+      name = await this.checkUsername(username, opts.github);
+    } catch (e) {
+      // Taken meanwhile by this very account (this form, posted twice at once): it is them.
+      if (e instanceof ActorError) { const again = await found(); if (again) return again; }
+      throw e;
+    }
     try {
       await this.db.transaction(async (tx) => {
         // A sign-up is the person's own: they made their account, and linked their identity (W2.20).
         await tx.query(`insert into account(id, kind, name, created_by) values ($1, 'user', $1, $1)`, [name]);
         await tx.query(`insert into actor(id, name, kind, created_by) values ($1, $1, 'person', $1)`, [name]);
-        await tx.query(`insert into identity(provider, subject, actor_id, login, linked_by) values ($1, $2, $3, $3, $3)`, [r.provider, r.subject, name]);
+        await tx.query(`insert into identity(provider, subject, actor_id, login, linked_by) values ($1, $2, $3, $3, $3)`, [who.provider, who.subject, name]);
         await settle(tx, name);
       });
-      return { actor: name, created: true, csrf: next };
+      return { actor: name, created: true, csrf };
     } catch (e) {
-      // The same account signed up at the same moment, in another tab: it is that person.
-      if (String(e).includes('identity_pkey')) {
-        const again = await this.signInKnown(r);
-        if (again) { await settle(this.db, again); return { actor: again, created: false, csrf: next }; }
-      }
-      if (/actor_pkey|actor_id_lower|account_pkey|account_id_lower|actor_not_doer|account_not_doer/.test(String(e))) throw new ActorError(`the username ${name} is taken: choose another`);
+      const why = String(e);
+      // The same account signed up at the same moment: in another tab, under another name
+      // (identity_pkey), or by this same form posted twice, under this one (account_pkey). It is that person.
+      if (/identity_pkey|actor_pkey|account_pkey|actor_id_lower|account_id_lower/.test(why)) { const again = await found(); if (again) return again; }
+      if (/actor_pkey|actor_id_lower|account_pkey|account_id_lower|actor_not_doer|account_not_doer/.test(why)) throw new ActorError(`the username ${name} is taken: choose another`);
       throw e;
     }
   }

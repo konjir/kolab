@@ -72,7 +72,9 @@ mkdirSync(here, { recursive: true, mode: 0o700 });
 
 const idp = new StubIdentity();
 idp.as = PEOPLE.ann;
-// GitHub accounts an invitation can find: Cy, who is in no team yet.
+// GitHub accounts an invitation can find: Cy, who is in no team yet. Being GitHub's, cy is also a
+// username an Apple sign-up can't choose (KONNECT_LOCAL_APPLE=1); `idp.down = true` would refuse
+// every name, as Kolab does when GitHub can't be asked.
 idp.account({ subject: '43', login: 'cy' });
 const kolab = await Kolab.open({});
 for (const p of Object.values(PEOPLE)) await kolab.signInWith({ provider: 'stub', ...p });

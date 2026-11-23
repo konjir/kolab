@@ -425,16 +425,29 @@ export function signInSettings(env: Record<string, string | undefined>, opts: { 
     if (appleSet.length) throw new Error(`KONJIR_STUB_IDENTITY is for a local Kolab without Apple: unset it, or ${APPLE_SETTINGS.join(', ')}`);
     if (!STUB_LOGIN.test(stub)) throw new Error('KONJIR_STUB_IDENTITY is the login everyone signs in as: letters, digits and \'-\', as a GitHub login');
   }
-  const webTokenSignIn = onOff(env, 'KONJIR_WEB_TOKEN_SIGN_IN') ?? !(github || apple);
+  const webTokenSetting = onOff(env, 'KONJIR_WEB_TOKEN_SIGN_IN');
   const handIssuedTokens = onOff(env, 'KONJIR_HAND_ISSUED_TOKENS') ?? true;
+  /**
+   * What signs people in, by the providers actually made (`built`), not by the settings alone: Apple's
+   * settings that make no provider leave Apple off, and the web page's pasted token on by default
+   * when no provider was made.
+   */
+  const summary = (built: { github: boolean; apple: boolean }) => {
+    const webTokenSignIn = webTokenSetting ?? !(built.github || built.apple);
+    return {
+      webTokenSignIn,
+      describe: [stub ? `the stub identity provider (KONJIR_STUB_IDENTITY): anyone who opens Kolab's sign-in is signed in as ${stub}, with no check; local development only`
+        : [built.github ? 'GitHub' : '', built.apple ? 'Apple' : ''].filter(Boolean).join(' and ') || 'no identity provider (set KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET)',
+        webTokenSignIn ? 'a pasted token in the web page' : '', handIssuedTokens ? 'hand-issued session tokens' : ''].filter(Boolean).join('; '),
+    };
+  };
   return {
-    github, apple, appleOff, stub, webTokenSignIn, handIssuedTokens,
-    describe: [stub ? `the stub identity provider (KONJIR_STUB_IDENTITY): anyone who opens Kolab's sign-in is signed in as ${stub}, with no check; local development only`
-      : [github ? 'GitHub' : '', apple ? 'Apple' : ''].filter(Boolean).join(' and ') || 'no identity provider (set KONJIR_GITHUB_CLIENT_ID and KONJIR_GITHUB_CLIENT_SECRET)',
-      webTokenSignIn ? 'a pasted token in the web page' : '', handIssuedTokens ? 'hand-issued session tokens' : ''].filter(Boolean).join('; '),
+    github, apple, appleOff, stub, handIssuedTokens,
     /**
-     * The providers, GitHub's then Apple's. Apple's settings that don't make a provider (a private
-     * key that isn't Apple's, say) leave Apple off, said through `warn`, and Kolab runs on without it.
+     * The providers, GitHub's then Apple's, with what signs people in (`describe`) and whether the
+     * web page takes a pasted token (`webTokenSignIn`), by the providers made. Apple's settings that
+     * don't make a provider (a private key that isn't Apple's, say) leave Apple off, said through
+     * `warn`, and Kolab runs on without it.
      */
     async identity(load: () => Promise<{
       GitHubIdentity: new (c: { clientId: string; clientSecret: string }) => unknown;
@@ -445,25 +458,28 @@ export function signInSettings(env: Record<string, string | undefined>, opts: { 
         const { StubIdentity } = await load();
         const idp = new StubIdentity();
         idp.as = { subject: `stub-${stub.toLowerCase()}`, login: stub };
-        return { identity: idp as never };
+        return { identity: idp as never, ...summary({ github: false, apple: false }) };
       }
-      if (!github && !apple) return {};
+      if (!github && !apple) return summary({ github: false, apple: false });
       const { GitHubIdentity, AppleIdentity } = await load();
       const providers: unknown[] = [];
       if (github) providers.push(new GitHubIdentity({ clientId: id!, clientSecret: secret! }));
+      let appleBuilt = false;
       if (apple && AppleIdentity) {
         try {
           providers.push(new AppleIdentity({
             servicesId: env.KONJIR_APPLE_SERVICES_ID!.trim(), teamId: env.KONJIR_APPLE_TEAM_ID!.trim(),
             keyId: env.KONJIR_APPLE_KEY_ID!.trim(), privateKey: env.KONJIR_APPLE_PRIVATE_KEY!,
           }));
+          appleBuilt = true;
         } catch (e) {
           // Never the key itself: the provider's errors name what is wrong, not the value.
           warn(`Sign in with Apple is off: ${(e as Error).message}`);
         }
       }
-      if (!providers.length) return {};
-      return { identity: (providers.length === 1 ? providers[0] : providers) as never };
+      const said = summary({ github, apple: appleBuilt });
+      if (!providers.length) return said;
+      return { identity: (providers.length === 1 ? providers[0] : providers) as never, ...said };
     },
   };
 }
@@ -675,15 +691,15 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     // migration (a database that needs one is refused) and no outbox worker.
     const migrate = !rest.includes('--no-migrate');
     const worker = !rest.includes('--no-worker');
-    // The stub signs anyone in: its Kolab binds 127.0.0.1, named here, before it listens.
     // Apple's settings, when some are missing or don't make a provider: Kolab runs without Apple, and says so.
     if (sign.appleOff) log.warn(sign.appleOff, { event: 'apple_sign_in_off' });
-    const identity = await sign.identity(server, (m) => log.warn(m, { event: 'apple_sign_in_off' }));
-    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...identity, webTokenSignIn: sign.webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker, clientLog: log });
+    const { describe, webTokenSignIn, ...identity } = await sign.identity(server, (m) => log.warn(m, { event: 'apple_sign_in_off' }));
+    // The stub signs anyone in: its Kolab binds 127.0.0.1, named here, before it listens.
+    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...identity, webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker, clientLog: log });
     if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
     if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
-    if (sign.stub) log.warn(`sign-in: ${sign.describe}`, { event: 'stub_identity' });
-    else log.info(`sign-in: ${sign.describe}`);
+    if (sign.stub) log.warn(`sign-in: ${describe}`, { event: 'stub_identity' });
+    else log.info(`sign-in: ${describe}`);
     log.info(`Kolab listening on ${s.url}`, { event: 'listening', url: s.url });
     log.info(`data: ${databaseUrl ? withoutPassword(databaseUrl) : dataDir}`);
     // Not a log line: the generated admin token, shown once to whoever started a local Kolab by
