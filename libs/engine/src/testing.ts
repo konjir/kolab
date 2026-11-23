@@ -362,11 +362,13 @@ const REKEYED_FUNCTIONS = ['kj_message_fixed', 'kj_channel_fixed', 'kj_audit_eve
   'kj_evidence_fixed', 'kj_repository_fixed', 'kj_job_fixed', 'kj_case_fixed', 'kj_actor_frozen', 'kj_kolab_writable', 'kj_admin_audited'];
 
 /**
- * Undoes migration 0060 on a database at 0060, to 0059's schema exactly (migrations.test.ts checks
+ * Undoes migration 0060's schema on a database at 0060, to 0059's exactly (migrations.test.ts checks
  * it): for a test of 0060 itself, and for one that rewinds a database to an older release and
- * migrates it again (apps/cli's questions.test.ts).
+ * migrates it again (apps/cli's questions.test.ts). It changes no row: forgetting that 0060 ran
+ * (its kj_migration row) is the caller's, so no write but Kolab's own is outside kolab.ts
+ * (write-actors.test.ts).
  */
-export const UNDO_0060 = String.raw`do $$
+export const UNDO_0060_SCHEMA = String.raw`do $$
   declare t text;
   begin
     for t in select distinct x.tbl from kj_actor_columns() x loop execute format('drop trigger actor_named on %I', t); end loop;
@@ -425,8 +427,7 @@ $$;
      'team_member.added', 'team_member.removed', 'outbox.retried',
      'admin.granted', 'admin.revoked', 'admin.elevated', 'admin.lowered', 'break_glass.used',
      'work_lease.set', 'repository.registered', 'repository.archived', 'policy.set', 'ruling.backdated',
-     'host.ended', 'kolab.erased', 'push_device.unregistered'));
-  delete from kj_migration where version = 60;`;
+     'host.ended', 'kolab.erased', 'push_device.unregistered'));`;
 
 /** If `r` left a version in review, approve it as `reviewer`; the outcome either way. */
 export async function approved(kolab: Kolab, reviewer: string, r: GateResult): Promise<GateResult> {
