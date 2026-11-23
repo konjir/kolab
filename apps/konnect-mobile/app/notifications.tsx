@@ -6,8 +6,7 @@ import { useChannels, useMembers } from '@/kolab/hooks';
 import { handleOf } from '@/kolab/names';
 import { AGENT_NOTIFY, agentNotifyOf, legacyAgentNotify, legacyAgentNotifyKey, ownAgents, type AgentNotify } from '@/kolab/your-agents';
 import { cachedPrefs, DEFAULT_PREFS, getPrefs, kolabHasPush, PUSH_STATUS_KEY, setPrefs, type NotifyLevel, type NotifyPrefs } from '@/push';
-import { useAppTheme } from '@/theme';
-import { Body, Button, Hint, Problem, Row, Screen, Section } from '@/ui';
+import { Body, ChoiceRow, Hint, Problem, Screen, Section, SwitchRow } from '@/ui';
 
 const LEVELS: { level: NotifyLevel; label: string }[] = [
   { level: 'all', label: 'Every message' },
@@ -23,7 +22,6 @@ const LEVELS: { level: NotifyLevel; label: string }[] = [
 export default function NotificationSettings() {
   const auth = useAuth();
   const team = auth.current?.team ?? '';
-  const { colors } = useAppTheme();
   const channels = useChannels(team).data?.channels ?? [];
   const key = `konnect.notify.${team}`;
   const [prefs, setLocal] = useState<NotifyPrefs>(DEFAULT_PREFS);
@@ -78,37 +76,38 @@ export default function NotificationSettings() {
 
   return (
     <Screen title="Notifications" testID="notifications">
-      <Stack.Screen options={{ headerShown: true, title: team, headerBackTitle: 'You', headerStyle: { backgroundColor: colors['surface-raised'] }, headerTintColor: colors.ink }} />
+      <Stack.Screen options={{ headerShown: true, title: '' }} />
+      <Body>From {team}, on this phone and your others.</Body>
       <Section title="Push on this phone">
         <Hint>{status ?? '…'}</Hint>
       </Section>
       <Section title={`What reaches you from ${team}`}>
-        {LEVELS.map((l) => <Row key={l.level} testID={`level-${l.level}`} icon={prefs.level === l.level ? 'following' : 'follow'} label={l.label} onPress={() => void save({ ...prefs, level: l.level })} />)}
+        {LEVELS.map((l) => <ChoiceRow key={l.level} testID={`level-${l.level}`} label={l.label} chosen={prefs.level === l.level} onPress={() => void save({ ...prefs, level: l.level })} />)}
       </Section>
       {prefs.level !== 'none' && (
         <Section title="Muted channels">
           {channels.map((c) => {
             const muted = prefs.muted.includes(c.channel);
-            return <Row key={c.channel} icon={muted ? 'capped' : 'channel'} label={c.channel} detail={muted ? 'muted' : undefined}
-              onPress={() => void save({ ...prefs, muted: muted ? prefs.muted.filter((m) => m !== c.channel) : [...prefs.muted, c.channel] })} />;
+            return <SwitchRow key={c.channel} testID={`mute-${c.channel}`} icon={muted ? 'capped' : 'channel'} label={c.channel} value={muted}
+              onChange={(on) => void save({ ...prefs, muted: on ? [...prefs.muted, c.channel] : prefs.muted.filter((m) => m !== c.channel) })} />;
           })}
+          {channels.length === 0 && <Hint>No channels yet.</Hint>}
         </Section>
       )}
       {agents.map((a) => {
         const level = agentNotifyOf(prefs.agents, a.actor);
         return (
           <Section key={a.actor} title={`Your agent @${handleOf(a)}`}>
-            {AGENT_NOTIFY.map((l) => <Row key={l.level} testID={`agent-notify-${a.actor}-${l.level}`} icon={level === l.level ? 'following' : 'follow'} label={l.label} onPress={() => setAgent(a.actor, l.level)} />)}
+            {AGENT_NOTIFY.map((l) => <ChoiceRow key={l.level} testID={`agent-notify-${a.actor}-${l.level}`} label={l.label} chosen={level === l.level} onPress={() => setAgent(a.actor, l.level)} />)}
           </Section>
         );
       })}
       <Section title="Privacy">
-        <Row testID="hide-preview" icon={prefs.hidePreview ? 'following' : 'follow'} label="Hide the message's words" detail={prefs.hidePreview ? 'on' : 'off'} onPress={() => void save({ ...prefs, hidePreview: !prefs.hidePreview })} />
+        <SwitchRow testID="hide-preview" icon="notifications" label="Hide the message's words" value={prefs.hidePreview} onChange={(on) => void save({ ...prefs, hidePreview: on })} />
         <Hint>Shown, a notification has the sender, the conversation and the first 100 characters, which pass through Expo&apos;s push service and Apple or Google.</Hint>
       </Section>
       {problem && <Problem>{problem}</Problem>}
       {said && <Body>{said}</Body>}
-      <Button quiet label="Done" onPress={() => void save(prefs)} />
     </Screen>
   );
 }

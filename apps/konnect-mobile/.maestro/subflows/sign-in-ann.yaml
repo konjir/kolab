@@ -26,5 +26,5 @@ appId: ${APP_ID}
     visible: "Teams: hub.*"
     timeout: 30000
 - extendedWaitUntil:
-    visible: "general.*"
+    visible: "#?general.*"
     timeout: 30000

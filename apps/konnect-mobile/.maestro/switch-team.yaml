@@ -9,6 +9,8 @@ tags: [local-kolab]
 - assertVisible: "Teams: hub, unread in another team"
 - tapOn:
     id: "team-switcher"
+- assertVisible:
+    id: "team-settings"
 - extendedWaitUntil:
     visible:
       id: "team-hub"
@@ -28,7 +30,7 @@ tags: [local-kolab]
 - extendedWaitUntil:
     visible: ".*this is side.*"
     timeout: 20000
-- tapOn: "Home"
+- tapOn: "Back"
 # And back to hub.
 - tapOn:
     id: "team-switcher"
@@ -46,7 +48,7 @@ tags: [local-kolab]
     visible: "Teams: ops.*"
     timeout: 30000
 - tapOn: "You"
-- assertVisible: "ops.*"
+- assertVisible: ".*ops, .*"
 - tapOn:
     id: "sign-out"
 - extendedWaitUntil:

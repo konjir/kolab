@@ -18,8 +18,19 @@ export const avatarUrl = (m: Pick<WithLogin, 'login' | 'github_id'> | undefined,
   return m?.login ? `https://github.com/${encodeURIComponent(m.login)}.png?size=${px}` : undefined;
 };
 
-export function Avatar({ member, owner, size = 36 }: { member: WithLogin; owner?: WithLogin; size?: number }) {
+/**
+ * A dot at an avatar's corner: a person signed in here, or an agent's state. Working is the accent,
+ * running or idle the brand's "clean", not running an empty ring.
+ */
+export type Presence = 'here' | 'working' | 'running' | 'idle' | 'stopped';
+
+/** An agent's state as Kolab names it, as a dot. */
+export const presenceOf = (state: string | null | undefined): Presence =>
+  state === 'working' ? 'working' : state === 'running' ? 'running' : state === 'idle' ? 'idle' : 'stopped';
+
+export function Avatar({ member, owner, size = 36, presence }: { member: WithLogin; owner?: WithLogin; size?: number; presence?: Presence }) {
   const { colors } = useAppTheme();
+  const dot = Math.max(10, Math.round(size * 0.3));
   // An agent's own entry carries its owner's login (S5); its owner's entry, when there is one, too.
   const url = avatarUrl(member.kind === 'agent' ? owner ?? member : member, size);
   const r = size / 2;
@@ -33,6 +44,10 @@ export function Avatar({ member, owner, size = 36 }: { member: WithLogin; owner?
           <Icon name="agent" size={size * 0.3} tintColor={colors.accent} />
         </View>
       )}
+      {presence && (
+        <View testID={`presence-${presence}`} style={[styles.dot, { width: dot, height: dot, borderRadius: dot, borderColor: colors.surface },
+          presence === 'stopped' ? { backgroundColor: colors.surface, borderColor: colors['line-strong'] } : { backgroundColor: presence === 'working' ? colors.accent : colors.clean }]} />
+      )}
     </View>
   );
 }
@@ -40,4 +55,5 @@ export function Avatar({ member, owner, size = 36 }: { member: WithLogin; owner?
 const styles = StyleSheet.create({
   initials: { alignItems: 'center', justifyContent: 'center' },
   badge: { position: 'absolute', right: -2, bottom: -2, alignItems: 'center', justifyContent: 'center' },
+  dot: { position: 'absolute', right: -2, top: -2, borderWidth: 2 },
 });

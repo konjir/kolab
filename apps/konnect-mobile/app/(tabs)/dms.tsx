@@ -1,23 +1,25 @@
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/auth/AuthProvider';
-import { Avatar } from '@/Avatar';
+import { Avatar, presenceOf } from '@/Avatar';
+import { Icon } from '@/icons';
 import { useConversations, useMembers } from '@/kolab/hooks';
 import { displayName } from '@/kolab/names';
 import { quoteOf } from '@/kolab/thread';
-import { Hint, Problem, Row, Screen, Section } from '@/ui';
-import { View } from 'react-native';
+import { conversationHref, shortWhen } from '@/routes';
+import { useAppTheme } from '@/theme';
+import { Hint, ListRow, Problem, Screen, Section } from '@/ui';
 
-const when = (iso: string) => {
-  const d = new Date(iso);
-  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-};
-
-/** DMs: every direct conversation, newest first, each with its last message and what is unread (konjir_list_conversations). */
+/**
+ * DMs: every direct conversation, with people and agents, newest first (konjir_list_conversations),
+ * Slack's way: their picture, their name, bold while something is unread, the last thing said, when,
+ * and a badge for what is unread.
+ */
 export default function DirectMessages() {
   const auth = useAuth();
   const team = auth.current?.team;
   const me = auth.current?.actor;
   const router = useRouter();
+  const { colors } = useAppTheme();
   const conversations = useConversations(team);
   const members = useMembers(team).data?.members ?? [];
   const list = conversations.data?.conversations ?? [];
@@ -30,15 +32,14 @@ export default function DirectMessages() {
         {list.map((c) => {
           const m = members.find((x) => x.actor === c.with);
           const owner = m?.owner ? members.find((x) => x.actor === m.owner) : undefined;
-          const unread = c.unread ? `${c.unread}${c.unread_more ? '+' : ''} unread · ` : '';
+          const name = displayName(c.with, members);
           return (
-            <View key={c.with} style={{ flexDirection: 'row', alignItems: 'center', paddingLeft: 14 }}>
-              {m && <Avatar member={m} owner={owner} size={32} />}
-              <View style={{ flex: 1 }}>
-                <Row testID={`dm-${c.with}`} icon={m?.kind === 'agent' ? 'agent' : 'person'} label={`${displayName(c.with, members)}: ${c.last.from === me ? 'you: ' : ''}${quoteOf(c.last.message, 40)}`}
-                  detail={`${unread}${when(c.last_at)}`} onPress={() => router.push({ pathname: '/c/[kind]/[name]', params: { kind: 'dm', name: c.with } })} />
-              </View>
-            </View>
+            <ListRow key={c.with} testID={`dm-${c.with}`}
+              leading={m ? <Avatar member={m} owner={owner} size={40} presence={m.kind === 'agent' ? presenceOf(m.state) : m.here ? 'here' : undefined} /> : <Icon name="person" size={24} tintColor={colors['ink-muted']} />}
+              title={name} unread={c.unread > 0} badge={c.unread} badgeMore={c.unread_more}
+              subtitle={`${c.last.from === me ? 'You: ' : ''}${quoteOf(c.last.message, 80)}`} time={shortWhen(c.last_at)}
+              accessibilityLabel={`${name}${c.unread ? `, ${c.unread}${c.unread_more ? '+' : ''} unread` : ''}`}
+              onPress={() => router.push(conversationHref('dm', c.with))} />
           );
         })}
       </Section>

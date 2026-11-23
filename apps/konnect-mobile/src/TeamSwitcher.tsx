@@ -1,7 +1,8 @@
 /**
- * The team switcher, as Slack's workspace switcher: the person's teams (konjir_list_my_teams), each
- * with an unread dot and a mention badge, the one shown ticked; their invitations, each accepted on
- * Kolab's page; and making a team. Tapping a team moves the sign-in there and lands on its Home.
+ * The team menu, opened from the team at the top of Home, as Slack's workspace menu: the team shown,
+ * with its settings, inviting people and what notifies you from it; then the person's teams
+ * (konjir_list_my_teams), each with an unread dot and a mention badge, the one shown ticked; their
+ * invitations; and making a team. Tapping a team moves the sign-in there and lands on its Home.
  */
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
@@ -11,7 +12,7 @@ import { useAuth } from './auth/AuthProvider';
 import { Icon } from './icons';
 import { switcherOrder, type MyTeams } from './kolab/teams';
 import { FAMILIES, RADII, useAppTheme } from './theme';
-import { Button, Hint, Problem, Section } from './ui';
+import { Button, Hint, Problem, Row, Section } from './ui';
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
@@ -32,7 +33,7 @@ export function useMyTeams() {
   return q;
 }
 
-export function TeamSwitcher({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function TeamMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
   const auth = useAuth();
   const router = useRouter();
   const { colors } = useAppTheme();
@@ -48,16 +49,34 @@ export function TeamSwitcher({ open, onClose }: { open: boolean; onClose: () => 
     finally { setBusy(undefined); }
   };
   const teams = switcherOrder(mine.data?.teams ?? []);
+  const current = auth.current?.team;
+  // Out of the sheet, then on to one of the team's screens.
+  const go = (href: '/team' | '/notifications') => { onClose(); router.push(href); };
 
   return (
     <Modal visible={open} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <ScrollView testID="team-switcher-sheet" style={{ backgroundColor: colors.surface }} contentContainerStyle={styles.sheet}>
         <View style={styles.head}>
-          <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>Teams</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose}><Text style={{ color: colors.accent, fontFamily: FAMILIES.sans, fontSize: 16 }}>Done</Text></Pressable>
+          <Pressable testID="team-menu-done" accessibilityRole="button" accessibilityLabel="Close" hitSlop={10} onPress={onClose}><Text style={{ color: colors.accent, fontFamily: FAMILIES.sans, fontWeight: '600', fontSize: 16 }}>Done</Text></Pressable>
         </View>
+        {current && (
+          <>
+            <View style={styles.current}>
+              <View style={[styles.bigTile, { backgroundColor: colors.accent }]}><Text style={[styles.bigTileText, { color: colors['on-accent'] }]}>{current.slice(0, 2).toUpperCase()}</Text></View>
+              <View style={{ flex: 1 }}>
+                <Text accessibilityRole="header" numberOfLines={1} style={[styles.title, { color: colors.ink }]}>{current}</Text>
+                <Text style={[styles.role, { color: colors['ink-muted'] }]}>You&apos;re {auth.current?.actor}, {auth.current?.role}</Text>
+              </View>
+            </View>
+            <Section title={current}>
+              <Row testID="team-invite" icon="invite" label="Invite people" chevron onPress={() => go('/team')} />
+              <Row testID="team-settings" icon="settings" label="Team settings" chevron onPress={() => go('/team')} />
+              <Row testID="notification-settings" icon="notifications" label="Notifications" chevron onPress={() => go('/notifications')} />
+            </Section>
+          </>
+        )}
         {problem && <Problem>{problem}</Problem>}
-        <Section title={auth.current ? `${auth.current.actor} on GitHub` : 'Your teams'}>
+        <Section title="Switch teams">
           {mine.isLoading && <Hint>Reading…</Hint>}
           {mine.error && <Hint>{(mine.error as Error).message}</Hint>}
           {teams.map((t) => (
@@ -108,7 +127,11 @@ export function TeamSwitcher({ open, onClose }: { open: boolean; onClose: () => 
 
 const styles = StyleSheet.create({
   sheet: { padding: 16, gap: 18 },
-  head: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  head: { flexDirection: 'row', justifyContent: 'flex-start', alignItems: 'center' },
+  current: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  bigTile: { width: 52, height: 52, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },
+  bigTileText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 20 },
+  role: { fontFamily: FAMILIES.sans, fontSize: 14 },
   title: { fontFamily: FAMILIES.display, fontWeight: '600', fontSize: 28 },
   team: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 10 },
   tile: { width: 36, height: 36, borderRadius: RADII.md, alignItems: 'center', justifyContent: 'center' },

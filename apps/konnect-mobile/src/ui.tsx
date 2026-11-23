@@ -3,15 +3,16 @@
  * with a display-face title, a section header, a row with an icon, and a line of text.
  */
 import type { ComponentProps, ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { Icon, type IconName } from './icons';
 import { FAMILIES, RADII, useAppTheme } from './theme';
 
-export function Screen({ title, children, testID, refreshControl }: { title: string; children: ReactNode; testID?: string; refreshControl?: ComponentProps<typeof ScrollView>['refreshControl'] }) {
+/** A screen: its title in the display face (or `header`, in its place), then what it holds. */
+export function Screen({ title, header, children, testID, refreshControl }: { title?: string; header?: ReactNode; children: ReactNode; testID?: string; refreshControl?: ComponentProps<typeof ScrollView>['refreshControl'] }) {
   const { colors } = useAppTheme();
   return (
-    <ScrollView testID={testID} refreshControl={refreshControl} style={{ backgroundColor: colors.surface }} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.screen}>
-      <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>{title}</Text>
+    <ScrollView testID={testID} refreshControl={refreshControl} keyboardShouldPersistTaps="handled" style={{ backgroundColor: colors.surface }} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.screen}>
+      {header ?? (title !== undefined && <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>{title}</Text>)}
       {children}
     </ScrollView>
   );
@@ -27,13 +28,80 @@ export function Section({ title, children }: { title: string; children: ReactNod
   );
 }
 
-export function Row({ icon, label, detail, onPress, testID }: { icon: IconName; label: string; detail?: string; onPress?: () => void; testID?: string }) {
+/**
+ * A row of a card: an icon, a label and, at the right, a detail. One that opens something has a
+ * chevron; `destructive` is in the boundary colour, for what removes or ends something.
+ */
+export function Row({ icon, label, detail, onPress, testID, chevron, destructive }: { icon: IconName; label: string; detail?: string; onPress?: () => void; testID?: string; chevron?: boolean; destructive?: boolean }) {
   const { colors } = useAppTheme();
+  const tint = destructive ? colors.boundary : colors.accent;
   return (
     <Pressable testID={testID} accessibilityRole={onPress ? "button" : undefined} onPress={onPress} disabled={!onPress} style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors['accent-soft'] }]}>
+      <Icon name={icon} size={20} tintColor={tint} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
+      <Text style={[styles.rowLabel, { color: destructive ? colors.boundary : colors.ink }]}>{label}</Text>
+      {detail !== undefined && <Text numberOfLines={1} style={[styles.rowDetail, { color: colors['ink-muted'] }]}>{detail}</Text>}
+      {chevron && <Icon name="chevron" size={14} tintColor={colors['ink-muted']} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />}
+    </Pressable>
+  );
+}
+
+/** A row with a switch at the right: on or off, saved as it changes. */
+export function SwitchRow({ icon, label, value, onChange, testID, busy }: { icon: IconName; label: string; value: boolean; onChange: (on: boolean) => void; testID?: string; busy?: boolean }) {
+  const { colors } = useAppTheme();
+  return (
+    <View style={styles.row}>
       <Icon name={icon} size={20} tintColor={colors.accent} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />
       <Text style={[styles.rowLabel, { color: colors.ink }]}>{label}</Text>
-      {detail !== undefined && <Text style={[styles.rowDetail, { color: colors['ink-muted'] }]}>{detail}</Text>}
+      <Switch testID={testID} accessibilityLabel={label} value={value} disabled={busy} onValueChange={onChange}
+        trackColor={{ true: colors.accent, false: colors.line }} thumbColor={colors.surface} ios_backgroundColor={colors.line} />
+    </View>
+  );
+}
+
+/** One of a few choices, ticked when chosen, as iOS's settings lists them. */
+export function ChoiceRow({ label, chosen, onPress, testID }: { label: string; chosen: boolean; onPress: () => void; testID?: string }) {
+  const { colors } = useAppTheme();
+  return (
+    <Pressable testID={testID} accessibilityRole="radio" accessibilityState={{ checked: chosen }} onPress={onPress} style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors['accent-soft'] }]}>
+      <Text style={[styles.rowLabel, { color: colors.ink }]}>{label}</Text>
+      {chosen && <Icon name="check" size={18} tintColor={colors.accent} accessibilityElementsHidden importantForAccessibility="no-hide-descendants" />}
+    </Pressable>
+  );
+}
+
+/** A count in a pill: what is unread and for you (a mention, or a direct message). */
+export function Badge({ count, more }: { count: number; more?: boolean }) {
+  const { colors } = useAppTheme();
+  if (!count) return null;
+  return <View style={[styles.badge, { backgroundColor: colors.boundary }]}><Text style={[styles.badgeText, { color: colors['on-accent'] }]}>{count}{more ? '+' : ''}</Text></View>;
+}
+
+/**
+ * A row of a list of conversations, Slack's way: a picture at the left, the name (bold when
+ * something is unread), one line of what was said last under it, and the time and a badge at the
+ * right. `subTone` colours that line: `alert` for what needs you.
+ */
+export function ListRow({ leading, title, subtitle, subTone, time, unread, badge, badgeMore, onPress, testID, accessibilityLabel }: {
+  leading: ReactNode; title: string; subtitle?: string; subTone?: 'alert'; time?: string; unread?: boolean; badge?: number; badgeMore?: boolean;
+  onPress: () => void; testID?: string; accessibilityLabel?: string;
+}) {
+  const { colors } = useAppTheme();
+  return (
+    <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel ?? title} onPress={onPress}
+      style={({ pressed }) => [styles.list, pressed && { backgroundColor: colors['accent-soft'] }]}>
+      {leading}
+      <View style={styles.listText}>
+        <View style={styles.listTop}>
+          <Text numberOfLines={1} style={[styles.listTitle, { color: unread ? colors.ink : colors['ink-muted'], fontWeight: unread ? '700' : '500' }]}>{title}</Text>
+          {time && <Text style={[styles.listTime, { color: colors['ink-muted'] }]}>{time}</Text>}
+        </View>
+        {(subtitle || !!badge) && (
+          <View style={styles.listTop}>
+            <Text numberOfLines={1} style={[styles.listSub, { color: subTone === 'alert' ? colors.boundary : colors['ink-muted'], fontWeight: subTone === 'alert' ? '600' : '400' }]}>{subtitle ?? ''}</Text>
+            <Badge count={badge ?? 0} more={badgeMore} />
+          </View>
+        )}
+      </View>
     </Pressable>
   );
 }
@@ -97,7 +165,15 @@ const styles = StyleSheet.create({
   card: { borderRadius: RADII.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
   rowLabel: { flex: 1, fontFamily: FAMILIES.sans, fontWeight: '500', fontSize: 16 },
-  rowDetail: { fontFamily: FAMILIES.mono, fontSize: 13 },
+  rowDetail: { fontFamily: FAMILIES.sans, fontSize: 15, maxWidth: '55%' },
+  badge: { minWidth: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  badgeText: { fontFamily: FAMILIES.sans, fontWeight: '700', fontSize: 12 },
+  list: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 10 },
+  listText: { flex: 1, gap: 2 },
+  listTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  listTitle: { flex: 1, fontFamily: FAMILIES.sans, fontSize: 16 },
+  listTime: { fontFamily: FAMILIES.sans, fontSize: 12 },
+  listSub: { flex: 1, fontFamily: FAMILIES.sans, fontSize: 14 },
   body: { fontFamily: FAMILIES.sans, fontWeight: '400', fontSize: 15, lineHeight: 22 },
   mono: { fontFamily: FAMILIES.mono, fontWeight: '400', fontSize: 13, lineHeight: 19 },
 });

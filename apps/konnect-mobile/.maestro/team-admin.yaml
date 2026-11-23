@@ -4,19 +4,20 @@ appId: ${APP_ID}
 tags: [local-kolab]
 ---
 - runFlow: subflows/sign-in-ann.yaml
-- tapOn: "You"
+- tapOn:
+    id: "team-switcher"
 - tapOn:
     id: "team-settings"
 - tapOn:
     id: "invite"
 - inputText: "cy"
-- hideKeyboard
 - tapOn:
     id: "send-invite"
 - extendedWaitUntil:
     visible: "Invited cy.*"
     timeout: 20000
-- tapOn: "cy.*withdraw"
+- tapOn:
+    id: "invitation-cy"
 # The confirmation, before its button: a tap too soon lands on the row's own "withdraw".
 - extendedWaitUntil:
     visible: "Withdraw cy's invitation\\?"
@@ -29,6 +30,7 @@ tags: [local-kolab]
     visible: "Withdrew cy's invitation."
     timeout: 20000
 - assertVisible: "None waiting."
+- tapOn: "Back"
 - tapOn: "You"
 - tapOn:
     id: "sign-out"
