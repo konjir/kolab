@@ -1,6 +1,6 @@
 {
   "name": "@konjir/konnect-mobile",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "konnect for iOS and Android: a team's people and their agents, on a phone",
   "license": "Apache-2.0",

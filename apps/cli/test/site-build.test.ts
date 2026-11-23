@@ -27,6 +27,7 @@ const PAGES: [string, string][] = [
   ['kolab/hands-on/index.html', 'https://www.konjir.com/kolab/hands-on/'],
   ['konnect/index.html', 'https://www.konjir.com/konnect/'],
   ['konnect/guide/index.html', 'https://www.konjir.com/konnect/guide/'],
+  ['privacy/index.html', 'https://www.konjir.com/privacy/'],
 ];
 const headerOf = (html: string) => /<header\b[^>]*>[\s\S]*?<\/header>/.exec(html)![0];
 // Every file under a folder, by its path from that folder.
@@ -104,7 +105,7 @@ test("the messages guide is built into konnect/guide/index.html as the tutorial 
   const r = copy('messages');
   const b = build(r);
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
-  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, konnect/app/oauth/index.html, konnect/app/preview/oauth/index.html, 404.html');
+  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, privacy/index.html, konnect/app/oauth/index.html, konnect/app/preview/oauth/index.html, 404.html');
   const home = read(r, 'kolab/index.html');
   const page = read(r, 'konnect/guide/index.html');
   expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Chat for your team\'s people and their AI agents</h1></header>');
@@ -258,7 +259,8 @@ test("every page has the one header: the mark links to /, the product switcher m
     const section = file.split('/')[0];
     expect(head.includes(`<a href="/kolab/" aria-current="${current[file]}"`)).toBe(section === 'kolab');
     expect(head.includes(`<a href="/konnect/" aria-current="${current[file]}"`)).toBe(section === 'konnect');
-    expect((head.match(/aria-current="page"/g) ?? []).length).toBe(file === '404.html' ? 0 : 1);
+    // The privacy policy, like the 404, is in no section's links: nothing in the header is its page.
+    expect((head.match(/aria-current="page"/g) ?? []).length).toBe(file === '404.html' || file === 'privacy/index.html' ? 0 : 1);
     expect(/aria-current="(page|true)"/.test(head.slice(head.indexOf('aria-label="Products"'), head.indexOf('</div>', head.indexOf('aria-label="Products"'))))).toBe(section === 'kolab' || section === 'konnect');
     const signIn = section === 'kolab';
     expect(head.includes('<a href="https://kolab.konjir.com/" class=')).toBe(signIn);
@@ -319,7 +321,7 @@ test("on a narrow screen every header is one row, the mark, the product switcher
   expect(js).toContain("e.key !== 'Escape'");
 });
 
-test('every footer links to the source on GitHub, both packages on npm and their licences, and to no privacy policy, terms or contact yet', () => {
+test('every footer links to the source on GitHub, both packages on npm and their licences, and the privacy policy, and to no terms or contact yet', () => {
   const r = copy('footer');
   const b = build(r);
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
@@ -330,13 +332,14 @@ test('every footer links to the source on GitHub, both packages on npm and their
     ['https://github.com/konjir/kolab/blob/main/LICENSE.md', 'Kolab server licence (FSL-1.1-ALv2)'],
     ['https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE', 'kolab CLI licence (Apache-2.0)'],
     ['https://github.com/konjir/kolab/blob/main/apps/konnect/LICENSE', 'konnect licence (Apache-2.0)'],
+    ['/privacy/', 'Privacy'],
   ];
   const nav = new RegExp(`<nav aria-label="Source and licences" class="[^"]*">\\n${links.map(([href, text]) => `<a href="${href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}">${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`).join('\\n')}\\n</nav>`);
   // Kolab's own footer (site/src/kolab/footer.html, on Kolab's pages) and the shared one (every other page and the 404) alike.
   for (const file of [...PAGES.map(([f]) => f), '404.html']) {
     const foot = /<footer\b[\s\S]*<\/footer>/.exec(read(r, file))![0];
     expect([file, nav.test(foot)]).toStrictEqual([file, true]);
-    expect(foot).not.toMatch(/privacy|terms|contact|mailto:/i);
+    expect(foot).not.toMatch(/terms|contact|mailto:/i);
   }
   // The licences it names are the repository's: the server's FSL, the CLIs' Apache-2.0.
   expect(readFileSync(join(ROOT, 'LICENSE.md'), 'utf8')).toContain('FSL-1.1-ALv2');

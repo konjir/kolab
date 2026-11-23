@@ -57,7 +57,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     ...config,
     name,
     slug: 'konnect',
-    version: '0.1.0',
+    version: '1.0.0',
     // Not web: Kolab's /mcp sends no CORS headers, and the web interface is apps/web.
     platforms: ['ios', 'android'],
     scheme: id,
