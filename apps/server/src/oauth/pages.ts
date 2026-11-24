@@ -222,7 +222,7 @@ export function consentPage(v: ConsentView): string {
   const role = v.pick.role ?? 'product';
   const agentOption = (a: string) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></span></label>`;
   // A person may have a thousand agents: the chosen one and those signed in now, then the rest up to
-  // AGENTS_SHOWN, in the order given; any more are folded away, still in the same choice.
+  // AGENTS_SHOWN, in the order given (more only if more are signed in); any more are folded away, still in the same choice.
   const first = new Set(v.agents.filter((a) => as === `agent:${a}` || v.signedIn?.includes(a)));
   for (const a of v.agents) if (first.size < AGENTS_SHOWN) first.add(a);
   const shown = v.agents.filter((a) => first.has(a));
