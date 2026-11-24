@@ -317,6 +317,31 @@ test('every table of kolab data refuses writes to an archived kolab: each has th
   }
 });
 
+test("every table that refuses updates to an archived kolab lets a deleted account's re-key through only by kolab_rekeyed, row by row", async () => {
+  const kolab = await openKolab();
+  const writable = (await kolab.db.query<{ t: string }>(
+    `select distinct event_object_table as t from information_schema.triggers where trigger_name = 'kolab_writable_update' order by 1`)).rows.map((r) => r.t);
+  const rekeyed = (await kolab.db.query<{ t: string; level: string; timing: string }>(
+    `select event_object_table as t, action_orientation as level, action_timing as timing from information_schema.triggers
+      where trigger_name = 'kolab_rekeyed' order by 1`)).rows;
+  expect(writable.length).toBeGreaterThanOrEqual(15);
+  expect(rekeyed.map((r) => r.t)).toStrictEqual(writable);
+  expect(rekeyed.every((r) => r.level === 'ROW' && r.timing === 'BEFORE')).toBe(true);
+});
+
+test('every column that names an actor with no foreign key has the actor_named trigger, so a write racing a deletion waits for it', async () => {
+  const kolab = await openKolab();
+  const columns = (await kolab.db.query<{ tbl: string; col: string }>(`select distinct tbl, col from kj_actor_columns() order by 1, 2`)).rows;
+  expect(columns.length).toBeGreaterThan(0);
+  const triggers = (await kolab.db.query<{ tbl: string; def: string }>(
+    `select c.relname as tbl, pg_get_triggerdef(g.oid) as def from pg_trigger g join pg_class c on c.oid = g.tgrelid
+      where g.tgname = 'actor_named' and not g.tgisinternal`)).rows;
+  for (const { tbl, col } of columns) {
+    const def = triggers.find((x) => x.tbl === tbl)?.def ?? '';
+    expect([tbl, col, def]).toStrictEqual([tbl, col, expect.stringMatching(new RegExp(`BEFORE INSERT OR UPDATE OF .*\\b${col}\\b.* ON `))]);
+  }
+});
+
 test("an outbox job running when its kolab is archived is released as it was, not counted as an attempt", async () => {
   const { kolab } = await world();
   const v1 = (await kolab.latestCommitted('orders-spec'))!;
