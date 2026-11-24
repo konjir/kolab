@@ -202,6 +202,9 @@ ${hidden}
 </form>`;
 }
 
+/** How many of a person's agents the consent page lists before folding the rest away. */
+export const AGENTS_SHOWN = 20;
+
 /**
  * The consent page (D55): who signed in, which client asks, and the choice of who it acts as, in
  * which kolab and role. An MCP client defaults to an agent of yours (D30): a new one unless the
@@ -217,8 +220,16 @@ export function consentPage(v: ConsentView): string {
   const kolab = v.pick.kolab ?? (v.invite ? (v.kolabs.length ? '' : '@invite') : v.kolabs[0] ? `kolab:${v.kolabs[0].id}` : '@new');
   const as = v.pick.as ?? (v.web ? 'self' : 'new-agent');
   const role = v.pick.role ?? 'product';
+  const agentOption = (a: string) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></span></label>`;
+  // A person may have a thousand agents: the chosen one and those signed in now, then the rest up to
+  // AGENTS_SHOWN, in the order given; any more are folded away, still in the same choice.
+  const first = new Set(v.agents.filter((a) => as === `agent:${a}` || v.signedIn?.includes(a)));
+  for (const a of v.agents) if (first.size < AGENTS_SHOWN) first.add(a);
+  const shown = v.agents.filter((a) => first.has(a));
+  const folded = v.agents.filter((a) => !first.has(a));
   const who = v.web ? '' : `<fieldset><legend>Work as</legend>
-${v.agents.map((a) => `<label class="opt"><input type="radio" name="as" value="agent:${esc(a)}"${checked(as === `agent:${a}`)}><span><code>${esc(a)}</code><small>${v.signedIn?.includes(a) ? '<strong>Signed in elsewhere now: choosing it here ends that session.</strong> An agent holds one session at a time.' : 'An agent of yours: its own actor and session, never more access than you'}</small></span></label>`).join('\n')}
+${shown.map(agentOption).join('\n')}
+${folded.length ? `<details><summary>${folded.length} more agent${folded.length === 1 ? '' : 's'} of yours</summary>\n${folded.map(agentOption).join('\n')}\n</details>` : ''}
 <label class="opt"><input type="radio" name="as" value="new-agent"${checked(as === 'new-agent')}><span>A new agent of yours, <code>${esc(v.person)}-</code><input type="text" name="agent_label" value="${esc(v.pick.label ?? 'agent')}" maxlength="24" aria-label="The new agent's name" pattern="[a-z0-9][a-z0-9\\-]*"></span></label>
 <label class="opt"><input type="radio" name="as" value="self"${checked(as === 'self')}><span>Yourself, <code>${esc(v.person)}</code><small>${v.konjirAdmin ? '<strong>You are a Konjir admin: this app can run every admin verb as you.</strong> ' : ''}Replaces only a sign-in of yours through this same app; yours elsewhere, such as Kolab's web page, stay open</small></span></label>
 </fieldset>`;

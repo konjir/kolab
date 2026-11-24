@@ -3742,17 +3742,20 @@ export class Kolab {
     const me = await this.sessionInfo(session);
     if (me.kind !== 'person') throw new AccessError(`${me.actor} is an agent: only a person lists their agents. Sign in as yourself to list them`);
     const rows = await this.ownAgentRows(this.db, me.actor, !!opts.archived);
-    const grants = rows.length ? (await this.db.query<{ agent_id: string; kolab_id: string }>(
-      `select agent_id, kolab_id from kolab_grant where agent_id = any($1) order by kolab_id`, [rows.map((r) => r.agent)])).rows : [];
-    const agents = [];
-    for (const r of rows) {
-      const kolabs = [];
-      for (const g of grants.filter((x) => x.agent_id === r.agent)) {
-        const access = await accessIn(this.db, r.agent, g.kolab_id);
-        if (access.level) kolabs.push({ kolab: g.kolab_id, access });
-      }
-      agents.push({ agent: r.agent, label: r.label, archive_with: r.archiveWith, made: r.made, last_used: r.lastUsed, kolabs, session_open: r.open, archived: r.archived });
+    // Each grant's access in one query, kj_access per row, since a person may have a thousand agents.
+    const grants = rows.length ? (await this.db.query<{ agent_id: string; kolab_id: string; rank: number; functional: boolean; technical: boolean }>(
+      `select g.agent_id, g.kolab_id, a.rank, a.functional, a.technical
+         from kolab_grant g cross join lateral kj_access(g.agent_id, g.kolab_id) a
+        where g.agent_id = any($1) order by g.kolab_id`, [rows.map((r) => r.agent)])).rows : [];
+    const byAgent = new Map<string, { kolab: string; access: Access }[]>();
+    for (const g of grants) {
+      const access = toAccess(g);
+      if (!access.level) continue;
+      const list = byAgent.get(g.agent_id) ?? [];
+      list.push({ kolab: g.kolab_id, access });
+      byAgent.set(g.agent_id, list);
     }
+    const agents = rows.map((r) => ({ agent: r.agent, label: r.label, archive_with: r.archiveWith, made: r.made, last_used: r.lastUsed, kolabs: byAgent.get(r.agent) ?? [], session_open: r.open, archived: r.archived }));
     const live = (await this.db.query<{ n: number }>(`select count(*)::int as n from actor where owner_id = $1 and not kj_actor_archived(id)`, [me.actor])).rows[0].n;
     return { agents, live, limit: this.oauth.agentsPerPerson };
   }

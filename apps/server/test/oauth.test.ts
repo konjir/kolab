@@ -1066,3 +1066,21 @@ test('konnect\'s development builds\' schemes are redirect URIs only where KONJI
   closeAtEnd(dev);
   expect(await register(new URL(dev.url).origin, ['com.konjir.konnect.dev:/oauth'])).toMatchObject({ status: 201 });
 });
+
+test('the consent page lists 20 of a person\'s agents, the chosen one and those signed in now among them, and folds the rest away in the same choice (a person may have 1000)', async () => {
+  const { AGENTS_SHOWN, consentPage } = await import('../src/oauth/pages.js');
+  const agents = Array.from({ length: 30 }, (_, i) => `ann-a${String(i).padStart(2, '0')}`);
+  const html = consentPage({
+    signIn: 's', csrf: 'c', client: 'Claude Code', redirect: 'http://127.0.0.1:1/cb', web: false, person: 'ann', login: 'ann', provider: 'GitHub', created: false,
+    kolabs: [], agents, signedIn: ['ann-a29'], pick: { as: 'agent:ann-a25' },
+  });
+  expect(AGENTS_SHOWN).toBe(20);
+  const [open, folded] = html.split('<details>');
+  const radios = (s: string) => [...s.matchAll(/value="agent:([^"]+)"/g)].map((m) => m[1]);
+  expect(radios(open)).toStrictEqual([...agents.slice(0, 18), 'ann-a25', 'ann-a29']);
+  expect(folded).toContain('<summary>10 more agents of yours</summary>');
+  expect(radios(folded.split('</details>')[0])).toStrictEqual(agents.slice(18, 29).filter((a) => a !== 'ann-a25'));
+  expect(html).toContain('value="agent:ann-a25" checked');
+  // Twenty or fewer: nothing folded.
+  expect(consentPage({ signIn: 's', csrf: 'c', client: 'x', redirect: 'http://127.0.0.1:1/cb', web: false, person: 'ann', login: 'ann', provider: 'GitHub', created: false, kolabs: [], agents: agents.slice(0, 20), pick: {} })).not.toContain('<details>');
+});

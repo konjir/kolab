@@ -682,8 +682,8 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     if (kolabsPerPerson !== undefined && !(Number.isInteger(kolabsPerPerson) && kolabsPerPerson >= 0)) throw new Error('KONJIR_KOLABS_PER_PERSON is a whole number');
     // How many live agents a person may have (D56): 1000 unless this says otherwise, as the connect e2e does.
     const agentsEnv = process.env.KONJIR_AGENTS_PER_PERSON;
+    if (agentsEnv !== undefined && agentsEnv !== '' && !/^[1-9][0-9]*$/.test(agentsEnv)) throw new Error('KONJIR_AGENTS_PER_PERSON must be a whole number, 1 or more');
     const agentsPerPerson = agentsEnv === undefined || agentsEnv === '' ? undefined : Number(agentsEnv);
-    if (agentsPerPerson !== undefined && !(Number.isInteger(agentsPerPerson) && agentsPerPerson >= 0)) throw new Error('KONJIR_AGENTS_PER_PERSON is a whole number');
     // How long a hand-issued session token lasts (W2.22): 30 days unless this says otherwise.
     const days = process.env.KONJIR_HAND_ISSUED_TOKEN_DAYS;
     const handIssuedTokenDays = days === undefined || days === '' ? undefined : Number(days);
