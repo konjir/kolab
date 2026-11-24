@@ -227,7 +227,7 @@ test('a username chosen at an Apple sign-up is never a deleted account\'s, old o
   const github = async (login: string): Promise<never> => { asked.push(login); throw new Error('GitHub is down'); };
   for (const name of ['bo', 'BO', '@Bo', 'bo-claude', 'bo-x', 'bo-claude-2']) {
     const lower = name.replace(/^@/, '').toLowerCase();
-    expect([name, await rejection(k.chooseUsername(binding, csrf, name, { github }))]).toStrictEqual([name, `ActorError: the username ${lower} can't be used: choose another`]);
+    expect([name, await rejection(k.chooseUsername(binding, csrf, name, { github }))]).toStrictEqual([name, `ActorError: the username ${lower} is taken: choose another`]);
   }
   // A deleted account's new kind of name is reserved, as it is at any sign-up.
   for (const name of [gone, `${gone}-2`, 'deleted-0123456789ab']) {
@@ -241,8 +241,8 @@ test('a username chosen at an Apple sign-up is never a deleted account\'s, old o
   const check = raced.requireFreeName;
   raced.requireFreeName = async () => undefined;
   try {
-    expect(await rejection(k.chooseUsername(binding, csrf, 'bo'))).toBe('ActorError: the username bo can\'t be used: choose another');
-    expect(await rejection(k.chooseUsername(binding, csrf, 'bo-claude-2'))).toBe('ActorError: the username bo-claude-2 can\'t be used: choose another');
+    expect(await rejection(k.chooseUsername(binding, csrf, 'bo'))).toBe('ActorError: the username bo is taken: choose another');
+    expect(await rejection(k.chooseUsername(binding, csrf, 'bo-claude-2'))).toBe('ActorError: the username bo-claude-2 is taken: choose another');
   } finally {
     raced.requireFreeName = check;
   }
