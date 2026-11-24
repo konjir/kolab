@@ -11,7 +11,7 @@ Konjir keeps what it needs to sign you in and to carry your team's work, and not
 - **Your sign-ins.** The tokens that keep the app and the tools signed in, and the apps and tools you allowed.
 - **Notifications.** If you allow notifications on your phone, its push token, and your notification settings for each team.
 - **Technical logs.** Kolab's servers log requests and errors, which can include your IP address, for security and to fix problems. They are kept for 30 days.
-- **This website** stores only your theme choice, in your browser. It sets no cookies. Kolab's own sign-in pages, at `kolab.konjir.com`, set only the cookies a sign-in needs while it is under way.
+- **This website** stores only your theme choice, in your browser. It sets no cookies. Kolab's own pages, at `kolab.konjir.com`, set only cookies that sign you in and keep you signed in, one of which remembers this browser's sign-in for up to 400 days, and none for tracking.
 
 ## Who can read what
 
