@@ -680,6 +680,10 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     const perPerson = process.env.KONJIR_KOLABS_PER_PERSON;
     const kolabsPerPerson = perPerson === undefined || perPerson === '' ? undefined : Number(perPerson);
     if (kolabsPerPerson !== undefined && !(Number.isInteger(kolabsPerPerson) && kolabsPerPerson >= 0)) throw new Error('KONJIR_KOLABS_PER_PERSON is a whole number');
+    // How many live agents a person may have (D56): 1000 unless this says otherwise, as the connect e2e does.
+    const agentsEnv = process.env.KONJIR_AGENTS_PER_PERSON;
+    const agentsPerPerson = agentsEnv === undefined || agentsEnv === '' ? undefined : Number(agentsEnv);
+    if (agentsPerPerson !== undefined && !(Number.isInteger(agentsPerPerson) && agentsPerPerson >= 0)) throw new Error('KONJIR_AGENTS_PER_PERSON is a whole number');
     // How long a hand-issued session token lasts (W2.22): 30 days unless this says otherwise.
     const days = process.env.KONJIR_HAND_ISSUED_TOKEN_DAYS;
     const handIssuedTokenDays = days === undefined || days === '' ? undefined : Number(days);
@@ -695,7 +699,7 @@ export async function main(argv: string[], io: { open?: (u: URL) => void | Promi
     if (sign.appleOff) log.warn(sign.appleOff, { event: 'apple_sign_in_off' });
     const { describe, webTokenSignIn, ...identity } = await sign.identity(server, (m) => log.warn(m, { event: 'apple_sign_in_off' }));
     // The stub signs anyone in: its Kolab binds 127.0.0.1, named here, before it listens.
-    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, handIssuedTokenDays, ...identity, webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker, clientLog: log });
+    const s = await startServer({ ...(sign.stub ? { host: '127.0.0.1' } : {}), port, dataDir, databaseUrl, adminToken, publicHost, kolabsPerPerson, agentsPerPerson, handIssuedTokenDays, ...identity, webTokenSignIn, handIssuedTokens: sign.handIssuedTokens, cliNpmSpec, migrate, worker, clientLog: log });
     if (!migrate) log.warn('migrations: checked, none applied (--no-migrate); a release with a new migration refuses to start');
     if (!worker) log.warn('outbox: no worker (--no-worker); no after_commit, settle or rebase job is claimed or run');
     if (sign.stub) log.warn(`sign-in: ${describe}`, { event: 'stub_identity' });

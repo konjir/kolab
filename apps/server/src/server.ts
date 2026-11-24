@@ -54,6 +54,8 @@ export async function startServer(opts: {
   webVersionsPollMs?: number;
   /** How many kolabs a person may own when they make their own (D54; 10 by default). */
   kolabsPerPerson?: number;
+  /** How many live agents a person may have (D56; 1000 by default, KONJIR_AGENTS_PER_PERSON). */
+  agentsPerPerson?: number;
   /** How many days a hand-issued session token lasts (W2.22; 30 by default, KONJIR_HAND_ISSUED_TOKEN_DAYS). */
   handIssuedTokenDays?: number;
   /**
@@ -89,6 +91,7 @@ export async function startServer(opts: {
 }): Promise<KonjirServer> {
   const kolab = opts.kolab ?? await Kolab.open({ dataDir: opts.dataDir, databaseUrl: opts.databaseUrl, migrate: opts.migrate });
   if (opts.kolabsPerPerson !== undefined) kolab.ownKolabs.max = opts.kolabsPerPerson;
+  if (opts.agentsPerPerson !== undefined) kolab.oauth.agentsPerPerson = opts.agentsPerPerson;
   const devSchemes = opts.appDevSchemes ?? appDevSchemesFromEnv();
   if (devSchemes !== undefined) kolab.appRedirects.devSchemes = devSchemes;
   if (opts.handIssuedTokenDays !== undefined) {

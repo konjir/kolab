@@ -121,7 +121,7 @@ async function startKolabOnce() {
   const port = await freePort();
   // Its own process group, so cleanup stops tsx and the node it starts.
   server = spawn(CHECKOUT, ['serve', '--port', String(port), '--data', join(tmp, 'data'), '--admin-token', 'off'], {
-    cwd: tmp, env: env({ KONJIR_STUB_IDENTITY: LOGIN }), stdio: ['ignore', 'pipe', 'pipe'], detached: true,
+    cwd: tmp, env: env({ KONJIR_STUB_IDENTITY: LOGIN, KONJIR_AGENTS_PER_PERSON: '10' }), stdio: ['ignore', 'pipe', 'pipe'], detached: true,
   });
   let log = '';
   return await new Promise((ok, no) => {
