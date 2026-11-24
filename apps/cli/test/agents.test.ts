@@ -322,13 +322,13 @@ test('over MCP, kolab list_agents (D106): a person\'s own session lists their ag
     return client;
   };
   const alice = await open('alice');
-  expect(await call(alice, 'list_agents')).toStrictEqual({ agents: [], live: 0, limit: 10 });
+  expect(await call(alice, 'list_agents')).toStrictEqual({ agents: [], live: 0, limit: 1000 });
   expect(await call(alice, 'create_agent', { label: 'pm' })).toStrictEqual({ agent: 'alice-pm', created: true, owner: 'alice' });
   await call(admin, 'admin_grant', { kolab: 'checkout', to: 'alice-pm', level: 'write', layers: ['functional'] });
   const pm = await open('alice-pm');
   expect(await call(alice, 'list_agents')).toStrictEqual({
     agents: [{ agent: 'alice-pm', label: 'pm', archive_with: 'label=pm', made: expect.any(String), last_used: expect.any(String), kolabs: [{ kolab: 'checkout', access: { level: 'write', layers: ['functional'] } }], session_open: true, archived: false }],
-    live: 1, limit: 10,
+    live: 1, limit: 1000,
   });
   expect(await rejection(call(pm, 'list_agents'))).toMatch(/alice-pm is an agent: only a person lists their agents/);
   expect(await rejection(call(admin, 'list_agents'))).toMatch(/this tool needs an agent session token, not the admin token/);
