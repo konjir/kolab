@@ -522,7 +522,8 @@ test('a username that was a deleted account\'s is refused on the page as a taken
     github.down = down;
     const refused = await first.browser.post('/oauth/username', { ...form, username: name });
     expect([name, refused.res.status]).toStrictEqual([name, 400]);
-    expect(refused.html).toContain(`the username ${name.toLowerCase()} is taken: choose another`);
+    // As a live person's name and namespace read.
+    expect(refused.html).toContain(name === 'ghost-x' ? 'ghost-x reads as an agent of ghost&#39;s' : `the username ${name.toLowerCase()} is taken: choose another`);
     expect(field(refused.html, 'username')).toBe(name);
   }
   github.down = false;

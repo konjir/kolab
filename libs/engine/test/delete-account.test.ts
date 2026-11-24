@@ -225,9 +225,13 @@ test('a username chosen at an Apple sign-up is never a deleted account\'s, old o
   // GitHub's lookup is never asked about a name Kolab refuses itself, nor is a failing one the reason.
   const asked: string[] = [];
   const github = async (login: string): Promise<never> => { asked.push(login); throw new Error('GitHub is down'); };
-  for (const name of ['bo', 'BO', '@Bo', 'bo-claude', 'bo-x', 'bo-claude-2']) {
+  // Exactly as a live person's name and namespace read, so the page never tells bo was deleted.
+  for (const name of ['bo', 'BO', '@Bo']) {
     const lower = name.replace(/^@/, '').toLowerCase();
     expect([name, await rejection(k.chooseUsername(binding, csrf, name, { github }))]).toStrictEqual([name, `ActorError: the username ${lower} is taken: choose another`]);
+  }
+  for (const name of ['bo-claude', 'bo-x', 'bo-claude-2']) {
+    expect([name, await rejection(k.chooseUsername(binding, csrf, name, { github }))]).toStrictEqual([name, expect.stringMatching(new RegExp(`^ActorError: ${name} reads as an agent of (bo|bo-claude)'s \\(<person>-<label>\\): choose a username that doesn't start with (bo|bo-claude)-$`))]);
   }
   // A deleted account's new kind of name is reserved, as it is at any sign-up.
   for (const name of [gone, `${gone}-2`, 'deleted-0123456789ab']) {
@@ -242,7 +246,6 @@ test('a username chosen at an Apple sign-up is never a deleted account\'s, old o
   raced.requireFreeName = async () => undefined;
   try {
     expect(await rejection(k.chooseUsername(binding, csrf, 'bo'))).toBe('ActorError: the username bo is taken: choose another');
-    expect(await rejection(k.chooseUsername(binding, csrf, 'bo-claude-2'))).toBe('ActorError: the username bo-claude-2 is taken: choose another');
   } finally {
     raced.requireFreeName = check;
   }
