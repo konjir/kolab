@@ -2647,9 +2647,9 @@ export class Kolab {
     try {
       await this.requireFreeName(name, 'ActorError');
     } catch (e) {
-      // A deleted account's name (migration 0060) reads as RetiredNameError does, never as taken.
-      if (e instanceof RetiredNameError) throw new ActorError(`the username ${name} can't be used: choose another`);
-      if (e instanceof NameTakenError) throw new ActorError(`the username ${name} is taken: choose another`);
+      // A deleted account's name (migration 0060) reads exactly as a taken one, so this page, open to
+      // anyone with an Apple account, never tells whether a name was a deleted account's.
+      if (e instanceof RetiredNameError || e instanceof NameTakenError) throw new ActorError(`the username ${name} is taken: choose another`);
       throw e;
     }
     if (github) {
@@ -2739,8 +2739,8 @@ export class Kolab {
       // (identity_pkey), or by this same form posted twice, under this one (account_pkey). It is that person.
       if (/identity_pkey|actor_pkey|account_pkey|actor_id_lower|account_id_lower/.test(why)) { const again = await found(); if (again) return again; }
       if (/actor_pkey|actor_id_lower|account_pkey|account_id_lower|actor_not_doer|account_not_doer/.test(why)) throw new ActorError(`the username ${name} is taken: choose another`);
-      // Retired by an account's deletion between the check and the insert (kj_name_free, migration 0060).
-      if (retiredNameViolation(e)) throw new ActorError(`the username ${name} can't be used: choose another`);
+      // Retired by an account's deletion between the check and the insert (kj_name_free, migration 0060): taken, as above.
+      if (retiredNameViolation(e)) throw new ActorError(`the username ${name} is taken: choose another`);
       throw e;
     }
   }

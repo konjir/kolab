@@ -507,7 +507,7 @@ test('with GitHub\'s sign-in beside Apple\'s, a username that is a GitHub accoun
   expect(await kolab.signInWith({ provider: 'stub', subject: '583231', login: 'octocat' })).toStrictEqual({ actor: 'octocat', created: true });
 });
 
-test('a username that was a deleted account\'s is refused on the page as one that can\'t be used, before GitHub is asked, even while GitHub is down; the same form then makes a free one', async () => {
+test('a username that was a deleted account\'s is refused on the page as a taken one, so the page never tells it was a deleted account\'s, before GitHub is asked, even while GitHub is down; the same form then makes a free one', async () => {
   const kolab = await openKolab();
   const { base, tokens, github } = await serve(kolab);
   // ghost signed up with GitHub, and deleted their account: the name is retired (migration 0060).
@@ -522,7 +522,7 @@ test('a username that was a deleted account\'s is refused on the page as one tha
     github.down = down;
     const refused = await first.browser.post('/oauth/username', { ...form, username: name });
     expect([name, refused.res.status]).toStrictEqual([name, 400]);
-    expect(refused.html).toContain(`the username ${name.toLowerCase()} can&#39;t be used: choose another`);
+    expect(refused.html).toContain(`the username ${name.toLowerCase()} is taken: choose another`);
     expect(field(refused.html, 'username')).toBe(name);
   }
   github.down = false;
@@ -583,4 +583,33 @@ test('a cancel at the wrong provider\'s callback doesn\'t end a sign-in sent to 
   const at2 = (await browser.go(hrefs(page2.html)[0])).left!;
   const cancelled = await browser.go(`/oauth/callback/apple?error=user_cancelled_authorize&state=${encodeURIComponent(at2.searchParams.get('state')!)}`);
   expect(Object.fromEntries(cancelled.left!.searchParams)).toMatchObject({ error: 'access_denied', state: 'client-state' });
+});
+
+test('GitHub is asked about at most 10 names an hour for one Apple sign-in, and its answer for a name is kept, so asking again costs nothing; another sign-in still asks', async () => {
+  const kolab = await openKolab();
+  const { base, tokens, github } = await serve(kolab);
+  const names = Array.from({ length: 11 }, (_, i) => `gh-user${i + 1}`);
+  names.forEach((login, i) => github.account({ subject: String(900 + i), login }));
+  const asked: string[] = [];
+  const real = github.lookup!.bind(github);
+  (github as { lookup: typeof real }).lookup = async (login: string) => { asked.push(login); return real(login); };
+  const first = await withApple(base, tokens, await register(base));
+  const form = { sign_in: field(first.html, 'sign_in'), csrf: field(first.html, 'csrf'), decision: 'choose' };
+  const choose = async (browser: typeof first.browser, f: typeof form, username: string) => (await browser.post('/oauth/username', { ...f, username })).html;
+  // The same name twice, in any case: GitHub asked once.
+  expect(await choose(first.browser, form, names[0])).toContain('That is a GitHub username');
+  expect(await choose(first.browser, form, names[0].toUpperCase())).toContain('That is a GitHub username');
+  expect(asked).toStrictEqual([names[0]]);
+  for (const n of names.slice(1, 10)) expect(await choose(first.browser, form, n)).toContain('That is a GitHub username');
+  expect(asked).toHaveLength(10);
+  // The 11th new name from this sign-in isn't checked, so it isn't taken: try again later.
+  expect(await choose(first.browser, form, names[10])).toContain(`Kolab couldn&#39;t check with GitHub whether ${names[10]} is a GitHub username just now`);
+  expect(asked).toHaveLength(10);
+  // A name already answered still is, from the cache.
+  expect(await choose(first.browser, form, names[3])).toContain('That is a GitHub username');
+  // Another sign-in has its own 10.
+  const second = await withApple(base, tokens, await register(base), '002345.0123456789abcdef0123456789abcdef.1234');
+  const form2 = { sign_in: field(second.html, 'sign_in'), csrf: field(second.html, 'csrf'), decision: 'choose' };
+  expect(await choose(second.browser, form2, names[10])).toContain('That is a GitHub username');
+  expect(asked).toHaveLength(11);
 });

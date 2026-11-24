@@ -115,6 +115,9 @@ const NOT_HERE = `This sign-in didn't start in this browser, or the browser let 
  * are checked before any is taken, so a refused call spends nothing. Keys idle for a window are
  * forgotten.
  */
+/** How long GitHub's answer for a username chosen at an Apple sign-up is kept (`usernameAnswers`). */
+const USERNAME_ANSWER_MS = 10 * 60_000;
+
 export class Limit {
   private readonly byKey = new Map<string, number[]>();
   private all: number[] = [];
@@ -237,11 +240,15 @@ export class OAuthController {
   private readonly setupUses = new Limit(30, Infinity, 60_000);
   /**
    * Usernames chosen at a first Sign in with Apple, checked with GitHub (POST /oauth/username): 30
-   * an hour from one address, 1,000 in all, from the OAuth app's one rate limit (5,000 an hour),
-   * which invitations by account share. Past it, a name isn't checked, so it isn't taken: the page
-   * says to try again.
+   * an hour from one address, 10 an hour for one sign-in (each needs an Apple sign-in of its own, so
+   * no one spends the total for everyone from a single one), 3,000 in all, from the OAuth app's one
+   * rate limit (5,000 an hour), which invitations by account share. Past it, a name isn't checked,
+   * so it isn't taken: the page says to try again. GitHub's answer for a name is kept 10 minutes
+   * (`usernameAnswers`), so asking again costs nothing.
    */
-  private readonly usernameLookups = new Limit(30, 1000, 60 * 60_000);
+  private readonly usernameLookups = new Limit(30, 3000, 60 * 60_000);
+  private readonly usernameLookupsPerSignIn = new Limit(10, Infinity, 60 * 60_000);
+  private readonly usernameAnswers = new Map<string, { at: number; answer: Awaited<ReturnType<NonNullable<IdentityProvider['lookup']>>> }>();
 
   constructor(
     @Inject(KOLAB) private readonly kolab: Kolab,
@@ -650,8 +657,14 @@ export class OAuthController {
     const github = this.idps.find((i) => i.lookup && i.id !== pending.provider);
     const address = clientAddress(req, this.options);
     const lookup = github?.lookup && (async (login: string) => {
-      if (!this.usernameLookups.take(address)) throw new Error('too many usernames checked from here just now');
-      return github.lookup!(login);
+      const key = login.toLowerCase(), now = Date.now();
+      const kept = this.usernameAnswers.get(key);
+      if (kept && now - kept.at < USERNAME_ANSWER_MS) return kept.answer;
+      if (!this.usernameLookupsPerSignIn.take(`binding:${createHash('sha256').update(binding).digest('base64url')}`) || !this.usernameLookups.take(address)) throw new Error('too many usernames checked just now');
+      const answer = await github.lookup!(login);
+      if (this.usernameAnswers.size >= 10_000) for (const [k, v] of this.usernameAnswers) if (now - v.at >= USERNAME_ANSWER_MS) this.usernameAnswers.delete(k);
+      if (this.usernameAnswers.size < 10_000) this.usernameAnswers.set(key, { at: now, answer });
+      return answer;
     });
     let made: { actor: string; created: boolean; csrf: string };
     try {
