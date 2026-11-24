@@ -911,6 +911,7 @@ test('a sign-in waiting for a username, restarted for another account, forgets t
   expect((await kolab.db.query(`select pending_subject from oauth_request where id = $1`, [sessionKey(w.binding)])).rows).toStrictEqual([{ pending_subject: null }]);
   // The new state waits for the next answer, which may name another account.
   expect(await kolab.awaitUsername(w.binding, state, '000999.feed.0001')).toMatchObject({ csrf: expect.any(String) });
+});
 
 test('a person may have 1000 live agents (Lee, 2026-11-23); a refusal at the cap names the first 20, least recently used first, and how many more', async () => {
   const kolab = await openKolab();
