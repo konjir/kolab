@@ -6,7 +6,7 @@
 import { createHash, generateKeyPairSync, sign, verify, type KeyObject } from 'node:crypto';
 import { expect, test } from '@jest/globals';
 import type { Kolab } from '@konjir/engine';
-import { closeAtEnd, openKolab } from '@konjir/engine/testing';
+import { appSignIn, closeAtEnd, openKolab } from '@konjir/engine/testing';
 import { APPLE_ORIGIN, applePrivateKey } from '../src/oauth/identity.js';
 import { NOTHING_TO_CHOOSE_UNINVITABLE } from '../src/oauth/oauth.controller.js';
 import { AppleIdentity, StubIdentity, startServer } from '../src/server.js';
@@ -505,6 +505,31 @@ test('with GitHub\'s sign-in beside Apple\'s, a username that is a GitHub accoun
   expect(await kolab.identities('zara')).toStrictEqual([{ provider: 'apple', subject: SUB, login: 'zara' }]);
   // The real octocat, signing up with GitHub, is octocat.
   expect(await kolab.signInWith({ provider: 'stub', subject: '583231', login: 'octocat' })).toStrictEqual({ actor: 'octocat', created: true });
+});
+
+test('a username that was a deleted account\'s is refused on the page as one that can\'t be used, before GitHub is asked, even while GitHub is down; the same form then makes a free one', async () => {
+  const kolab = await openKolab();
+  const { base, tokens, github } = await serve(kolab);
+  // ghost signed up with GitHub, and deleted their account: the name is retired (migration 0060).
+  await kolab.signInWith({ provider: 'stub', subject: '66', login: 'ghost' });
+  await kolab.createKolab('ghosts', { owner: 'ghost' });
+  await kolab.deleteOwnAccount((await appSignIn(kolab, 'ghost', 'ghosts')).access, 'ghost');
+  github.account({ subject: '66', login: 'ghost' });
+  const first = await withApple(base, tokens, await register(base));
+  expect(titleOf(first.html)).toBe('Choose your username · Kolab');
+  const form = { sign_in: field(first.html, 'sign_in'), csrf: field(first.html, 'csrf'), decision: 'choose' };
+  for (const [name, down] of [['ghost', false], ['Ghost', true], ['ghost-x', false]] as const) {
+    github.down = down;
+    const refused = await first.browser.post('/oauth/username', { ...form, username: name });
+    expect([name, refused.res.status]).toStrictEqual([name, 400]);
+    expect(refused.html).toContain(`the username ${name.toLowerCase()} can&#39;t be used: choose another`);
+    expect(field(refused.html, 'username')).toBe(name);
+  }
+  github.down = false;
+  expect(await kolab.signInKnown({ provider: 'apple', subject: SUB })).toBeUndefined();
+  const made = await first.browser.post('/oauth/username', { ...form, username: 'gwen' });
+  expect(titleOf(made.html)).toBe('Sign in · Kolab');
+  expect(await kolab.identities('gwen')).toStrictEqual([{ provider: 'apple', subject: SUB, login: 'gwen' }]);
 });
 
 test('Continue posted twice shows the same person\'s consent page both times, and the sign-in goes on; a person archived while the page is open is stopped with 403, as the callback stops them', async () => {
