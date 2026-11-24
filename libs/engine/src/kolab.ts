@@ -2640,9 +2640,13 @@ export class Kolab {
     if (!CHOSEN_USERNAME.test(name)) throw new ActorError('a username is 2 to 39 lowercase letters, digits and single hyphens, starting and ending with a letter or digit');
     if (isReservedPersonName(name) || isDoerName(name)) throw new ActorError(`${name} is reserved: choose another username`);
     const prefixes = [...name.matchAll(/-/g)].map((m) => name.slice(0, m.index));
+    // A deleted account's name counts as an owner here too, so `bo-x` reads the same whether bo is
+    // live or deleted, and this page never tells which (migration 0060).
     const owner = prefixes.length ? (await this.db.query<{ id: string }>(
       `select lower(id) as id from actor where kind = 'person' and lower(id) = any($1)
-       union select lower(id) from account where kind = 'organization' and lower(id) = any($1) limit 1`, [prefixes])).rows[0]?.id : undefined;
+       union select lower(id) from account where kind = 'organization' and lower(id) = any($1)
+       union select p from unnest($1::text[]) p where exists (select 1 from retired_name r where r.digest = kj_name_digest(p))
+       limit 1`, [prefixes])).rows[0]?.id : undefined;
     if (owner) throw new ActorError(`${name} reads as an agent of ${owner}'s (<person>-<label>): choose a username that doesn't start with ${owner}-`);
     try {
       await this.requireFreeName(name, 'ActorError');
