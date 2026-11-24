@@ -208,8 +208,11 @@ export function signInStep(step: unknown, steps: unknown): { n: number; of: numb
   return n !== undefined && of !== undefined && n <= of ? { n, of } : null;
 }
 
-/** The most agents one setup names: a person has at most as many live agents (`oauth.agentsPerPerson`). */
+/** The most agents one setup names (a person has at most `oauth.agentsPerPerson` live agents, with the new ones). */
 export const SETUP_MAX_AGENTS = 10;
+
+/** How many of a person's live agents a refusal at the cap names, least recently used first. */
+export const LIVE_AGENTS_SHOWN = 20;
 
 /** One agent a setup names: its label, which names it `<person>-<label>`, and the role it works in. */
 export interface SetupAgent { label: string; role: Role }
@@ -2518,7 +2521,7 @@ export class Kolab {
    * again; after its successor is used, or later, a replay, which revokes its grant (refreshGrant). A person owns at most `agentsPerPerson` agents
    * they made themselves.
    */
-  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshRetryS: 120, agentsPerPerson: 10 };
+  readonly oauth = { accessTtlS: 900, refreshTtlS: 30 * 86_400, codeTtlS: 60, requestTtlS: 1200, refreshRetryS: 120, agentsPerPerson: 1000 };
   /**
    * How long a hand-issued session lasts (openSession, W2.22): 30 days by default
    * (KONJIR_HAND_ISSUED_TOKEN_DAYS for `kolab serve`). Once it expires, its token is refused like
@@ -3717,9 +3720,12 @@ export class Kolab {
     const live = (await this.ownAgentRows(q, person, false))
       .sort((a, b) => Number(a.open) - Number(b.open) || (a.lastUsed ?? '').localeCompare(b.lastUsed ?? '') || a.made.localeCompare(b.made) || a.agent.localeCompare(b.agent));
     if (!live.length) return `You have no live agent of your own. ${archive} (konjir archive_agent label=<label>)`;
-    const shown = live.map((a) => `${a.label ?? `agent=${a.agent}`} (${a.open ? 'signed in now' : a.lastUsed ? `last used ${a.lastUsed.slice(0, 10)}` : 'never used'})`);
-    const how = live.some((a) => a.label === null) ? 'konjir archive_agent label=<label>, or agent=<name> for one shown so' : 'konjir archive_agent label=<label>';
-    return `Yours, least recently used first (dates UTC): ${shown.join(', ')}. ${archive} (${how})`;
+    // The first LIVE_AGENTS_SHOWN only, with how many more: a person may have a thousand.
+    const first = live.slice(0, LIVE_AGENTS_SHOWN);
+    const shown = first.map((a) => `${a.label ?? `agent=${a.agent}`} (${a.open ? 'signed in now' : a.lastUsed ? `last used ${a.lastUsed.slice(0, 10)}` : 'never used'})`);
+    const more = live.length > first.length ? `, and ${live.length - first.length} more (konjir list_agents lists them all)` : '';
+    const how = first.some((a) => a.label === null) ? 'konjir archive_agent label=<label>, or agent=<name> for one shown so' : 'konjir archive_agent label=<label>';
+    return `Yours, least recently used first (dates UTC): ${shown.join(', ')}${more}. ${archive} (${how})`;
   }
 
   /**

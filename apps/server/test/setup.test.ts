@@ -244,7 +244,8 @@ test('a setup that can\'t be allowed says why on the page, with Deny alone; Allo
   await kolab.addOwnAgent('ann', 'old', { pool: true });
   await kolab.archive({ actor: 'ann-old' }, { by: 'kolab' });
   expect(await why(setupScope('anns', ['old:product']))).toBe('your agent ann-old is archived, and its name stays its own (D52): choose another label for it');
-  // The cap on live agents holds: 8 live, and 3 more would be past 10.
+  // The cap on live agents holds (made 10 here, of 1000): 8 live, and 3 more would be past 10.
+  kolab.oauth.agentsPerPerson = 10;
   for (const l of ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']) await kolab.addOwnAgent('ann', l, { pool: true });
   // The refusal names her live agents, least recently used first, and how to free a place (D106):
   // never used, the oldest made first; ann-old, archived, isn't among them.

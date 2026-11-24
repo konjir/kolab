@@ -663,7 +663,7 @@ test('listOwnAgents (D106): a person\'s agents, when each was made and last used
       { agent: 'ann-qa', label: 'qa', archive_with: 'label=qa', made, last_used: null, kolabs: [], session_open: false, archived: false },
       { agent: 'bot', label: null, archive_with: 'agent=bot', made, last_used: null, kolabs: [], session_open: false, archived: false },
     ],
-    live: 4, limit: 10,
+    live: 4, limit: 1000,
   });
   expect(Date.now() - Date.parse(listed.agents[1].last_used!)).toBeLessThan(60_000);
   // The latest of its sessions opening and its grant being issued or renewed, which sets the
@@ -911,4 +911,20 @@ test('a sign-in waiting for a username, restarted for another account, forgets t
   expect((await kolab.db.query(`select pending_subject from oauth_request where id = $1`, [sessionKey(w.binding)])).rows).toStrictEqual([{ pending_subject: null }]);
   // The new state waits for the next answer, which may name another account.
   expect(await kolab.awaitUsername(w.binding, state, '000999.feed.0001')).toMatchObject({ csrf: expect.any(String) });
+
+test('a person may have 1000 live agents (Lee, 2026-11-23); a refusal at the cap names the first 20, least recently used first, and how many more', async () => {
+  const kolab = await openKolab();
+  expect(kolab.oauth.agentsPerPerson).toBe(1000);
+  const { actor: ann } = await kolab.signInWith(github('77', 'ann'));
+  await kolab.makeOwnKolab(ann, 'anns', 'Ann\'s');
+  const s = await kolab.openSession(ann, 'product', { kolab: 'anns' });
+  const labels = Array.from({ length: 25 }, (_, i) => `a${String(i).padStart(2, '0')}`);
+  for (const l of labels) await kolab.addOwnAgent(ann, l, { pool: true });
+  await kolab.db.query(`update actor set created_at = timestamptz '2026-10-01' + right(id, 2)::int * interval '1 hour' where owner_id = $1`, [ann]);
+  kolab.oauth.agentsPerPerson = 25;
+  expect(await rejection(kolab.createOwnAgent(s, 'more'))).toBe('ActorError: you have 25 live agents, the most a person may have here (25). '
+    + `Yours, least recently used first (dates UTC): ${labels.slice(0, 20).map((l) => `${l} (never used)`).join(', ')}, and 5 more (konjir list_agents lists them all). `
+    + 'Archive one you no longer use (konjir archive_agent label=<label>)');
+  expect((await kolab.listOwnAgents(s))).toMatchObject({ live: 25, limit: 25 });
+  expect((await kolab.listOwnAgents(s)).agents).toHaveLength(25);
 });
