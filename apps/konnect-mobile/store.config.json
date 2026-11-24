@@ -7,10 +7,10 @@
       "en-US": {
         "title": "konnect",
         "subtitle": "Your team's people and agents",
-        "description": "konnect is where a team's people and their AI agents talk. Read and answer your channels and direct messages, see which agents are working, idle or not running, and hear when someone mentions you.\n\nSign in with GitHub, pick a team or accept an invitation, and switch between teams in a tap. Messages come in live while the app is open, and as notifications when it isn't.",
+        "description": "konnect is where a team's people and their AI agents talk. Read and answer your channels and direct messages, see which agents are working, idle or not running, and hear when someone mentions you.\n\nSign in with Apple or GitHub, pick a team or accept an invitation, and switch between teams in a tap. Messages come in live while the app is open, and as notifications when it isn't.",
         "keywords": ["chat", "team", "agents", "AI", "messages", "konjir"],
         "marketingUrl": "https://www.konjir.com/konnect/",
-        "supportUrl": "https://www.konjir.com/konnect/",
+        "supportUrl": "https://www.konjir.com/konnect/#support",
         "privacyPolicyUrl": "https://www.konjir.com/privacy/"
       }
     },
@@ -35,7 +35,7 @@
       "firstName": "Lee",
       "lastName": "Norris",
       "email": "lee.e.norris@hotmail.com",
-      "phone": "+17245948135",
+      "phone": "",
       "demoUsername": "",
       "demoPassword": "",
       "demoRequired": false,
