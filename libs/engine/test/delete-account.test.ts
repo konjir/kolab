@@ -214,6 +214,43 @@ test('the old id is never handed out again, in any case, nor `<old>-x`; the same
   await expect(k.db.query(`update message set sent_by = 'ann' where sent_by = $1`, [gone])).rejects.toThrow(/never edited or removed/);
 });
 
+test('a username chosen at an Apple sign-up is never a deleted account\'s, old or new, in any case, nor `<old>-x`: the page says it can\'t be used, before asking GitHub, and the same form tries again', async () => {
+  const { k, bo } = await world();
+  await k.deleteOwnAccount(bo.access, 'bo');
+  const [gone] = await deletedId(k);
+  const client = (await k.registerClient({ name: 'Test client', redirectUris: ['http://127.0.0.1:9/cb'] })).id;
+  const { binding, state } = await k.beginAuthorization({ provider: 'apple', clientId: client, redirectUri: 'http://127.0.0.1:9/cb', codeChallenge: 'c'.repeat(43), clientState: 'xyz' });
+  const subject = '001234.0123456789abcdef0123456789abcdef.1234';
+  const { csrf } = await k.awaitUsername(binding, state, subject);
+  // GitHub's lookup is never asked about a name Kolab refuses itself, nor is a failing one the reason.
+  const asked: string[] = [];
+  const github = async (login: string): Promise<never> => { asked.push(login); throw new Error('GitHub is down'); };
+  for (const name of ['bo', 'BO', '@Bo', 'bo-claude', 'bo-x', 'bo-claude-2']) {
+    const lower = name.replace(/^@/, '').toLowerCase();
+    expect([name, await rejection(k.chooseUsername(binding, csrf, name, { github }))]).toStrictEqual([name, `ActorError: the username ${lower} can't be used: choose another`]);
+  }
+  // A deleted account's new kind of name is reserved, as it is at any sign-up.
+  for (const name of [gone, `${gone}-2`, 'deleted-0123456789ab']) {
+    expect([name, await rejection(k.chooseUsername(binding, csrf, name, { github }))]).toStrictEqual([name, `ActorError: ${name} is reserved: choose another username`]);
+  }
+  expect(asked).toStrictEqual([]);
+  expect(await k.pendingAuthorization(binding)).toMatchObject({ person: null, choosingUsername: true });
+  // Retired between Kolab's check and the insert (a sign-up racing the deletion): the database's
+  // refusal, answered the same way, never as it is; nothing is made, and the form still works.
+  const raced = k as unknown as { requireFreeName(id: string): Promise<void> };
+  const check = raced.requireFreeName;
+  raced.requireFreeName = async () => undefined;
+  try {
+    expect(await rejection(k.chooseUsername(binding, csrf, 'bo'))).toBe('ActorError: the username bo can\'t be used: choose another');
+    expect(await rejection(k.chooseUsername(binding, csrf, 'bo-claude-2'))).toBe('ActorError: the username bo-claude-2 can\'t be used: choose another');
+  } finally {
+    raced.requireFreeName = check;
+  }
+  expect(await count(k, `identity where provider = 'apple'`)).toBe(0);
+  expect(await k.pendingAuthorization(binding)).toMatchObject({ person: null, choosingUsername: true });
+  expect(await k.chooseUsername(binding, csrf, 'bea')).toMatchObject({ actor: 'bea', created: true });
+});
+
 test('only the person, from their own sign-in through konnect\'s app, naming themselves: never another person, an agent, or any other sign-in, and nothing changes', async () => {
   const { k, ann, bo, agent } = await world();
   const handIssued = await k.openSession('bo', 'product', { kolab: 'anns' });

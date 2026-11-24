@@ -112,10 +112,10 @@ test('a database from the previous release is migrated on open', async () => {
     // indexes for agents' last use (0037; job's goes with job), before what screens' questions
     // ask about (0038), before when versions were submitted (0039; its job columns go with job),
     // before sessions per machine (0040), before kolabs' policies, answers' cites and product
-    // reviews (0041), and before every migration since (0042 to 0060: ruling references, node
-    // names, messages, channels, invitations, leases, hosts, erasing a kolab, push devices and
-    // deleting an account among them; 0060's undoing is the engine's own, UNDO_0060_SCHEMA, and 0059's goes
-    // with the tables it changed), newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people
+    // reviews (0041), and before every migration since (0042 to 0061: ruling references, node
+    // names, messages, channels, invitations, leases, hosts, erasing a kolab, push devices,
+    // deleting an account and Sign in with Apple's usernames among them; 0060's undoing is the
+    // engine's own, UNDO_0060_SCHEMA, and 0059's and 0061's go with the tables they changed), newest first (0009 only dropped what 0007 added, so its undoing is in 0007's). The people
     // and the spec stay, and alice's session is stored by its token again, as 0.5 stored it, so
     // 0011 hashing it in place is what keeps it working. 0014's kj_access goes with 0006's below,
     // since 0006 made it.
