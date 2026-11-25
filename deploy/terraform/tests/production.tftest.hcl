@@ -83,23 +83,11 @@ run "production_keeps_its_names" {
     condition     = output.expo_access_token_parameter == "/konjir/konjir-test/expo-access-token"
     error_message = "Expo's access token is /konjir/konjir-test/expo-access-token, beside the admin token, where start.sh reads it"
   }
-  # Sign in with Apple: the private key Lee puts by hand, and the team id, named where start.sh
-  # reads them; the Services ID and key id wait for Lee, so they have no parameter yet.
+  # Sign in with Apple: the private key Lee puts by hand, and the Services ID, team id and key id
+  # Terraform keeps, each named where start.sh reads it, and the instance may read all four.
   assert {
     condition     = output.apple_signin_private_key_parameter == "/konjir/konjir-test/apple-signin-private-key"
     error_message = "Sign in with Apple's private key is /konjir/konjir-test/apple-signin-private-key, beside the admin token, where start.sh reads it"
-  }
-  assert {
-    condition     = keys(output.apple_signin_parameters) == ["team-id"] && output.apple_signin_parameters["team-id"] == "/konjir/konjir-test/apple-signin-team-id"
-    error_message = "until Lee sets the Services ID and key id, only the team id's parameter is made, /konjir/konjir-test/apple-signin-team-id"
-  }
-}
-
-# The instance may read every Sign in with Apple parameter, the private key Lee puts by hand among them.
-run "apple_signin_set_up" {
-  variables {
-    apple_signin_services_id = "com.konjir.kolab.signin"
-    apple_signin_key_id      = "ABCDE12345"
   }
   assert {
     condition     = length(module.secrets.apple_param_arns) == 4 && contains(module.secrets.apple_param_arns, "arn:aws:ssm:us-east-1:747533038441:parameter/konjir/konjir-test/apple-signin-private-key")
@@ -108,5 +96,17 @@ run "apple_signin_set_up" {
   assert {
     condition     = jsonencode(output.apple_signin_parameters) == jsonencode({ "key-id" = "/konjir/konjir-test/apple-signin-key-id", "services-id" = "/konjir/konjir-test/apple-signin-services-id", "team-id" = "/konjir/konjir-test/apple-signin-team-id" })
     error_message = "each Apple id Terraform keeps is /konjir/konjir-test/apple-signin-<what>, where start.sh reads it"
+  }
+}
+
+# With the Services ID and key id emptied, Kolab runs without Apple: only the team id is kept.
+run "apple_signin_off" {
+  variables {
+    apple_signin_services_id = ""
+    apple_signin_key_id      = ""
+  }
+  assert {
+    condition     = keys(output.apple_signin_parameters) == ["team-id"] && output.apple_signin_parameters["team-id"] == "/konjir/konjir-test/apple-signin-team-id"
+    error_message = "without the Services ID and key id, only the team id's parameter is made, /konjir/konjir-test/apple-signin-team-id"
   }
 }
