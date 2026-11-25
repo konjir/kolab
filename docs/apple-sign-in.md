@@ -1,6 +1,6 @@
 # Setting up Sign in with Apple
 
-Kolab offers Sign in with Apple beside GitHub (Lee, 2026-11-23). konnect's App Store listing needs it, because guideline 4.8 asks for it next to a third-party sign-in. The code is deployed. It stays off until Kolab has four things: a Services ID, the team id, a key id and the key itself. Until it has all four, Kolab logs `apple_sign_in_off` and offers GitHub alone. [`README.md`](../README.md) covers how it works (*Signing up and in*) and how it is deployed (*Deploying to AWS*).
+Kolab offers Sign in with Apple beside GitHub (Lee, 2026-11-23). konnect's App Store listing needs it, because guideline 4.8 asks for it next to a third-party sign-in. Kolab signs people in with Apple only when it has four things: a Services ID, the team id, a key id and the key itself. Without all four, it logs `apple_sign_in_off` and offers GitHub alone. All four are in place (2026-11-25): Lee did steps 1 to 3, with Key ID `Y45K8JX24T`, and step 4 set the defaults. [`README.md`](../README.md) covers how it works (*Signing up and in*) and how it is deployed (*Deploying to AWS*).
 
 **Who does what.** Lee does steps 1 to 3, in Apple's developer portal and from his own machine with the `icedlee337` profile. The private key never passes through Claude, a chat, a commit or a command line. Claude does step 4 through a pull request and a CI deploy (D73, D107). Only the Key ID passes between them, and it isn't secret.
 

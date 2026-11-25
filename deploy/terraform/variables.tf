@@ -113,7 +113,7 @@ variable "github_oauth_client_id" {
 variable "apple_signin_services_id" {
   description = "Sign in with Apple's Services ID, its client id on the web (e.g. com.konjir.kolab.signin), whose return URL is https://<domain_name>/oauth/callback/apple (Apple's developer portal). Empty: no parameter, and no Apple sign-in."
   type        = string
-  default     = ""
+  default     = "com.konjir.kolab.web"
   validation {
     condition     = var.apple_signin_services_id == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$", var.apple_signin_services_id))
     error_message = "apple_signin_services_id is a reverse-DNS identifier, such as com.konjir.kolab.signin, or empty."
@@ -133,7 +133,7 @@ variable "apple_signin_team_id" {
 variable "apple_signin_key_id" {
   description = "The key id of the Sign in with Apple private key Kolab signs its client secret with, the client secret's kid. The key itself is the SecureString /konjir/<name>/apple-signin-private-key, which Lee puts by hand. Empty: no parameter, and no Apple sign-in."
   type        = string
-  default     = ""
+  default     = "Y45K8JX24T"
   validation {
     condition     = var.apple_signin_key_id == "" || can(regex("^[A-Z0-9]{10}$", var.apple_signin_key_id))
     error_message = "apple_signin_key_id is ten uppercase letters and digits, or empty."
