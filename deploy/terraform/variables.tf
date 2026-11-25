@@ -111,12 +111,12 @@ variable "github_oauth_client_id" {
 # /konjir/<name>/apple-signin-private-key (README). Kolab signs people in with Apple only when all
 # four are there, and otherwise runs without Apple, saying so in one line.
 variable "apple_signin_services_id" {
-  description = "Sign in with Apple's Services ID, its client id on the web (e.g. com.konjir.kolab.signin), whose return URL is https://<domain_name>/oauth/callback/apple (Apple's developer portal). Empty: no parameter, and no Apple sign-in."
+  description = "Sign in with Apple's Services ID, its client id on the web (e.g. com.konjir.kolab.web), whose return URL is https://<domain_name>/oauth/callback/apple (Apple's developer portal). Empty: no parameter, and no Apple sign-in."
   type        = string
   default     = "com.konjir.kolab.web"
   validation {
     condition     = var.apple_signin_services_id == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9.-]{0,154}$", var.apple_signin_services_id))
-    error_message = "apple_signin_services_id is a reverse-DNS identifier, such as com.konjir.kolab.signin, or empty."
+    error_message = "apple_signin_services_id is a reverse-DNS identifier, such as com.konjir.kolab.web, or empty."
   }
 }
 
