@@ -71,17 +71,18 @@ Then send Claude the **Key ID**, and nothing else.
 ## 4. Turn it on (Claude)
 
 1. A pull request sets the defaults of `apple_signin_services_id` to `com.konjir.kolab.web` and `apple_signin_key_id` to the Key ID, in `deploy/terraform`. Terraform keeps each value as a String parameter.
-2. It is reviewed and merged, then deployed from CI. The plan should add two String parameters, `/konjir/konjir-test/apple-signin-services-id` and `-key-id` (`-team-id` is already there), and change nothing protected. When Kolab starts, the release's `start.sh` exports all four as `KONJIR_APPLE_*`.
+2. It is reviewed and merged, then deployed from CI. The plan should add two String parameters, `/konjir/konjir-test/apple-signin-services-id` and `-key-id` (`-team-id` is already there), and update the instance role's SSM read policy in place to include them. Nothing is replaced or deleted. When Kolab starts, the release's `start.sh` exports all four as `KONJIR_APPLE_*`.
 3. Check it on production:
    - Kolab's log no longer says `apple_sign_in_off`.
    - `https://kolab.konjir.com/oauth/authorize`, when reached through a sign-in, shows Sign in with Apple above GitHub.
-   - A sign-in with a test Apple Account reaches *choose a username*, then the consent page.
-   - Signing in again goes straight through.
+   - A sign-in with a test Apple Account reaches *Choose your username*, then the consent page.
+   - Signing in again skips *Choose your username*. Apple may ask again to use the Apple Account with Kolab, because Kolab revokes Apple's tokens at every sign-in. Then the consent page shows.
 4. Then konnect 1.0.0 goes to App Review with Sign in with Apple live.
 
 ## If something goes wrong
 
-- **Kolab still logs `apple_sign_in_off`.** One of the four values is missing, or the key can't be read. Check that the private key's parameter exists (step 3) and that the deploy added the `services-id` and `key-id` String parameters beside `team-id`.
-- **Apple says `invalid_client`.** The Services ID, the team id or the key id doesn't match the key, or the key isn't enabled for Sign in with Apple under `com.konjir.kolab`.
+- **Kolab still logs `apple_sign_in_off`.** One of the four values is missing, or the key can't be read. The log line names which `KONJIR_APPLE_*` is unset, or why the key was refused. Check that the private key's parameter exists (step 3) and that the deploy added the `services-id` and `key-id` String parameters beside `team-id`. `start.sh` reads them only when Kolab starts, so after putting or fixing one, restart Kolab (`systemctl restart konjir.service` in `deploy/konjir-ops.sh shell`) or deploy again.
+- **Kolab says *Apple didn't confirm who signed in* and its log has `invalid_client`.** The team id or the key id doesn't match the key, or the key isn't enabled for Sign in with Apple under `com.konjir.kolab`.
+- **Apple's own page says `invalid_client`.** The Services ID is wrong, or Sign in with Apple isn't configured on it (step 1).
 - **Apple says `invalid_request` about the redirect.** The return URL in step 1.5 doesn't match `https://kolab.konjir.com/oauth/callback/apple` exactly.
 - **The key leaked.** Revoke it under **Keys**, make a new one (step 2), put it in place (step 3) and send the new Key ID. Until a deploy with the new id, Apple sign-in fails, and GitHub sign-in is unaffected.
