@@ -25,6 +25,7 @@ const PAGES: [string, string][] = [
   ['kolab/index.html', 'https://www.konjir.com/kolab/'],
   ['kolab/how-it-works/index.html', 'https://www.konjir.com/kolab/how-it-works/'],
   ['kolab/hands-on/index.html', 'https://www.konjir.com/kolab/hands-on/'],
+  ['kolab/self-hosting/index.html', 'https://www.konjir.com/kolab/self-hosting/'],
   ['konnect/index.html', 'https://www.konjir.com/konnect/'],
   ['konnect/guide/index.html', 'https://www.konjir.com/konnect/guide/'],
   ['privacy/index.html', 'https://www.konjir.com/privacy/'],
@@ -105,7 +106,7 @@ test("the messages guide is built into konnect/guide/index.html as the tutorial 
   const r = copy('messages');
   const b = build(r);
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
-  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, konnect/index.html, konnect/guide/index.html, privacy/index.html, konnect/app/oauth/index.html, konnect/app/preview/oauth/index.html, 404.html');
+  expect(b.stdout).toContain('site/: index.html, kolab/index.html, kolab/how-it-works/index.html, kolab/hands-on/index.html, kolab/self-hosting/index.html, konnect/index.html, konnect/guide/index.html, privacy/index.html, konnect/app/oauth/index.html, konnect/app/preview/oauth/index.html, 404.html');
   const home = read(r, 'kolab/index.html');
   const page = read(r, 'konnect/guide/index.html');
   expect(page).toContain('<header><p class="kicker">Guide</p><h1 id="ho-title">Chat for your team\'s people and their AI agents</h1></header>');
@@ -249,7 +250,7 @@ test("every page has the one header: the mark links to /, the product switcher m
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
   // The switcher's entry says "page" only on a page none of the section's own links names: on
   // /konnect/ its "Overview" link is the current page, so the switcher's konnect is just current.
-  const current: Record<string, string> = { 'kolab/index.html': 'page', 'kolab/how-it-works/index.html': 'true', 'kolab/hands-on/index.html': 'true', 'konnect/index.html': 'true', 'konnect/guide/index.html': 'true' };
+  const current: Record<string, string> = { 'kolab/index.html': 'page', 'kolab/how-it-works/index.html': 'true', 'kolab/hands-on/index.html': 'true', 'kolab/self-hosting/index.html': 'true', 'konnect/index.html': 'true', 'konnect/guide/index.html': 'true' };
   for (const file of [...PAGES.map(([f]) => f), '404.html']) {
     const head = headerOf(read(r, file));
     expect(head).toMatch(/<a href="\/" aria-label="Konjir home"[^>]*>/);
@@ -327,6 +328,8 @@ test('every footer links to the source on GitHub, both packages on npm and their
   expect([b.status, b.stderr]).toStrictEqual([0, '']);
   const links = [
     ['https://github.com/konjir/kolab', 'GitHub'],
+    ['https://github.com/konjir/kolab/tree/main/apps/server', 'Kolab server source'],
+    ['https://github.com/konjir/kolab/tree/main/apps/konnect-mobile', 'konnect app source'],
     ['https://www.npmjs.com/package/@konjir/kolab', '@konjir/kolab on npm'],
     ['https://www.npmjs.com/package/@konjir/konnect', '@konjir/konnect on npm'],
     ['https://github.com/konjir/kolab/blob/main/LICENSE.md', 'Kolab server licence (FSL-1.1-ALv2)'],

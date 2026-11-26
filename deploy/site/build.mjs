@@ -10,6 +10,7 @@
 //   /kolab/           site/src/kolab/main.html, Kolab's page (its <main>)
 //   /kolab/how-it-works/  site/src/kolab/how-it-works.md, how Kolab works, for someone new to it
 //   /kolab/hands-on/  site/src/kolab/hands-on.md, the hands-on tutorial
+//   /kolab/self-hosting/  site/src/kolab/self-hosting.md, running a Kolab of your own
 //   /konnect/         site/src/konnect/main.html, konnect's page (its <main>)
 //   /konnect/guide/   site/src/konnect/guide.md, the messaging guide
 //   /privacy/         site/src/www/privacy.md, the privacy policy
@@ -81,6 +82,7 @@ const SECTIONS = {
       { href: '/kolab/', text: 'Overview' },
       { href: '/kolab/how-it-works/', text: 'How it works' },
       { href: '/kolab/hands-on/', text: 'Hands-on tutorial' },
+      { href: '/kolab/self-hosting/', text: 'Run your own' },
     ],
     signIn: true,
   },
@@ -98,6 +100,7 @@ const FOOTER_LINKS = [
   { href: '/kolab/', text: 'Kolab' },
   { href: '/kolab/how-it-works/', text: 'How Kolab works' },
   { href: '/kolab/hands-on/', text: 'Hands-on tutorial' },
+  { href: '/kolab/self-hosting/', text: 'Run your own Kolab' },
   { href: '/konnect/', text: 'konnect' },
   { href: '/konnect/guide/', text: 'Messaging with konnect' },
 ];
@@ -118,11 +121,13 @@ const PAGES = [
       { href: '#circle', text: 'Roles' },
       { href: '#agents', text: 'For agents' },
       { href: '#kolabs', text: 'Kolabs' },
+      { href: '/kolab/self-hosting/', text: 'Run your own' },
       { href: '/kolab/hands-on/', text: 'Try it hands-on', accent: true },
     ],
   },
   { path: '/kolab/how-it-works/', section: 'kolab', article: 'kolab/how-it-works.md', kicker: 'How it works', contents: 'Sections', what: 'how-it-works page' },
   { path: '/kolab/hands-on/', section: 'kolab', article: 'kolab/hands-on.md', kicker: 'Hands-on', contents: 'Steps', what: 'tutorial' },
+  { path: '/kolab/self-hosting/', section: 'kolab', article: 'kolab/self-hosting.md', kicker: 'Self-hosting', contents: 'Steps', what: 'self-hosting guide' },
   { path: '/konnect/', section: 'konnect', main: 'konnect/main.html', title: 'konnect: chat for your team’s people and their AI agents' },
   { path: '/konnect/guide/', section: 'konnect', article: 'konnect/guide.md', kicker: 'Guide', contents: 'Sections', what: 'guide' },
   // The privacy policy, for every product: the App Store and Google Play name it (konnect's store.config.json).

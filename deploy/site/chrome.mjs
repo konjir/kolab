@@ -98,6 +98,8 @@ ${signIn ? `${SIGN_IN}\n` : ''}</div>
  */
 export const SOURCE_LINKS = [
   { href: 'https://github.com/konjir/kolab', text: 'GitHub' },
+  { href: 'https://github.com/konjir/kolab/tree/main/apps/server', text: 'Kolab server source' },
+  { href: 'https://github.com/konjir/kolab/tree/main/apps/konnect-mobile', text: 'konnect app source' },
   { href: 'https://www.npmjs.com/package/@konjir/kolab', text: '@konjir/kolab on npm' },
   { href: 'https://www.npmjs.com/package/@konjir/konnect', text: '@konjir/konnect on npm' },
   { href: 'https://github.com/konjir/kolab/blob/main/LICENSE.md', text: 'Kolab server licence (FSL-1.1-ALv2)' },

@@ -39,11 +39,11 @@ run "site_publishes_only_the_build" {
     error_message = "site/README.md and dotfiles aren't uploaded"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/how-it-works/index.html", "kolab/hands-on/index.html", "konnect/index.html", "konnect/guide/index.html", "privacy/index.html", "konnect/app/oauth/index.html", "konnect/app/preview/oauth/index.html", "robots.txt", "sitemap.xml", "favicon.svg", "og/www.jpg", "og/konnect.jpg"] : contains(output.files, f)])
+    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/how-it-works/index.html", "kolab/hands-on/index.html", "kolab/self-hosting/index.html", "konnect/index.html", "konnect/guide/index.html", "privacy/index.html", "konnect/app/oauth/index.html", "konnect/app/preview/oauth/index.html", "robots.txt", "sitemap.xml", "favicon.svg", "og/www.jpg", "og/konnect.jpg"] : contains(output.files, f)])
     error_message = "the built pages are uploaded, each product's section included, with the sitemap and the Open Graph image"
   }
   assert {
-    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/how-it-works/index.html", "kolab/hands-on/index.html", "konnect/index.html", "konnect/guide/index.html", "privacy/index.html", "konnect/app/oauth/index.html", "konnect/app/preview/oauth/index.html"] : output.objects[f].content_type == "text/html; charset=utf-8" && output.objects[f].cache_control == "public, max-age=60"])
+    condition     = alltrue([for f in ["index.html", "404.html", "kolab/index.html", "kolab/how-it-works/index.html", "kolab/hands-on/index.html", "kolab/self-hosting/index.html", "konnect/index.html", "konnect/guide/index.html", "privacy/index.html", "konnect/app/oauth/index.html", "konnect/app/preview/oauth/index.html"] : output.objects[f].content_type == "text/html; charset=utf-8" && output.objects[f].cache_control == "public, max-age=60"])
     error_message = "every page, in every section, is uploaded as HTML and cached a minute"
   }
   assert {
