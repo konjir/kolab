@@ -78,6 +78,7 @@ function Gate() {
         {/* First, so it is where the gate lands while signed out. */}
         <Stack.Protected guard={!signedIn}>
           <Stack.Screen name="sign-in" />
+          <Stack.Screen name="server" options={{ headerShown: true, title: '' }} />
         </Stack.Protected>
         <Stack.Protected guard={signedIn}>
           <Stack.Screen name="(tabs)" />

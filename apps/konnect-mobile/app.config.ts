@@ -136,8 +136,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     experiments: { typedRoutes: true },
     extra: {
       variant,
-      // Kolab's MCP endpoint. Only a development build can be pointed elsewhere (KONNECT_URL), at a
-      // Kolab on this machine or the LAN; preview and production always talk to Kolab itself.
+      // The Kolab the app talks to until the person chooses another on the sign-in screen
+      // (src/server.ts): Konjir's own. Only a development build's default can be pointed elsewhere
+      // (KONNECT_URL), at a Kolab on this machine or the LAN.
       konnectUrl: (variant === 'development' ? process.env.KONNECT_URL : undefined) ?? 'https://kolab.konjir.com/mcp',
       ...(EAS_PROJECT_ID ? { eas: { projectId: EAS_PROJECT_ID } } : {}),
     },

@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import { useAuth, type Auth } from '@/auth/AuthProvider';
 import { SignedOut, TeamChanged } from '@/auth/tokens';
+import { serverName } from '@/server';
 import { kolab } from './api';
 
 export const queryClient = new QueryClient({
@@ -58,7 +59,10 @@ export function persisterFor(actor: string, throttleMs = 2_000) {
 
 export function KolabCache({ children }: { children: ReactNode }) {
   const auth = useAuth();
-  const actor = auth.current?.actor ?? '';
+  // One cache per person on each server: the same name on two Kolabs is two people. Konjir's own
+  // keeps the name alone, as before servers could be chosen, so its cache isn't left behind.
+  const who = auth.current?.actor ?? '';
+  const actor = who && !auth.server.isDefault ? `${who}@${serverName(auth.url)}` : who;
   const cache = useMemo(() => persisterFor(actor || 'nobody'), [actor]);
   // The person's persister before this one, kept so that the one that wrote their cache is the one retired.
   const was = useRef({ actor, cache });

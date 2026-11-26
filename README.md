@@ -144,6 +144,15 @@ An actor is a person, or an agent owned by an account: a person or an organizati
 
 `deploy/demo/run-local.sh` runs all of this end to end against a throwaway Kolab: two companies, a spec and its binding, reviews, questions, a spec change, a ruling and a restart. `deploy/demo/m1-walkthrough.mjs` runs the same walkthrough against any Kolab, given its URL and admin token. [`docs/demo.md`](docs/demo.md) says how to run it and what each step shows.
 
+### Running your own Kolab
+
+Konjir runs a Kolab at `kolab.konjir.com`, where anyone can sign up. A team can run its own instead, under the licence (*Licence*), and point konnect's app at it: on the app's sign-in screen, **Change** beside the server, then the Kolab's address. The app checks that a Kolab answers there before it keeps it, and each server has its own sign-in on the phone.
+
+- **Kolab itself** runs from a checkout: Node 22 or later, `npm ci`, then `bin/kolab serve --database-url postgres://… --public-host kolab.example.com` (`kolab serve --help`). Without `--database-url` it keeps its data in a local PGlite folder, which is for trying it out. It listens on port 7420 behind a TLS proxy that answers for the public host, as Caddy does on production (`deploy/`).
+- **Sign-in** needs a GitHub OAuth app whose callback is `https://<public host>/oauth/callback/github`: `KONJIR_GITHUB_CLIENT_ID` and `KONJIR_GITHUB_CLIENT_SECRET`. Sign in with Apple beside it is optional, with a Services ID and key of your own (`KONJIR_APPLE_*`, *Signing up and in*; [`docs/apple-sign-in.md`](docs/apple-sign-in.md) shows how Konjir set up its own). `kolab --help` lists the rest of the environment Kolab reads.
+- **konnect's app** signs in to any Kolab with nothing more to set: the redirect URIs it signs in through are built into Kolab (`APP_REDIRECT_URI`).
+- **Push notifications** go through Expo's push service with an access token for konnect's Expo project, which only Konjir holds (`KONJIR_EXPO_ACCESS_TOKEN`, *Push notifications*). A Kolab of your own runs with push off, so the app hears a team only while it is open.
+
 ### Setting a machine to work
 
 Agents are jobs, not colleagues (D103). Kolab is the queue and the ledger; a person's machine runs `kolab work`, which takes items from Kolab under a lease and runs one headless agent per item, and the agent does that one item and exits. Nobody starts a session by hand. A job runs on the model account of the person whose machine took it, and the machine keeps nothing a job needs beyond that person's sign-in (DEL8). Setting a machine to work takes two steps:

@@ -13,6 +13,7 @@ import { appExtra } from '@/config';
 import { deleteAccount, type AccountDeleted } from '@/kolab/account';
 import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
+import { BadServer, defaultServer, loadServer, saveServer, serverUrl } from '@/server';
 import { teamClient } from './mcp';
 import { discover, InvalidClient, redirectFor, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type Who } from './store';
@@ -31,7 +32,14 @@ const secureKV: SecureKV = {
 
 export interface Auth {
   ready: boolean;
+  /** The Kolab MCP URL the app talks to: Konjir's, or the server chosen on this phone. */
   url: string;
+  /**
+   * The Kolab server the app talks to (server.ts). `use` takes what the person typed, or null for
+   * Konjir's own; it checks that a Kolab answers there before keeping it, and only while signed out:
+   * each server has its own sign-in, so the phone is never signed in to one while showing another.
+   */
+  server: { isDefault: boolean; use(typed: string | null): Promise<void> };
   /** Who is signed in, and the team the app shows; nothing while signed out. */
   current?: Who;
   /** The signed-in team, as a list (empty while signed out). */
@@ -71,7 +79,14 @@ export function useAuth(): Auth {
 }
 
 export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: { children: ReactNode; kv?: SecureKV; adapter?: TeamsAdapter }) {
-  const url = appExtra().konnectUrl;
+  // The server chosen on this phone, read before anything else; until then, nothing is shown as read.
+  const [chosen, setChosen] = useState<string>();
+  useEffect(() => {
+    let live = true;
+    void loadServer().catch(() => defaultServer()).then((u) => { if (live) setChosen(u); });
+    return () => { live = false; };
+  }, []);
+  const url = chosen ?? defaultServer();
   const scheme = [Constants.expoConfig?.scheme].flat()[0] ?? 'com.konjir.konnect';
   // Kolab ended the sign-in: a count, so the same thing twice is seen twice.
   const [ended, setEnded] = useState(0);
@@ -97,12 +112,13 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   const read = useCallback(async () => ({ ready: true, who: await store.who() }), [store]);
   const reload = useCallback(async () => setState(await read()), [read, setState]);
   useEffect(() => {
+    if (chosen === undefined) return;
     let live = true;
     // Sign-ins an earlier build kept per team are revoked and forgotten: one sign-in now.
     void store.takeLegacy().then((old) => { for (const l of old) void tokens.revoke(l); }).catch(() => undefined)
       .then(read).then((s) => { if (live) setState(s); });
     return () => { live = false; };
-  }, [store, tokens, read, setState]);
+  }, [chosen, store, tokens, read, setState]);
 
   const dropClient = useCallback(() => {
     const c = client.current;
@@ -124,6 +140,23 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
 
   const auth: Auth = {
     ready: state.ready, url, adapter, moved, signIns,
+    server: {
+      isDefault: url === defaultServer(),
+      use: async (typed) => {
+        if (latestTeam.current) throw new BadServer('Sign out before choosing another server.');
+        const next = typed === null ? defaultServer() : serverUrl(typed);
+        if (next === url) return;
+        // A Kolab answers there, with the sign-in konnect needs, or the choice isn't kept.
+        try { await discover(next); } catch (e) {
+          throw new BadServer(`No Kolab answered at ${new URL(next).host}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+        await saveServer(next);
+        // Signed out here, so nothing to drop but a client; the new server's own sign-in, if this phone
+        // kept one there before, is read when its store is.
+        dropClient();
+        setChosen(next);
+      },
+    },
     clearMoved: () => setMoved(undefined),
     current: state.who,
     teams: state.who ? [state.who] : [],
