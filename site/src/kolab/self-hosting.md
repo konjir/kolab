@@ -2,7 +2,7 @@
 
 Konjir runs Kolab at `kolab.konjir.com`, where anyone can sign up with Apple or GitHub, and that is the quickest way to start. A team can also run Kolab on its own server. Its whole source is on GitHub, at [github.com/konjir/kolab](https://github.com/konjir/kolab), and this page walks through setting one up the way Konjir runs its own.
 
-Kolab's server is licensed under the [Functional Source License, FSL-1.1-ALv2](https://github.com/konjir/kolab/blob/main/LICENSE.md): you may run it for your own team, for education or research, or as part of professional services, but not offer it as a product that competes with Konjir's. Each release becomes Apache-2.0 two years after it is published. The `kolab` and `konnect` command-line tools are [Apache-2.0](https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE) already.
+Kolab's server is licensed under the [Functional Source License, FSL-1.1-ALv2](https://github.com/konjir/kolab/blob/main/LICENSE.md): you may run it for your organization's internal use, for non-commercial education or research, or as part of professional services, but not offer it as a product that competes with Konjir's. Each release becomes Apache-2.0 two years after it is published. The `kolab` and `konnect` command-line tools are [Apache-2.0](https://github.com/konjir/kolab/blob/main/apps/cli/LICENSE) already.
 
 ## What you need
 
@@ -14,7 +14,16 @@ Kolab's server is licensed under the [Functional Source License, FSL-1.1-ALv2](h
 
 Kolab must be served at the bare name, on port 443: it issues tokens only for `https://<your name>/mcp`.
 
-## 1. Build Kolab
+## 1. Make the database
+
+Kolab's first migration makes two database roles of its own, so the role it connects as needs `CREATEROLE`, and it must own its database; it needn't be a superuser. As a Postgres superuser:
+
+```sh
+psql -c "create role kolab login password '<a password>' createrole"
+psql -c "create database kolab owner kolab"
+```
+
+## 2. Build Kolab
 
 On the server, get the source and build the server and its web interface:
 
@@ -27,7 +36,7 @@ npx nx run-many -t build -p @konjir/kolab @konjir/web
 
 To try it on your own machine first, `bin/kolab serve` runs a Kolab at `http://127.0.0.1:7420/mcp` that keeps its data in a local folder, with no database and no sign-in to set up.
 
-## 2. Make the GitHub OAuth app
+## 3. Make the GitHub OAuth app
 
 People sign in to Kolab with GitHub. On GitHub, open **Settings**, **Developer settings**, **OAuth Apps**, and make a new one:
 
@@ -38,7 +47,7 @@ Keep its client id and a client secret for the next step.
 
 Sign in with Apple can sit beside GitHub, with a Services ID and a key of your own Apple Developer account. Kolab's source has [how Konjir set up its own](https://github.com/konjir/kolab/blob/main/docs/apple-sign-in.md); your Kolab reads them as `KONJIR_APPLE_SERVICES_ID`, `KONJIR_APPLE_TEAM_ID`, `KONJIR_APPLE_KEY_ID` and `KONJIR_APPLE_PRIVATE_KEY`.
 
-## 3. Start Kolab
+## 4. Start Kolab
 
 Kolab reads its settings from the environment. Keep them in a file only the user Kolab runs as can read:
 
@@ -47,10 +56,10 @@ KONJIR_PUBLIC_HOST=kolab.example.com
 KONJIR_DATABASE_URL=postgres://kolab:<password>@localhost/kolab
 KONJIR_GITHUB_CLIENT_ID=<the OAuth app's client id>
 KONJIR_GITHUB_CLIENT_SECRET=<its client secret>
-KONJIR_ADMIN_TOKEN=<at least 32 random characters, or off>
+KONJIR_ADMIN_TOKEN=<at least 32 random characters>
 ```
 
-The admin token is a break-glass key for the admin commands: make one with `openssl rand -base64 33` and keep it somewhere safe, or write `off` to have none.
+The admin token is a break-glass key for the admin commands: make one with `openssl rand -base64 33` and keep it somewhere safe. Keep it until you have made your first admin (step 6).
 
 Then start it from the checkout, under systemd or whatever keeps your services running:
 
@@ -60,7 +69,7 @@ node apps/cli/dist/main.js serve --port 7420
 
 It applies its database migrations as it starts, and listens on `127.0.0.1:7420`, for the proxy alone. `node apps/cli/dist/main.js serve --help` lists its options.
 
-## 4. Put TLS in front of it
+## 5. Put TLS in front of it
 
 With Caddy, this is the whole configuration:
 
@@ -73,7 +82,17 @@ kolab.example.com {
 
 Then open `https://kolab.example.com` and sign up with GitHub.
 
-## 5. Connect your agents and the app
+## 6. Make yourself its admin
+
+Anyone can sign up, make a kolab and invite their team with no admin at all. Organizations, teams and the other admin commands need one, and a new Kolab's first admin is made with the admin token. Once you have signed up, on the server, from the checkout, with your GitHub username:
+
+```sh
+KONJIR_URL=https://kolab.example.com/mcp KONJIR_TOKEN=<the admin token> node apps/cli/dist/main.js admin_make_admin actor=<your username>
+```
+
+From then on you run admin commands as yourself, signed in. You can then set `KONJIR_ADMIN_TOKEN=off` and restart Kolab, or keep the token somewhere safe as a way back in.
+
+## 7. Connect your agents and the app
 
 - **Agents and the CLI:** point them at your Kolab instead of Konjir's, with `KONJIR_URL=https://kolab.example.com/mcp`, and sign in as you would at Konjir's (the [hands-on tutorial](/kolab/hands-on/) shows how).
 - **The konnect app:** on its sign-in screen, tap **Change** beside the server, then enter `kolab.example.com`. Each server has its own sign-in on the phone.
