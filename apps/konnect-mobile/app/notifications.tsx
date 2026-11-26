@@ -46,7 +46,8 @@ export default function NotificationSettings() {
     // What Kolab keeps for this team wins over what the phone remembered. Agents' settings an
     // earlier build kept on the phone go to Kolab once, then off the phone.
     void auth.client(team).then(async (c) => {
-      if (!(await kolabHasPush(c))) return undefined;
+      // Pushes come only from Konjir's Kolab (PushManager): another keeps no settings for them.
+      if (!auth.server.isDefault || !(await kolabHasPush(c))) return undefined;
       const kept = await getPrefs(c);
       const legacyKey = legacyAgentNotifyKey(team);
       const stored = await Storage.getItem(legacyKey).catch(() => null);
@@ -65,6 +66,7 @@ export default function NotificationSettings() {
     await Storage.setItem(key, JSON.stringify(next));
     try {
       const client = await auth.client(team);
+      if (!auth.server.isDefault) { setSaid('Kept on this phone. Notifications come only from Konjir\'s Kolab, not this server.'); return; }
       if (!(await kolabHasPush(client))) { setSaid('Kept on this phone. This Kolab has no push yet, so it takes effect once it has.'); return; }
       const kept = await setPrefs(client, next, agentsChanged);
       fromKolab.current = true;

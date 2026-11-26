@@ -200,7 +200,8 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
     }),
     signOut: async () => {
       // The phone stops hearing from Kolab before its sign-in ends (S4; a Kolab without push refuses, and that's fine).
-      const token = await Storage.getItem(PUSH_TOKEN_KEY).catch(() => null);
+      // Only Konjir's Kolab was ever given the push token (PushManager), so only it is told to forget it.
+      const token = url === defaultServer() ? await Storage.getItem(PUSH_TOKEN_KEY).catch(() => null) : null;
       if (token && state.who) await auth.client().then((c) => unregisterDevice(c, token)).catch(() => undefined);
       dropClient();
       const r = await tokens.signOut();
