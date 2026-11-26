@@ -7,11 +7,16 @@ const mockKv = new Map<string, string>();
 jest.mock('expo-sqlite/kv-store', () => ({ __esModule: true, default: { getItem: async (k: string) => mockKv.get(k) ?? null, setItem: async (k: string, v: string) => { mockKv.set(k, v); }, removeItem: async (k: string) => { mockKv.delete(k); } } }));
 jest.mock('expo-device', () => ({ isDevice: false }));
 jest.mock('expo-notifications', () => ({ setNotificationHandler: jest.fn(), AndroidImportance: {} }));
+const mockUnregister = jest.fn(async () => undefined);
+jest.mock('../src/auth/mcp', () => ({ teamClient: async () => ({ close: async () => undefined }) }));
+jest.mock('../src/push', () => ({ ...(jest.requireActual('../src/push') as object), unregisterDevice: (...a: unknown[]) => (mockUnregister as (...x: unknown[]) => Promise<undefined>)(...a) }));
 
 // eslint-disable-next-line import/first
 import { AuthProvider, useAuth } from '../src/auth/AuthProvider';
 // eslint-disable-next-line import/first
 import { BadServer, serverName, serverUrl } from '../src/server';
+// eslint-disable-next-line import/first
+import { PUSH_TOKEN_KEY } from '../src/push';
 
 describe('the address a person types for a Kolab server', () => {
   test('a host, an https origin or a whole MCP URL each mean that Kolab\'s MCP URL', () => {
@@ -134,5 +139,15 @@ describe('choosing the server', () => {
       await change;
     });
   });
-});
 
+  test('signing out of another server never hands it the phone\'s push token, which only Konjir\'s Kolab was given', async () => {
+    mockKv.set('konnect.server', 'https://kolab.example.com/mcp');
+    mockKv.set(PUSH_TOKEN_KEY, 'ExponentPushToken[x]');
+    mockUnregister.mockClear();
+    const seen = await mount(new Map([[`${NS('kolab.example.com')}.login`, login('https://kolab.example.com/mcp', 'ours')]]));
+    expect(seen.auth?.current?.team).toBe('ours');
+    await act(async () => { await seen.auth!.signOut(); });
+    expect(mockUnregister).not.toHaveBeenCalled();
+    expect(seen.auth?.current).toBeUndefined();
+  });
+});
