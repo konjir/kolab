@@ -40,6 +40,12 @@ export function PushManager() {
     showWhileOpen();
     let live = true;
     void (async () => {
+      // Pushes come through konnect's Expo project, whose token only Konjir's Kolab holds: another
+      // Kolab can't send them, so the phone's push token is never handed to it.
+      if (!latest.current.server.isDefault) {
+        await Storage.setItem(PUSH_STATUS_KEY, 'Notifications come only from Konjir\'s Kolab; this server has none.');
+        return;
+      }
       const got = await pushToken().catch((e: Error) => ({ ok: false as const, why: e.message }));
       if (!live) return;
       if (!got.ok) { await Storage.setItem(PUSH_STATUS_KEY, got.why); return; }
@@ -58,6 +64,8 @@ export function PushManager() {
   // Taps, each once; the one that launched the app, then cleared so it never opens again.
   useEffect(() => {
     const handle = tapHandler((data) => {
+      // A push is from Konjir's Kolab (above): its team names mean nothing on another server.
+      if (!latest.current.server.isDefault) return;
       const to = routeOf(data);
       if (!to) return;
       // Push is the person's, from every team. One for the team on screen opens now. One for another

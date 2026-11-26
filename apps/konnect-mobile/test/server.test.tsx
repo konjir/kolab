@@ -16,17 +16,24 @@ import { BadServer, serverName, serverUrl } from '../src/server';
 describe('the address a person types for a Kolab server', () => {
   test('a host, an https origin or a whole MCP URL each mean that Kolab\'s MCP URL', () => {
     expect(serverUrl('kolab.example.com', 'production')).toBe('https://kolab.example.com/mcp');
-    expect(serverUrl('  https://kolab.example.com/  ', 'production')).toBe('https://kolab.example.com/mcp');
-    expect(serverUrl('https://Kolab.Example.com:8443/mcp', 'production')).toBe('https://kolab.example.com:8443/mcp');
-    expect(serverUrl('https://example.com/kolab/mcp/', 'production')).toBe('https://example.com/kolab/mcp');
+    expect(serverUrl('  https://Kolab.Example.com/  ', 'production')).toBe('https://kolab.example.com/mcp');
+    expect(serverUrl('https://kolab.example.com/mcp/', 'production')).toBe('https://kolab.example.com/mcp');
+    expect(serverUrl('https://kolab.example.com:443', 'production')).toBe('https://kolab.example.com/mcp');
   });
 
-  test('only https, but a development build may reach this machine or the LAN over http', () => {
+  test('a path or a port a Kolab is never served at is refused, not kept for a sign-in that can\'t work', () => {
+    expect(() => serverUrl('https://example.com/kolab/mcp', 'production')).toThrow(/always at \/mcp/);
+    expect(() => serverUrl('kolab.konjir.com/app', 'production')).toThrow(BadServer);
+    expect(() => serverUrl('https://kolab.example.com:8443', 'production')).toThrow(/port/);
+  });
+
+  test('only https, but a development build may reach this machine over http, on any port', () => {
     expect(() => serverUrl('http://kolab.example.com', 'production')).toThrow(BadServer);
     expect(() => serverUrl('http://127.0.0.1:7432/mcp', 'production')).toThrow(BadServer);
     expect(() => serverUrl('http://kolab.example.com', 'development')).toThrow(BadServer);
+    expect(() => serverUrl('http://192.168.1.20:7432', 'development')).toThrow(BadServer);
     expect(serverUrl('http://127.0.0.1:7432/mcp', 'development')).toBe('http://127.0.0.1:7432/mcp');
-    expect(serverUrl('http://192.168.1.20:7432', 'development')).toBe('http://192.168.1.20:7432/mcp');
+    expect(serverUrl('http://localhost:7432', 'development')).toBe('http://localhost:7432/mcp');
     expect(() => serverUrl('ftp://kolab.example.com', 'development')).toThrow(BadServer);
   });
 
@@ -38,7 +45,7 @@ describe('the address a person types for a Kolab server', () => {
 
   test('its name shows the host, and the path only when it isn\'t /mcp', () => {
     expect(serverName('https://kolab.konjir.com/mcp')).toBe('kolab.konjir.com');
-    expect(serverName('https://example.com/kolab/mcp')).toBe('example.com/kolab/mcp');
+    expect(serverName('http://127.0.0.1:7432/mcp')).toBe('127.0.0.1:7432');
   });
 });
 
@@ -56,7 +63,8 @@ describe('choosing the server', () => {
       asked.push(String(url));
       if (String(url).startsWith('https://down.example.com')) throw new TypeError('Network request failed');
       const o = new URL(String(url)).origin;
-      return { ok: true, status: 200, json: async () => ({ authorization_endpoint: `${o}/oauth/authorize`, token_endpoint: `${o}/oauth/token`, registration_endpoint: `${o}/oauth/register` }) } as unknown as Response;
+      if (String(url).startsWith('https://slow.example.com')) await new Promise((r) => setTimeout(r, 50));
+      return { ok: true, status: 200, json: async () => ({ issuer: o, authorization_endpoint: `${o}/oauth/authorize`, token_endpoint: `${o}/oauth/token`, registration_endpoint: `${o}/oauth/register` }) } as unknown as Response;
     }) as typeof fetch;
   });
   afterEach(() => { globalThis.fetch = realFetch; });
@@ -106,4 +114,25 @@ describe('choosing the server', () => {
     await expect(seen.auth!.server.use('kolab.example.com')).rejects.toThrow(/Sign out before/);
     expect(seen.auth?.url).toBe('https://kolab.konjir.com/mcp');
   });
+
+  test('a second change while one is being checked is refused, so the last one pressed isn\'t lost to a slower check', async () => {
+    const seen = await mount(new Map());
+    let first: Promise<void> | undefined;
+    await act(async () => {
+      first = seen.auth!.server.use('slow.example.com');
+      await expect(seen.auth!.server.use('kolab.example.com')).rejects.toThrow(/choosing a server/);
+      await first;
+    });
+    expect(seen.auth?.url).toBe('https://slow.example.com/mcp');
+  });
+
+  test('a sign-in can\'t start while the server is being changed', async () => {
+    const seen = await mount(new Map());
+    await act(async () => {
+      const change = seen.auth!.server.use('slow.example.com');
+      await expect(seen.auth!.signIn({ kind: 'choose' })).rejects.toThrow(/choosing a server/);
+      await change;
+    });
+  });
 });
+
