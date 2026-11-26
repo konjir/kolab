@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, jest, test } from '@jest/globa
 const mockOpened: string[] = [];
 const mockEvents: string[] = [];
 const opened = mockOpened;
+// What the page answers: closed, by default; a test sets a redirect back instead.
+let mockResult: unknown = { type: 'dismiss' };
 const events = mockEvents;
 jest.mock('expo-auth-session', () => ({
   ResponseType: { Code: 'code' },
@@ -14,12 +16,14 @@ jest.mock('expo-auth-session', () => ({
     clientId: string;
     constructor(o: { clientId: string }) { this.clientId = o.clientId; }
     codeVerifier = 'v';
-    async promptAsync() { mockOpened.push(this.clientId); mockEvents.push(`page ${this.clientId}`); return { type: 'dismiss' }; }
+    async promptAsync() { mockOpened.push(this.clientId); mockEvents.push(`page ${this.clientId}`); return mockResult; }
   },
 }));
 
 // eslint-disable-next-line import/first
-import { clientKnown, signIn, SignInStopped } from '../src/auth/sign-in';
+import { exchangeCodeAsync } from 'expo-auth-session';
+// eslint-disable-next-line import/first
+import { clientKnown, discover, signIn, SignInStopped } from '../src/auth/sign-in';
 
 const URL_ = 'http://127.0.0.1:7432/mcp';
 const reply = (status: number, json: unknown) => ({ ok: status < 300, status, json: async () => json }) as unknown as Response;
@@ -29,7 +33,8 @@ const kolab = (known: Set<string>) => {
   const probes: string[] = [];
   const fetch = async (url: string, init?: { body?: string }) => {
     if (url.endsWith('/.well-known/oauth-authorization-server')) {
-      return reply(200, { authorization_endpoint: 'http://k/oauth/authorize', token_endpoint: 'http://k/oauth/token', registration_endpoint: 'http://k/oauth/register', revocation_endpoint: 'http://k/oauth/revoke' });
+      const k = 'http://127.0.0.1:7432';
+      return reply(200, { issuer: k, authorization_endpoint: `${k}/oauth/authorize`, token_endpoint: `${k}/oauth/token`, registration_endpoint: `${k}/oauth/register`, revocation_endpoint: `${k}/oauth/revoke` });
     }
     if (url.endsWith('/oauth/token')) {
       const body = new URLSearchParams(init?.body);
@@ -46,7 +51,7 @@ const kolab = (known: Set<string>) => {
 };
 
 let realFetch: typeof fetch;
-beforeEach(() => { realFetch = globalThis.fetch; opened.length = 0; events.length = 0; });
+beforeEach(() => { realFetch = globalThis.fetch; opened.length = 0; events.length = 0; mockResult = { type: 'dismiss' }; });
 afterEach(() => { globalThis.fetch = realFetch; });
 
 describe('a kept client registration', () => {
@@ -82,5 +87,36 @@ describe('a kept client registration', () => {
     expect(opened).toEqual(['kjcl_known']);
     expect(changed).toEqual([]);
     expect(events).toEqual(['probe kjcl_known', 'page kjcl_known']);
+  });
+});
+
+describe('a server that isn\'t its own sign-in (a mix-up)', () => {
+  const doc = (over: Record<string, string>) => async (url: string) => {
+    const o = new URL(url).origin;
+    return reply(200, { issuer: o, authorization_endpoint: `${o}/oauth/authorize`, token_endpoint: `${o}/oauth/token`, registration_endpoint: `${o}/oauth/register`, ...over });
+  };
+
+  test('one whose issuer or any endpoint is on another origin is refused', async () => {
+    globalThis.fetch = doc({ authorization_endpoint: 'https://kolab.konjir.com/oauth/authorize' }) as unknown as typeof fetch;
+    await expect(discover('https://kolab.evil.example/mcp')).rejects.toThrow(/names another as its sign-in/);
+    globalThis.fetch = doc({ issuer: 'https://kolab.konjir.com' }) as unknown as typeof fetch;
+    await expect(discover('https://kolab.evil.example/mcp')).rejects.toThrow(/names another as its sign-in/);
+    globalThis.fetch = doc({ revocation_endpoint: 'https://elsewhere.example/revoke' }) as unknown as typeof fetch;
+    await expect(discover('https://kolab.evil.example/mcp')).rejects.toThrow(/names another as its sign-in/);
+    globalThis.fetch = doc({}) as unknown as typeof fetch;
+    await expect(discover('https://kolab.example.com/mcp')).resolves.toMatchObject({ issuer: 'https://kolab.example.com' });
+  });
+
+  test('a code that came back from another server is never sent to this one\'s token endpoint', async () => {
+    const k = kolab(new Set(['kjcl_known']));
+    globalThis.fetch = k.fetch as typeof fetch;
+    const exchange = jest.mocked(exchangeCodeAsync);
+    exchange.mockClear();
+    for (const iss of ['https://kolab.konjir.com', undefined]) {
+      mockResult = { type: 'success', params: { code: 'c', ...(iss ? { iss } : {}) } };
+      await expect(signIn({ url: URL_, scheme: 'com.konjir.konnect.dev', variant: 'development', ask: { kind: 'choose' }, clientName: 'konnect (development)', clientId: 'kjcl_known' }))
+        .rejects.toThrow(/came back from/);
+    }
+    expect(exchange).not.toHaveBeenCalled();
   });
 });

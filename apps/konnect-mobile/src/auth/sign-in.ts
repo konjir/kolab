@@ -18,15 +18,26 @@ import { teamClient } from './mcp';
 import type { Login } from './store';
 import type { Endpoints } from './tokens';
 
-export interface KolabOAuth extends Endpoints { discovery: DiscoveryDocument; registrationEndpoint: string }
+export interface KolabOAuth extends Endpoints { discovery: DiscoveryDocument; registrationEndpoint: string; issuer: string }
 
-/** Kolab's OAuth endpoints, from its discovery document. */
+/**
+ * Kolab's OAuth endpoints, from its discovery document. A Kolab is its own authorization server: its
+ * issuer is its origin, and so is every endpoint's. A server that names another (such as one that
+ * sends the person to Konjir's page while it takes the code itself, a mix-up) is refused, now that
+ * the person can choose the server.
+ */
 export async function discover(url: string): Promise<KolabOAuth> {
-  const res = await fetch(`${new URL(url).origin}/.well-known/oauth-authorization-server`);
-  if (!res.ok) throw new Error(`Kolab at ${new URL(url).origin} has no OAuth discovery document (${res.status})`);
+  const origin = new URL(url).origin;
+  const res = await fetch(`${origin}/.well-known/oauth-authorization-server`);
+  if (!res.ok) throw new Error(`Kolab at ${origin} has no OAuth discovery document (${res.status})`);
   const m = await res.json() as Record<string, string | undefined>;
   if (!m.authorization_endpoint || !m.token_endpoint || !m.registration_endpoint) throw new Error('Kolab\'s discovery document lacks an endpoint konnect needs');
+  const own = (u: string | undefined) => { try { return u === undefined || new URL(u).origin === origin; } catch { return false; } };
+  if (m.issuer !== origin || ![m.authorization_endpoint, m.token_endpoint, m.registration_endpoint, m.revocation_endpoint].every(own)) {
+    throw new Error(`the server at ${origin} names another as its sign-in, so it isn't a Kolab konnect can use`);
+  }
   return {
+    issuer: origin,
     discovery: { authorizationEndpoint: m.authorization_endpoint, tokenEndpoint: m.token_endpoint, revocationEndpoint: m.revocation_endpoint, registrationEndpoint: m.registration_endpoint },
     tokenEndpoint: m.token_endpoint, revocationEndpoint: m.revocation_endpoint, registrationEndpoint: m.registration_endpoint,
   };
@@ -125,6 +136,9 @@ export async function signIn(opts: SignInOptions): Promise<Login> {
   if (result.type === 'error' && result.params.error === 'invalid_client') throw new InvalidClient(result.params.error_description ?? 'Kolab doesn\'t know this app\'s registration');
   if (result.type === 'error') throw new SignInStopped(result.params.error_description ?? result.error?.message ?? 'Kolab refused the sign-in');
   if (result.type !== 'success') throw new SignInStopped('The sign-in was closed before it finished');
+  // Every Kolab's code comes back through the same app link, so the code must be this Kolab's own
+  // (RFC 9207): one another server's page sent is never sent on to this one's token endpoint.
+  if (result.params.iss !== kolab.issuer) throw new SignInStopped(`the sign-in came back from ${result.params.iss ?? 'a server that didn\'t say'}, not ${kolab.issuer}`);
 
   const tokens = await exchangeCodeAsync({
     clientId: client.client_id, code: result.params.code!, redirectUri,

@@ -42,7 +42,7 @@ beforeEach(() => {
   realFetch = globalThis.fetch;
   const reply = (json: unknown) => ({ ok: true, status: 200, json: async () => json }) as unknown as Response;
   globalThis.fetch = (async (url: string) => {
-    if (String(url).includes('/.well-known/')) return reply({ authorization_endpoint: 'https://kolab.konjir.com/oauth/authorize', token_endpoint: 'https://kolab.konjir.com/oauth/token', registration_endpoint: 'https://kolab.konjir.com/oauth/register' });
+    if (String(url).includes('/.well-known/')) return reply({ issuer: 'https://kolab.konjir.com', authorization_endpoint: 'https://kolab.konjir.com/oauth/authorize', token_endpoint: 'https://kolab.konjir.com/oauth/token', registration_endpoint: 'https://kolab.konjir.com/oauth/register' });
     if (!tokenOnline) throw new TypeError('Network request failed');
     return reply({ access_token: `a-${grantTeam}`, refresh_token: 'r-1', expires_in: 900, scope: `konjir kolab:${grantTeam} role:engineer` });
   }) as typeof fetch;

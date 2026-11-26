@@ -15,6 +15,7 @@ import { kolabTeams, type TeamsAdapter } from '@/kolab/teams';
 import { PUSH_TOKEN_KEY, unregisterDevice } from '@/push';
 import { BadServer, defaultServer, loadServer, saveServer, serverUrl } from '@/server';
 import { teamClient } from './mcp';
+import { takePending } from './pending-link';
 import { discover, InvalidClient, redirectFor, signIn as signInWith, type KolabOAuth, type SignInAsk } from './sign-in';
 import { LoginStore, type SecureKV, type Who } from './store';
 import { TeamChanged, Tokens, Unreachable } from './tokens';
@@ -107,6 +108,14 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
   // The team the sign-in is in now, for a caller holding an `auth` from an earlier render (a timer,
   // a request that outlived its screen): client() compares with this, never with that render's team.
   const latestTeam = useRef<string | undefined>(undefined);
+  // A sign-in or a change of server under way: each waits for the other to finish, so a sign-in
+  // never completes at one server while the app has moved to another.
+  const busy = useRef<'signing in' | 'choosing a server' | undefined>(undefined);
+  const exclusive = async <T,>(what: 'signing in' | 'choosing a server', f: () => Promise<T>): Promise<T> => {
+    if (busy.current) throw new BadServer(`Wait: the app is ${busy.current}.`);
+    busy.current = what;
+    try { return await f(); } finally { busy.current = undefined; }
+  };
   const setState = useCallback((s: { ready: boolean; who?: Who }) => { latestTeam.current = s.who?.team; setShown(s); }, []);
 
   const read = useCallback(async () => ({ ready: true, who: await store.who() }), [store]);
@@ -142,7 +151,7 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
     ready: state.ready, url, adapter, moved, signIns,
     server: {
       isDefault: url === defaultServer(),
-      use: async (typed) => {
+      use: (typed) => exclusive('choosing a server', async () => {
         if (latestTeam.current) throw new BadServer('Sign out before choosing another server.');
         const next = typed === null ? defaultServer() : serverUrl(typed);
         if (next === url) return;
@@ -150,17 +159,20 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
         try { await discover(next); } catch (e) {
           throw new BadServer(`No Kolab answered at ${new URL(next).host}: ${e instanceof Error ? e.message : String(e)}`);
         }
+        if (latestTeam.current) throw new BadServer('Sign out before choosing another server.');
         await saveServer(next);
         // Signed out here, so nothing to drop but a client; the new server's own sign-in, if this phone
         // kept one there before, is read when its store is.
         dropClient();
+        // A link opened while signed out was meant for the server shown then, not this one.
+        takePending();
         setChosen(next);
-      },
+      }),
     },
     clearMoved: () => setMoved(undefined),
     current: state.who,
     teams: state.who ? [state.who] : [],
-    signIn: async (ask) => {
+    signIn: (ask) => exclusive('signing in', async () => {
       const clientName = `konnect (${appExtra().variant})`;
       // A registration Kolab no longer knows is forgotten before Kolab's page opens (signIn asks),
       // and a new one is kept before it opens, so closing the page keeps it.
@@ -185,7 +197,7 @@ export function AuthProvider({ children, kv = secureKV, adapter = kolabTeams }: 
       await reload();
       setSignIns((n) => n + 1);
       return login.team;
-    },
+    }),
     signOut: async () => {
       // The phone stops hearing from Kolab before its sign-in ends (S4; a Kolab without push refuses, and that's fine).
       const token = await Storage.getItem(PUSH_TOKEN_KEY).catch(() => null);

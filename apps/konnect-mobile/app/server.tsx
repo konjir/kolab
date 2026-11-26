@@ -46,9 +46,9 @@ export default function Server() {
           autoCapitalize="none" autoCorrect={false} keyboardType="url" textContentType="URL" returnKeyType="go"
           onSubmitEditing={() => void use('use')} placeholderTextColor={colors['ink-muted']} style={input}
         />
-        <Button testID="use-server" label={busy === 'use' ? 'Checking' : 'Use this server'} busy={busy === 'use'} onPress={() => void use('use')} />
+        <Button testID="use-server" label={busy === 'use' ? 'Checking' : 'Use this server'} busy={!!busy} onPress={() => void use('use')} />
         {!auth.server.isDefault && (
-          <Button testID="use-konjir" quiet label={busy === 'konjir' ? 'Checking' : `Use ${serverName(defaultServer())}`} busy={busy === 'konjir'} onPress={() => void use('konjir')} />
+          <Button testID="use-konjir" quiet label={busy === 'konjir' ? 'Checking' : `Use ${serverName(defaultServer())}`} busy={!!busy} onPress={() => void use('konjir')} />
         )}
         {problem && <Problem>{problem}</Problem>}
       </View>

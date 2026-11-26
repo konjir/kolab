@@ -7,6 +7,11 @@ tags: [local-kolab]
 ---
 - assertVisible: "Sign in"
 - assertNotVisible: "Home"
+# The app talks to the local Kolab: a server chosen on this phone earlier (app/server.tsx) would
+# send every flow elsewhere.
+- assertVisible:
+    id: "server-shown"
+    text: "Server: 127.0.0.1:7432.*"
 - runFlow: subflows/sign-in-ann.yaml
 - assertVisible: "bo.*"
 - tapOn: "DMs"
