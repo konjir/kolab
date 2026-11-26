@@ -14,7 +14,7 @@ import type { SecureKV } from '@/auth/store';
 import { themeFor } from '@/theme';
 
 jest.mock('react-native/Libraries/Utilities/useColorScheme', () => ({ __esModule: true, default: jest.fn() }));
-jest.mock('expo-router', () => ({ router: { replace: jest.fn() }, useRouter: () => ({ navigate: jest.fn(), push: jest.fn() }), Stack: { Screen: () => null } }));
+jest.mock('expo-router', () => ({ router: { replace: jest.fn() }, useRouter: () => ({ navigate: jest.fn(), push: jest.fn() }), Stack: { Screen: () => null }, Link: ({ children }: { children: unknown }) => children }));
 const mockKv = new Map<string, string>();
 jest.mock('expo-sqlite/kv-store', () => ({ __esModule: true, default: { getItem: async (k: string) => mockKv.get(k) ?? null, setItem: async (k: string, v: string) => { mockKv.set(k, v); }, removeItem: async (k: string) => { mockKv.delete(k); } } }));
 const scheme = jest.mocked(useColorScheme);

@@ -134,7 +134,7 @@ The targets are `package.json` scripts plus an `nx` block of `nx:run-commands`, 
 - The `submit.production` profile names the App Store Connect app and the Play track.
 - `node` is pinned to the repo's version.
 
-**Environment:** variables live in EAS environments, not in `eas.json`. Only public config ships: `KONNECT_URL`, which defaults to `https://kolab.konjir.com/mcp`, and a dev build can point it at a local server on the LAN.
+**Environment:** variables live in EAS environments, not in `eas.json`. Only public config ships: `KONNECT_URL`, which defaults to `https://kolab.konjir.com/mcp`, and a dev build can point it at a local server on the LAN. It is only the default: on the sign-in screen, while signed out, the person can choose another Kolab, such as their team's own (Lee, 2026-11-25; `src/server.ts`, `app/server.tsx`). The app keeps it once a Kolab answers there, https only but in a development build, and each server has its own sign-in and cache on the phone.
 
 **Updates:** `runtimeVersion: { policy: 'fingerprint' }`, so an update reaches only the builds whose native code it matches.
 

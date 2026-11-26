@@ -1,6 +1,7 @@
-import { router, type Href } from 'expo-router';
+import { Link, router, type Href } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+import { serverName } from '@/server';
 import { useAuth } from '@/auth/AuthProvider';
 import { takePending } from '@/auth/pending-link';
 import { SignInStopped } from '@/auth/sign-in';
@@ -11,7 +12,8 @@ import { Wordmark } from '@/Wordmark';
 /**
  * The only screen while no team is signed in (the root layout's guard). One button: Kolab's page,
  * in the system's auth session, signs the person in with GitHub and lets them pick a team, accept
- * an invitation or make a team.
+ * an invitation or make a team. Below it, the Kolab server the app signs in to, which the person
+ * can change (app/server.tsx) for their team's own.
  */
 export default function SignIn() {
   const auth = useAuth();
@@ -42,6 +44,11 @@ export default function SignIn() {
         <Button testID="sign-in-github" label={busy ? 'Signing in' : 'Sign in'} busy={busy} onPress={() => void signIn()} />
         {problem && <Problem>{problem}</Problem>}
         <Text style={[styles.small, { color: colors['ink-muted'] }]}>Kolab&apos;s page opens: sign in there with Apple or GitHub, then pick a team, accept an invitation or make a team.</Text>
+        <Text testID="server-shown" style={[styles.small, { color: colors['ink-muted'] }]}>
+          Server: <Text style={{ fontFamily: FAMILIES.mono }}>{serverName(auth.url)}</Text>
+          {'  '}
+          <Link testID="change-server" href="/server" style={[styles.link, { color: colors.accent }]}>Change</Link>
+        </Text>
       </View>
     </View>
   );
@@ -53,4 +60,5 @@ const styles = StyleSheet.create({
   tagline: { fontFamily: FAMILIES.display, fontWeight: '500', fontSize: 19, lineHeight: 25, textAlign: 'center' },
   bottom: { gap: 14, paddingBottom: 24 },
   small: { fontFamily: FAMILIES.sans, fontSize: 13, lineHeight: 19, textAlign: 'center' },
+  link: { fontFamily: FAMILIES.sans, fontWeight: '600' },
 });
